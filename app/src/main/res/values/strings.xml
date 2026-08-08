@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SpyProbe 逆向探测</string>
+    <string name="app_desc">通用逆向分析模块：网络抓包 + 函数探测 + 日志导出</string>
+</resources>
