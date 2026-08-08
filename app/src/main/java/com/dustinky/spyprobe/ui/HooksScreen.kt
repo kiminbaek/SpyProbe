@@ -103,9 +103,9 @@ fun HooksScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
-        Text("当前劫持规则（${hijacks.size}）", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+        Text("当前 Hook 规则（${hijacks.size}）", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
         if (hijacks.isEmpty()) {
-            Text("没有劫持规则", style = MaterialTheme.typography.bodySmall,
+            Text("没有 Hook 规则", style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 8.dp))
         } else {
             LazyColumn(modifier = Modifier.weight(1f)) {
@@ -140,7 +140,7 @@ private fun HookItem(vm: SpyViewModel, h: HookEntry, onChanged: () -> Unit) {
                     }
                 }) { Text("卸载", style = MaterialTheme.typography.labelSmall) }
                 TextButton(onClick = { showOps = true }) {
-                    Text("劫持", style = MaterialTheme.typography.labelSmall)
+                    Text("加规则", style = MaterialTheme.typography.labelSmall)
                 }
             }
         }
@@ -153,46 +153,143 @@ private fun HookItem(vm: SpyViewModel, h: HookEntry, onChanged: () -> Unit) {
 
 @Composable
 private fun HijackDialog(vm: SpyViewModel, h: HookEntry, onDismiss: () -> Unit) {
+    var mode by remember { mutableStateOf(MODE_RETURN) }
     var value by remember { mutableStateOf("") }
+    var paramValue by remember { mutableStateOf("") }
+    var fieldName by remember { mutableStateOf("") }
+    var fieldType by remember { mutableStateOf("") }
+    var fieldValue by remember { mutableStateOf("") }
     val context = LocalContext.current
+    val modes = listOf(MODE_RETURN, MODE_PARAM, MODE_BLOCK, MODE_STATIC)
+
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("劫持 ${h.method}") },
+        title = { Text("Hook 规则 ${h.method}") },
         text = {
             Column {
                 Text("class: ${h.cls}\nparams: ${if (h.params.isEmpty()) "全部重载" else h.params}",
                     style = MaterialTheme.typography.bodySmall)
-                Text(
-                    "输入强制返回值（命中后不执行原方法，直接返回）：\n" +
-                        "• true / false —— boolean\n• 123 / 3.14 —— 数字\n" +
-                        "• 任意文本 —— String\n• null —— 返回空\n• 留空 = 空串",
-                    style = MaterialTheme.typography.bodySmall,
+
+                // v1.13: 4 模式选择（fckvip HookConfigManager 借鉴）
+                Text("模式：", style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = 6.dp)
-                )
-                OutlinedTextField(
-                    value = value,
-                    onValueChange = { value = it },
-                    placeholder = { Text("如 true") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                    modifier = Modifier.padding(top = 8.dp, bottom = 4.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    modes.forEach { m ->
+                        val selected = mode == m
+                        Button(
+                            onClick = { mode = m },
+                            enabled = true,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                modeName(m),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (selected) MaterialTheme.colorScheme.onPrimary
+                                else MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                }
+
+                when (mode) {
+                    MODE_RETURN -> {
+                        Text(
+                            "输入强制返回值（命中后不执行原方法，直接返回）：\n" +
+                                "• true / false —— boolean\n• 123 / 3.14 —— 数字\n" +
+                                "• 任意文本 —— String\n• null —— 返回空\n• 留空 = 空串",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(vertical = 6.dp)
+                        )
+                        OutlinedTextField(
+                            value = value,
+                            onValueChange = { value = it },
+                            placeholder = { Text("如 true（会员 isVip()→true）") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    MODE_PARAM -> {
+                        Text(
+                            "输入参数改写（格式：索引:值,索引:值，从 0 开始）：\n" +
+                                "• 0:3 —— 第 1 个参数改成 3\n• 0:true,1:100 —— 多参数\n" +
+                                "• 支持 int/long/boolean/float/double/String",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(vertical = 6.dp)
+                        )
+                        OutlinedTextField(
+                            value = paramValue,
+                            onValueChange = { paramValue = it },
+                            placeholder = { Text("如 0:3（vipLevel→3）") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    MODE_BLOCK -> {
+                        Text(
+                            "拦截执行：方法不执行，直接返回 null/0。\n" +
+                                "适合绕过支付校验 / 广告加载 / 弹窗逻辑。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(vertical = 6.dp)
+                        )
+                    }
+                    MODE_STATIC -> {
+                        Text(
+                            "写静态字段（如 UserInfo.IS_VIP = true）：",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(vertical = 6.dp)
+                        )
+                        OutlinedTextField(
+                            value = fieldName,
+                            onValueChange = { fieldName = it },
+                            placeholder = { Text("字段名，如 IS_VIP") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = fieldType,
+                                onValueChange = { fieldType = it },
+                                placeholder = { Text("类型 boolean") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            OutlinedTextField(
+                                value = fieldValue,
+                                onValueChange = { fieldValue = it },
+                                placeholder = { Text("值 true") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
             }
         },
         confirmButton = {
             TextButton(onClick = {
-                val v = value.trim()
-                vm.api.setHijack(h.cls, h.method, h.params, v)
-                android.widget.Toast.makeText(context, "劫持已设置: ${h.method} -> $v", android.widget.Toast.LENGTH_LONG).show()
+                when (mode) {
+                    MODE_RETURN -> vm.api.setHijack(h.cls, h.method, h.params, MODE_RETURN, value.trim())
+                    MODE_PARAM -> vm.api.setHijack(h.cls, h.method, h.params, MODE_PARAM, value = "", paramValue = paramValue.trim())
+                    MODE_BLOCK -> vm.api.setHijack(h.cls, h.method, h.params, MODE_BLOCK, value = "")
+                    MODE_STATIC -> vm.api.setHijack(h.cls, h.method, h.params, MODE_STATIC, value = "",
+                        fieldName = fieldName.trim(), fieldType = fieldType.trim(), fieldValue = fieldValue.trim())
+                }
+                android.widget.Toast.makeText(context, "规则已设置: ${h.method} [${modeName(mode)}]",
+                    android.widget.Toast.LENGTH_LONG).show()
                 onDismiss()
-            }) { Text("确定劫持") }
+            }) { Text("确定") }
         },
         dismissButton = {
             TextButton(onClick = {
-                vm.api.setHijack(h.cls, h.method, h.params, null)
-                android.widget.Toast.makeText(context, "已取消劫持: ${h.method}", android.widget.Toast.LENGTH_SHORT).show()
+                vm.api.setHijack(h.cls, h.method, h.params, value = null)
+                android.widget.Toast.makeText(context, "已取消规则: ${h.method}", android.widget.Toast.LENGTH_SHORT).show()
                 onDismiss()
-            }) { Text("取消劫持") }
+            }) { Text("取消规则") }
         }
     )
 }

@@ -63,6 +63,9 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     var tls by remember { mutableStateOf(true) }
     var connect by remember { mutableStateOf(true) }
     var cronet by remember { mutableStateOf(false) }
+    // v1.13: 反检测开关（隐藏 root/Xposed，防目标 App 检测）
+    var antiRoot by remember { mutableStateOf(false) }
+    var antiXposed by remember { mutableStateOf(false) }
 
     var dexkitOpen by remember { mutableStateOf(false) }
     var aboutOpen by remember { mutableStateOf(false) }
@@ -84,7 +87,10 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             "env" to env,
             "tls" to tls,
             "connect" to connect,
-            "cronet" to cronet
+            "cronet" to cronet,
+            // v1.13: 反检测
+            "antiRoot" to antiRoot,
+            "antiXposed" to antiXposed
         ))
         android.widget.Toast.makeText(context, "配置已下发", android.widget.Toast.LENGTH_SHORT).show()
     }
@@ -126,6 +132,14 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
         SettingCheck("TLS 明文抓包（ConscryptEngine，HTTPS 明文头）", tls) { tls = it }
         SettingCheck("万能连接点记录（BlockGuardOs.connect，QUIC/自建TCP）", connect) { connect = it }
         SettingCheck("Cronet 网络栈记录（字节系 app，默认关防重复）", cronet) { cronet = it }
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
+        Text("反检测（v1.13，防目标 App 检测 hook 环境）",
+            style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+        SettingCheck("隐藏 root：File.exists(su)/Runtime.exec/SystemProperties 过滤", antiRoot) { antiRoot = it }
+        SettingCheck("隐藏 Xposed：loadClass/StackTrace/DexPathList/Modifier 净化", antiXposed) { antiXposed = it }
+        Text("与「探测」页的环境检测互为镜像：开反检测后可用 EnvProbe 验证目标 App 还检测到啥",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
         Button(onClick = { sendAll() }, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
             Text("下发配置")

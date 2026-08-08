@@ -40,8 +40,33 @@ data class HookEntry(val cls: String, val method: String, val params: String) {
     fun display(): String = "$cls.$method($params)"
 }
 
-data class HijackEntry(val cls: String, val method: String, val params: String, val value: String) {
-    fun display(): String = "$cls.$method($params) -> $value"
+// v1.13: 4 模式 hook 规则（fckvip 借鉴）
+const val MODE_RETURN = 0
+const val MODE_PARAM = 1
+const val MODE_BLOCK = 2
+const val MODE_STATIC = 3
+
+fun modeName(mode: Int): String = when (mode) {
+    MODE_RETURN -> "返回值"
+    MODE_PARAM -> "参数值"
+    MODE_BLOCK -> "拦截执行"
+    MODE_STATIC -> "静态变量"
+    else -> "模式$mode"
+}
+
+data class HijackEntry(val cls: String, val method: String, val params: String, val mode: Int,
+                       val value: String, val paramValue: String,
+                       val fieldName: String, val fieldType: String, val fieldValue: String) {
+    fun display(): String {
+        val detail = when (mode) {
+            MODE_RETURN -> "-> $value"
+            MODE_PARAM -> "改参[$paramValue]"
+            MODE_BLOCK -> "== 拦截 =="
+            MODE_STATIC -> "$fieldName($fieldType) = $fieldValue"
+            else -> "-> $value"
+        }
+        return "[${modeName(mode)}] $cls.$method($params) $detail"
+    }
 }
 
 class SpyApi(private var port: Int = 9901) {
@@ -251,13 +276,21 @@ class SpyApi(private var port: Int = 9901) {
         } catch (t: Throwable) { emptyList() }
     }
 
-    fun setHijack(cls: String, method: String, params: String, value: String?) {
+    // v1.13: 4 模式规则设置（mode: 0=返回值 1=参数值 2=拦截执行 3=静态变量）；value=null 取消
+    fun setHijack(cls: String, method: String, params: String, mode: Int = MODE_RETURN,
+                  value: String? = null, paramValue: String = "",
+                  fieldName: String = "", fieldType: String = "", fieldValue: String = "") {
         try {
             val o = JSONObject()
             o.put("class", cls)
             o.put("method", method)
             o.put("params", params)
+            o.put("mode", mode)
             if (value == null) o.put("value", JSONObject.NULL) else o.put("value", value)
+            o.put("paramValue", paramValue)
+            o.put("fieldName", fieldName)
+            o.put("fieldType", fieldType)
+            o.put("fieldValue", fieldValue)
             httpPost("/api/hijack", o.toString())
         } catch (t: Throwable) { }
     }
@@ -274,7 +307,12 @@ class SpyApi(private var port: Int = 9901) {
                     cls = h.optString("class", "?"),
                     method = h.optString("method", "?"),
                     params = h.optString("params", ""),
-                    value = h.optString("value", "")
+                    mode = h.optInt("mode", MODE_RETURN),
+                    value = h.optString("value", ""),
+                    paramValue = h.optString("paramValue", ""),
+                    fieldName = h.optString("fieldName", ""),
+                    fieldType = h.optString("fieldType", ""),
+                    fieldValue = h.optString("fieldValue", "")
                 ))
             }
             list

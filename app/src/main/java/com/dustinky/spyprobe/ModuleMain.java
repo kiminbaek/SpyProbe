@@ -52,6 +52,8 @@ public class ModuleMain extends XposedModule {
         // v1.9: 环境检测探测 + DexKit（导出 dex / 字符串反查）
         EnvProbe env = new EnvProbe(this, cl);
         DexKitProbe dexKit = new DexKitProbe(this, cl, pkg);
+        // v1.13: 反检测 hook 集（隐藏 root/Xposed，防目标 App 检测）
+        AntiDetectProbe anti = new AntiDetectProbe(this, cl);
         // v1.6: 规则持久化偏好（模块远程偏好，不污染目标 app 数据）
         android.content.SharedPreferences rulesPrefs = getRemotePreferences("spyprobe_rules");
         SpyServer server = new SpyServer(net, mth, clsProbe, pkg, rulesPrefs, dexKit);
@@ -99,6 +101,12 @@ public class ModuleMain extends XposedModule {
                 prefs.install("late");
                 // v1.9: 环境检测探测（延迟装，避免 hook File.exists 影响启动期）
                 env.install("late");
+                // v1.13: 反检测 hook 集（延迟装；hook File/Runtime 等高频类，避开启动风暴）
+                try {
+                    anti.install();
+                } catch (Throwable t) {
+                    log(Log.ERROR, TAG, "anti-detect install error: " + t);
+                }
                 server.start();
             } catch (Throwable t) {
                 log(Log.ERROR, TAG, "deferred probe install error: " + t);

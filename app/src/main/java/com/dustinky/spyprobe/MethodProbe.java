@@ -277,23 +277,46 @@ public class MethodProbe {
         List<Object> args = chain.getArgs();
         String caller = thiz != null ? thiz.getClass().getName() : "<static>";
 
-        // v1.4: 返回值劫持 —— 命中规则直接返回强制值，不执行原方法（去检测/去付费的万能钥匙）
+        // v1.4/v1.13: hook 规则（4 模式：返回值/参数值/拦截执行/静态变量）—— 命中规则改行为，不执行原方法
         try {
             java.lang.reflect.Executable exe = chain.getExecutable();
             if (exe instanceof java.lang.reflect.Method) {
                 java.lang.reflect.Method m = (java.lang.reflect.Method) exe;
-                Config.HijackRule hijack = Config.get().findHijack(
+                Config.HijackRule rule = Config.get().findHijack(
                         m.getDeclaringClass().getName(), m.getName(), joinParams(m.getParameterTypes()));
-                if (hijack != null) {
-                    Object forced = coerceReturn(m.getReturnType(), hijack.returnValue);
-                    String ft = forced == null ? "null" : forced.getClass().getSimpleName();
-                    LogStore.get().log(TAG, "[HIJACK] " + m.getDeclaringClass().getName() + "." + m.getName()
-                            + "(" + joinParams(m.getParameterTypes()) + ") -> 强制返回 " + hijack.returnValue + " (" + ft + ")");
-                    return forced;
+                if (rule != null) {
+                    switch (rule.mode) {
+                        case Config.MODE_RETURN: {
+                            Object forced = coerceReturn(m.getReturnType(), rule.returnValue);
+                            String ft = forced == null ? "null" : forced.getClass().getSimpleName();
+                            LogStore.get().log(TAG, "[RULE:return] " + m.getDeclaringClass().getName() + "." + m.getName()
+                                    + "(" + joinParams(m.getParameterTypes()) + ") -> " + rule.returnValue + " (" + ft + ")");
+                            return forced;
+                        }
+                        case Config.MODE_BLOCK: {
+                            LogStore.get().log(TAG, "[RULE:block] " + m.getDeclaringClass().getName() + "." + m.getName()
+                                    + "(" + joinParams(m.getParameterTypes()) + ") 已拦截执行（不执行原方法）");
+                            return nullFor(m.getReturnType());
+                        }
+                        case Config.MODE_PARAM: {
+                            LogStore.get().log(TAG, "[RULE:param] " + m.getDeclaringClass().getName() + "." + m.getName()
+                                    + "(" + joinParams(m.getParameterTypes()) + ") 改参数: " + rule.paramValue);
+                            applyParamValues(args, rule.paramValue);
+                            // 参数修改后继续执行原方法
+                            break;
+                        }
+                        case Config.MODE_STATIC: {
+                            boolean ok = setStaticField(m.getDeclaringClass(), rule.fieldName, rule.fieldType, rule.fieldValue);
+                            LogStore.get().log(TAG, "[RULE:static] " + m.getDeclaringClass().getName() + "." + rule.fieldName
+                                    + " = " + rule.fieldValue + " ok=" + ok);
+                            // 静态字段写完后照常执行原方法
+                            break;
+                        }
+                    }
                 }
             }
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[hijack] check fail: " + t);
+            LogStore.get().log(TAG, "[rule] check fail: " + t);
         }
 
         // v1.6: 轻量模式（关详细）只记参数摘要，跳过字段快照+调用栈（hook 高频方法时性能关键）
@@ -362,6 +385,76 @@ public class MethodProbe {
             FIELD_CACHE.put(c, f);
         }
         return f;
+    }
+
+    /** v1.13: 基础类型返回 null/0（MODE_BLOCK 拦截执行时用） */
+    private static Object nullFor(Class<?> rt) {
+        if (rt == boolean.class) return Boolean.FALSE;
+        if (rt == int.class) return Integer.valueOf(0);
+        if (rt == long.class) return Long.valueOf(0L);
+        if (rt == float.class) return Float.valueOf(0f);
+        if (rt == double.class) return Double.valueOf(0d);
+        if (rt == short.class) return Short.valueOf((short) 0);
+        if (rt == byte.class) return Byte.valueOf((byte) 0);
+        if (rt == char.class) return Character.valueOf('\0');
+        return null;
+    }
+
+    /** v1.13: 按 "0:值,1:值" 格式改写方法入参（MODE_PARAM） */
+    private static void applyParamValues(List<Object> args, String spec) {
+        if (spec == null || spec.isEmpty()) return;
+        String[] pairs = spec.split(",");
+        for (String pair : pairs) {
+            String[] kv = pair.split(":", 2);
+            if (kv.length != 2) continue;
+            try {
+                int idx = Integer.parseInt(kv[0].trim());
+                if (idx < 0 || idx >= args.size()) continue;
+                Object cur = args.get(idx);
+                Object val = coerceValue(cur == null ? Object.class : cur.getClass(), kv[1].trim());
+                args.set(idx, val);
+            } catch (Throwable t) {
+                LogStore.get().log(TAG, "[rule:param] parse fail: " + pair + " : " + t);
+            }
+        }
+    }
+
+    /** v1.13: 写静态字段（MODE_STATIC），支持 int/long/boolean/float/double/String 等基础类型 */
+    private static boolean setStaticField(Class<?> cls, String fieldName, String fieldType, String fieldValue) {
+        if (cls == null || fieldName == null || fieldName.isEmpty()) return false;
+        try {
+            java.lang.reflect.Field f = cls.getDeclaredField(fieldName);
+            f.setAccessible(true);
+            if (!java.lang.reflect.Modifier.isStatic(f.getModifiers())) {
+                LogStore.get().log(TAG, "[rule:static] " + cls.getName() + "." + fieldName + " 不是静态字段，跳过");
+                return false;
+            }
+            Class<?> ft = f.getType();
+            Object val = coerceValue(ft, fieldValue == null ? "" : fieldValue.trim());
+            f.set(null, val);
+            return true;
+        } catch (Throwable t) {
+            LogStore.get().log(TAG, "[rule:static] set fail " + cls.getName() + "." + fieldName + " : " + t);
+            return false;
+        }
+    }
+
+    /** v1.13: 按目标类型解析字符串值（参数/静态字段共用） */
+    private static Object coerceValue(Class<?> target, String val) {
+        try {
+            if (target == boolean.class || target == Boolean.class) return Boolean.parseBoolean(val);
+            if (target == int.class || target == Integer.class) return Integer.parseInt(val);
+            if (target == long.class || target == Long.class) return Long.parseLong(val);
+            if (target == float.class || target == Float.class) return Float.parseFloat(val);
+            if (target == double.class || target == Double.class) return Double.parseDouble(val);
+            if (target == short.class || target == Short.class) return Short.parseShort(val);
+            if (target == byte.class || target == Byte.class) return Byte.parseByte(val);
+            if (target == char.class || target == Character.class) return val.isEmpty() ? '\0' : val.charAt(0);
+            if (target == String.class) return val;
+        } catch (Throwable t) {
+            LogStore.get().log(TAG, "[rule] coerce fail (" + target.getSimpleName() + ", \"" + val + "\"): " + t);
+        }
+        return null;
     }
 
     /** v1.4: 按返回类型把字符串强制值转成返回值 */

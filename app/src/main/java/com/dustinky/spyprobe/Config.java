@@ -39,6 +39,9 @@ public class Config {
     public volatile int bodyLimit = 2048;          // 记录响应体最大字节
     // v1.12: 日志环形缓冲容量（LogStore 动态读取，防日志无限增长；借鉴 Guise 日志归档容量思想）
     public volatile int logLimit = 4096;
+    // v1.13: 反检测开关（隐藏 root/Xposed 痕迹，防目标 App 检测；fckvip hook_hide_root 借鉴）
+    public volatile boolean antiRoot = false;      // 隐藏 root：File.exists(su)/Runtime.exec/SystemProperties 过滤
+    public volatile boolean antiXposed = false;   // 隐藏 Xposed：loadClass/StackTrace/DexPathList/Modifier.isNative
 
     // ===== 方法探测 hook 列表（动态下发）=====
     public static class HookSpec {
@@ -64,33 +67,65 @@ public class Config {
         }
     }
 
-    /** v1.4: 返回值劫持规则（命中后 hook 回调直接返回强制值，不执行原方法） */
+    // v1.13: 通用 hook 规则模式（fckvip 借鉴——hook 会员解锁 4 模式）
+    public static final int MODE_RETURN = 0; // 返回值：命中后不执行原方法，强制返回指定值（isVip()→true）
+    public static final int MODE_PARAM  = 1; // 参数值：命中后改写方法入参（vipCheck(level)→3）
+    public static final int MODE_BLOCK  = 2; // 拦截执行：命中后方法不执行，返回 null/0（绕过支付校验）
+    public static final int MODE_STATIC = 3; // 静态变量：命中后写静态字段（UserInfo.IS_VIP=true）
+
+    /** v1.13: 通用 hook 规则（原 HijackRule 升级为 4 模式；v1.4 的返回值劫持 = mode RETURN） */
     public static class HijackRule {
         public final String className;
         public final String methodName;
         public final String paramTypes;
-        public final String returnValue; // 字符串形式，按方法返回类型解析：true/false/数字/文本/null
+        public final int mode;             // MODE_RETURN / MODE_PARAM / MODE_BLOCK / MODE_STATIC
+        public final String returnValue;   // MODE_RETURN：字符串形式，按方法返回类型解析：true/false/数字/文本/null
+        public final String paramValue;    // MODE_PARAM：格式 "0:值,1:值"（索引:值）
+        public final String fieldName;     // MODE_STATIC：静态字段名
+        public final String fieldType;     // MODE_STATIC：字段类型（int/long/boolean/float/double/String/...）
+        public final String fieldValue;    // MODE_STATIC：字段值
 
         public HijackRule(String className, String methodName, String paramTypes, String returnValue) {
+            this(className, methodName, paramTypes, MODE_RETURN, returnValue, "", "", "", "");
+        }
+
+        public HijackRule(String className, String methodName, String paramTypes, int mode,
+                          String returnValue, String paramValue, String fieldName, String fieldType, String fieldValue) {
             this.className = className;
             this.methodName = methodName;
             this.paramTypes = paramTypes;
+            this.mode = mode;
             this.returnValue = returnValue;
+            this.paramValue = paramValue;
+            this.fieldName = fieldName;
+            this.fieldType = fieldType;
+            this.fieldValue = fieldValue;
         }
     }
 
     public final List<HijackRule> hijacks = new CopyOnWriteArrayList<>();
 
     public synchronized void addHijack(String className, String methodName, String paramTypes, String returnValue) {
-        // 同 class#method(params) 去重更新
+        addRule(className, methodName, paramTypes, MODE_RETURN, returnValue, "", "", "", "");
+    }
+
+    /** v1.13: 通用规则新增/更新（同 class#method(params)+mode 去重） */
+    public synchronized void addRule(String className, String methodName, String paramTypes, int mode,
+                                     String returnValue, String paramValue, String fieldName, String fieldType, String fieldValue) {
+        String pts = paramTypes == null ? "" : paramTypes;
         for (HijackRule h : hijacks) {
             if (h.className.equals(className) && h.methodName.equals(methodName)
-                    && h.paramTypes.equals(paramTypes == null ? "" : paramTypes)) {
+                    && h.paramTypes.equals(pts) && h.mode == mode) {
                 hijacks.remove(h);
                 break;
             }
         }
-        hijacks.add(new HijackRule(className, methodName, paramTypes == null ? "" : paramTypes, returnValue));
+        hijacks.add(new HijackRule(className, methodName, pts, mode,
+                returnValue == null ? "" : returnValue,
+                paramValue == null ? "" : paramValue,
+                fieldName == null ? "" : fieldName,
+                fieldType == null ? "" : fieldType,
+                fieldValue == null ? "" : fieldValue));
     }
 
     public synchronized boolean removeHijack(String className, String methodName, String paramTypes) {
@@ -212,7 +247,12 @@ public class Config {
                 o.put("c", h.className);
                 o.put("m", h.methodName);
                 o.put("p", h.paramTypes == null ? "" : h.paramTypes);
+                o.put("mode", h.mode);
                 o.put("v", h.returnValue);
+                o.put("pv", h.paramValue);
+                o.put("fn", h.fieldName);
+                o.put("ft", h.fieldType);
+                o.put("fv", h.fieldValue);
                 jArr.put(o);
             }
             prefs.edit().putString(KEY_HOOKS, hArr.toString()).putString(KEY_HIJACKS, jArr.toString()).apply();
@@ -238,7 +278,10 @@ public class Config {
                 org.json.JSONArray arr = new org.json.JSONArray(jStr);
                 for (int i = 0; i < arr.length(); i++) {
                     org.json.JSONObject o = arr.getJSONObject(i);
-                    addHijack(o.optString("c"), o.optString("m"), o.optString("p"), o.optString("v"));
+                    // v1.13: 兼容旧格式（无 mode 字段 = 返回值劫持）
+                    int mode = o.optInt("mode", MODE_RETURN);
+                    addRule(o.optString("c"), o.optString("m"), o.optString("p"), mode,
+                            o.optString("v"), o.optString("pv"), o.optString("fn"), o.optString("ft"), o.optString("fv"));
                     loaded = true;
                 }
             }

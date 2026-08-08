@@ -249,6 +249,9 @@ public class SpyServer {
                         if (c.has("tls")) cfg.tlsCapture = c.getBoolean("tls");
                         if (c.has("connect")) cfg.connectCapture = c.getBoolean("connect");
                         if (c.has("cronet")) cfg.cronetCapture = c.getBoolean("cronet");
+                        // v1.13: 反检测开关（隐藏 root/Xposed，防目标 App 检测）
+                        if (c.has("antiRoot")) cfg.antiRoot = c.getBoolean("antiRoot");
+                        if (c.has("antiXposed")) cfg.antiXposed = c.getBoolean("antiXposed");
                         LogStore.get().log(TAG, "config updated: " + body);
                     }
                     JSONObject o = new JSONObject();
@@ -276,6 +279,8 @@ public class SpyServer {
                     o.put("tls", Config.get().tlsCapture);
                     o.put("connect", Config.get().connectCapture);
                     o.put("cronet", Config.get().cronetCapture);
+                    o.put("antiRoot", Config.get().antiRoot);     // v1.13
+                    o.put("antiXposed", Config.get().antiXposed); // v1.13
                     return o.toString();
                 }
                 case "/api/classes": {
@@ -359,7 +364,9 @@ public class SpyServer {
                     return o.toString();
                 }
                 case "/api/hijack": {
-                    // POST {"class","method","params","value":"true"} 设置劫持；value 为 JSON null 则取消
+                    // v1.13: POST {"class","method","params","mode","value","paramValue","fieldName","fieldType","fieldValue"}
+                    // mode: 0=返回值(默认,兼容旧版) 1=参数值 2=拦截执行 3=静态变量
+                    // value 为 JSON null 则取消（匹配 class#method(params)+mode）
                     JSONObject c = new JSONObject(body);
                     String cls = c.optString("class", "");
                     String methodName = c.optString("method", "");
@@ -373,14 +380,21 @@ public class SpyServer {
                         ro.put("removed", removed);
                         return ro.toString();
                     }
+                    int mode = c.optInt("mode", Config.MODE_RETURN);
                     String value = c.optString("value", "");
-                    Config.get().addHijack(cls, methodName, params, value);
-                    LogStore.get().log(TAG, "[hijack] " + cls + "." + methodName + "(" + params + ") -> " + value);
+                    String paramValue = c.optString("paramValue", "");
+                    String fieldName = c.optString("fieldName", "");
+                    String fieldType = c.optString("fieldType", "");
+                    String fieldValue = c.optString("fieldValue", "");
+                    Config.get().addRule(cls, methodName, params, mode, value, paramValue, fieldName, fieldType, fieldValue);
+                    LogStore.get().log(TAG, "[hijack] " + cls + "." + methodName + "(" + params + ") mode=" + mode
+                            + " value=" + value + " pv=" + paramValue + " f=" + fieldName + ":" + fieldType + "=" + fieldValue);
                     if (rulesPrefs != null) Config.get().saveRules(rulesPrefs); // v1.6
                     JSONObject o = new JSONObject();
                     o.put("ok", true);
                     o.put("class", cls);
                     o.put("method", methodName);
+                    o.put("mode", mode);
                     o.put("value", value);
                     return o.toString();
                 }
@@ -391,7 +405,12 @@ public class SpyServer {
                         o.put("class", h.className);
                         o.put("method", h.methodName);
                         o.put("params", h.paramTypes);
+                        o.put("mode", h.mode);
                         o.put("value", h.returnValue);
+                        o.put("paramValue", h.paramValue);
+                        o.put("fieldName", h.fieldName);
+                        o.put("fieldType", h.fieldType);
+                        o.put("fieldValue", h.fieldValue);
                         arr.put(o);
                     }
                     JSONObject o = new JSONObject();
