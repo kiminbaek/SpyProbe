@@ -1,8 +1,11 @@
 package com.dustinky.spyprobe.ui
 
+import android.graphics.Bitmap
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -12,10 +15,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -41,12 +46,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -294,10 +301,20 @@ private fun TargetPickerDialog(vm: SpyViewModel, onDismiss: () -> Unit) {
                                     onDismiss()
                                 }
                         ) {
-                            Column(Modifier.padding(horizontal = 8.dp, vertical = 8.dp)) {
-                                Text(app.label, style = MaterialTheme.typography.bodyMedium)
-                                Text(app.pkg, style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            // v1.12: 应用图标（懒加载 + 8MiB LRU）
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp)
+                            ) {
+                                AppIcon(
+                                    pkg = app.pkg,
+                                    modifier = Modifier.size(36.dp).padding(end = 10.dp)
+                                )
+                                Column {
+                                    Text(app.label, style = MaterialTheme.typography.bodyMedium)
+                                    Text(app.pkg, style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
                             }
                         }
                         HorizontalDivider()
@@ -312,6 +329,23 @@ private fun TargetPickerDialog(vm: SpyViewModel, onDismiss: () -> Unit) {
             TextButton(onClick = onDismiss) { Text("取消") }
         }
     )
+}
+
+/** v1.12: 应用图标（懒加载 + 8MiB LRU）；未加载完成显示占位块，加载失败也显示占位块 */
+@Composable
+private fun AppIcon(pkg: String, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val bmp by produceState<Bitmap?>(null, pkg) {
+        value = withContext(Dispatchers.IO) { AppIconCache.get(context, pkg) }
+    }
+    val b = bmp
+    if (b != null) {
+        Image(bitmap = b.asImageBitmap(), contentDescription = null, modifier = modifier)
+    } else {
+        androidx.compose.foundation.layout.Box(
+            modifier = modifier.background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(6.dp))
+        )
+    }
 }
 
 @Composable

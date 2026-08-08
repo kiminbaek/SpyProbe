@@ -21,6 +21,9 @@ SpyProbe 是一个运行在目标 App 进程内的全面探测工具，专为**�
 - ✅ **万能连接点**（v1.9）：BlockGuardOs.connect 覆盖所有 socket（含 QUIC/HTTP3）
 - ✅ **环境检测探测**（v1.9）：记录 App 检测行为（root 路径/命令/属性/vpn/传感器/防截屏/剪贴板/设备指纹），反编译知道要绕过什么
 - ✅ **Native 层抓包**（v1.10）：shadowhook inline hook——libc 七函数（send/recv/read/write）+ 4 个 SSL 库（libssl/conscrypt/ttboringssl/**libflutter**）TLS 解密明文 + HTTP/2 帧解析，专治 Flutter/Unity 纯 native 网络栈（Java hook 盲区）
+- ✅ **Hook 失败隔离**（v1.12）：动态 hook 回调最外层兜底，任何探测逻辑异常都不拖垮目标方法（借鉴 Guise 隔离原则）
+- ✅ **应用图标懒加载 + 8MiB LRU**（v1.12）：目标选择列表图标按需加载（LazyColumn 懒组合），内存超限自动淘汰最久未用
+- ✅ **日志容量可配置**（v1.12）：日志环形缓冲上限 100-20000 条可调（默认 4096），防日志无限增长
 
 ## 架构
 
@@ -40,7 +43,7 @@ SpyProbe 是一个运行在目标 App 进程内的全面探测工具，专为**�
 ├─ EnvProbe      —— 环境检测探测：root/vpn/传感器/防截屏/设备指纹（v1.9）
 ├─ StackUtil     —— 调用栈工具（v1.9）
 ├─ NativeProbe   —— native 层抓包：shadowhook libc/SSL/HTTP2 + JNI 桥接 LogStore（v1.10）
-├─ LogStore      —— 环形缓冲日志（4096 条）
+├─ LogStore      —— 环形缓冲日志（默认 4096 条，容量可配置 v1.12）
 └─ SpyServer     —— 本地 HTTP server（127.0.0.1:9901-9910，多进程自动偏移）
 
 控制台 App（MainActivity）
@@ -49,7 +52,7 @@ SpyProbe 是一个运行在目标 App 进程内的全面探测工具，专为**�
 
 ## 使用
 
-1. 安装 `SpyProbe-v1.9.apk`
+1. 安装 `SpyProbe-v1.12.apk`
 2. 在 LSPosed 中勾选目标 App 作用域
 3. 重启目标 App
 4. 打开 SpyProbe 控制台，自动发现端口（9901-9910）并连接
@@ -79,6 +82,9 @@ SpyProbe 是一个运行在目标 App 进程内的全面探测工具，专为**�
 
 | 版本 | 说明 |
 |:-----|:-----|
+| v1.12 | Guise 借鉴 ×3：Hook 失败隔离（回调最外层兜底）/ 应用图标懒加载 + 8MiB LRU / 日志容量可配置（100-20000） |
+| v1.11 | Compose UI 重构：Kotlin + Material3 深色主题 + 4 Tab 底部导航（抓包/探测/Hook/设置），日志流 LazyColumn 化 |
+| v1.10 | Native 层抓包：shadowhook hook libc 七函数 + 4 SSL 库 TLS 解密 + HTTP/2 帧解析，专治 Flutter/Unity |
 | v1.9 | DexKit（导出 dex + 字符串反查）/ 环境检测探测 / TLS 明文抓包 / 万能连接点 / Cronet |
 | v1.5 | 全面审核 + 反编译难点增强：URL 捕捉 / Crypto / Log 拦截 / Activity / JSON 5 大新 Probe + isNative 标记 |
 | v1.4 | 增强模式：返回值劫持 + SQLite 记录 |

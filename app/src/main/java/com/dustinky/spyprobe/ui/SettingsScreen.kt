@@ -49,6 +49,7 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
 
     // 配置状态（默认值 = 后端 Config 默认）
     var bodyLimit by remember { mutableStateOf("2048") }
+    var logLimit by remember { mutableStateOf("4096") } // v1.12: 日志环形缓冲容量
     var webView by remember { mutableStateOf(true) }
     var prefs by remember { mutableStateOf(false) }
     var sqlite by remember { mutableStateOf(true) }
@@ -70,6 +71,7 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
         val limit = bodyLimit.trim().toIntOrNull() ?: 2048
         vm.sendConfig(mapOf(
             "bodyLimit" to limit,
+            "logLimit" to (logLimit.trim().toIntOrNull() ?: 4096), // v1.12
             "webView" to webView,
             "prefs" to prefs,
             "sqlite" to sqlite,
@@ -100,6 +102,13 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             value = bodyLimit,
             onValueChange = { bodyLimit = it },
             label = { Text("响应体记录上限(字节)，0=不记录body") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = logLimit,
+            onValueChange = { logLimit = it },
+            label = { Text("日志环形缓冲上限(条)，默认 4096") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth()
         )

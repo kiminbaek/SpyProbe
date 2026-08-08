@@ -233,6 +233,8 @@ public class SpyServer {
                         if (c.has("classFilter")) cfg.classFilter = c.optString("classFilter", "");
                         if (c.has("classLogAll")) cfg.classLogAll = c.getBoolean("classLogAll");
                         if (c.has("bodyLimit")) cfg.bodyLimit = Math.max(0, Math.min(1 << 20, c.getInt("bodyLimit")));
+                        // v1.12: 日志环形缓冲容量可配置（100-20000）
+                        if (c.has("logLimit")) cfg.logLimit = Math.max(100, Math.min(20000, c.getInt("logLimit")));
                         if (c.has("webView")) cfg.webViewCapture = c.getBoolean("webView");
                         if (c.has("prefs")) cfg.prefsCapture = c.getBoolean("prefs");
                         if (c.has("sqlite")) cfg.sqliteCapture = c.getBoolean("sqlite");
@@ -260,6 +262,7 @@ public class SpyServer {
                     o.put("classFilter", Config.get().classFilter);
                     o.put("classLogAll", Config.get().classLogAll);
                     o.put("bodyLimit", Config.get().bodyLimit);
+                    o.put("logLimit", Config.get().logLimit); // v1.12
                     o.put("webView", Config.get().webViewCapture);
                     o.put("prefs", Config.get().prefsCapture);
                     o.put("sqlite", Config.get().sqliteCapture);

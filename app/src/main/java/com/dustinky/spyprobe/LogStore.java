@@ -14,10 +14,10 @@ import java.util.Locale;
  *
  * v1.6: 底层 ArrayList → ArrayDeque（淘汰最旧 remove(0) O(n) → pollFirst O(1)，
  * 高刷屏场景下 Log 写入不再随容量线性退化）。
+ * v1.12: 容量可配置（Config.logLimit，默认 4096，范围 100-20000 由 SpyServer 限制）。
  */
 public class LogStore {
 
-    private static final int MAX_ENTRIES = 4096;
     private final Deque<Entry> entries = new ArrayDeque<>();
     private long seq = 0;
     private final SimpleDateFormat fmt = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
@@ -42,7 +42,9 @@ public class LogStore {
     public synchronized void log(String tag, String msg) {
         String t = fmt.format(new Date());
         entries.addLast(new Entry(++seq, t, tag, msg));
-        while (entries.size() > MAX_ENTRIES) entries.pollFirst();
+        // v1.12: 容量动态可配置（Config.logLimit）
+        int limit = Config.get().logLimit;
+        while (entries.size() > limit) entries.pollFirst();
     }
 
     /** 返回 seq > since 的条目 */

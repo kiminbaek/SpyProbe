@@ -261,6 +261,18 @@ public class MethodProbe {
 
     /** 通用调用拦截：劫持检查(v1.4) + 打印方法 + 参数 + 实例字段值(v1.2) + 返回值 + 调用栈 */
     private static Object onInvoke(io.github.libxposed.api.XposedInterface.Chain chain) throws Throwable {
+        // v1.12: Hook 失败隔离（借鉴 Guise 原则）—— 最外层兜底，探测逻辑任何异常都不拖垮目标方法
+        try {
+            return onInvokeInner(chain);
+        } catch (Throwable t) {
+            try {
+                LogStore.get().log(TAG, "[invoke] probe fail (isolated): " + t);
+            } catch (Throwable ignored) { }
+            return chain.proceed(); // 探测异常不影响原方法执行
+        }
+    }
+
+    private static Object onInvokeInner(io.github.libxposed.api.XposedInterface.Chain chain) throws Throwable {
         Object thiz = chain.getThisObject();
         List<Object> args = chain.getArgs();
         String caller = thiz != null ? thiz.getClass().getName() : "<static>";

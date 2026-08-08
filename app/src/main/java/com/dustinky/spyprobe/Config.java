@@ -37,6 +37,8 @@ public class Config {
     public volatile String classFilter = "";       // 类加载关键字过滤（空=全部入库不刷屏）
     public volatile boolean classLogAll = false;   // 匹配类是否刷屏输出到日志
     public volatile int bodyLimit = 2048;          // 记录响应体最大字节
+    // v1.12: 日志环形缓冲容量（LogStore 动态读取，防日志无限增长；借鉴 Guise 日志归档容量思想）
+    public volatile int logLimit = 4096;
 
     // ===== 方法探测 hook 列表（动态下发）=====
     public static class HookSpec {
