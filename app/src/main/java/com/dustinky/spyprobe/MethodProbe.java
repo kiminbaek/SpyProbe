@@ -26,6 +26,9 @@ public class MethodProbe {
     private final XposedModule module;
     private final ClassLoader appCl;
 
+    // v1.19: 全自动探测已处理类集合（防类加载时重复 hook 刷屏 skip 日志）
+    private final java.util.Set<String> autoHooked = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     public MethodProbe(XposedModule module, ClassLoader appCl) {
         this.module = module;
         this.appCl = appCl;
@@ -185,8 +188,11 @@ public class MethodProbe {
 
     private String hookConstructors(Class<?> cls, String paramTypes) throws Throwable {
         int hooked = 0;
+        java.util.List<String> candidates = null; // v1.19 P2-3: 0 命中时给候选签名提示
         for (Constructor<?> c : cls.getDeclaredConstructors()) {
             if (paramTypes != null && !paramTypes.isEmpty() && !matchParams(c.getParameterTypes(), paramTypes)) {
+                if (candidates == null) candidates = new java.util.ArrayList<>();
+                candidates.add("<init>(" + joinParams(c.getParameterTypes()) + ")");
                 continue;
             }
             // v1.7: 句柄 key 用具体签名（防重载全部 hook 时只挂第一个）；paramTypes 仅作 UI 过滤
@@ -202,8 +208,20 @@ public class MethodProbe {
         JSONObject out = new JSONObject();
         out.put("ok", true);
         out.put("hooked", hooked);
-        out.put("note", cls.getName() + " <init>");
-        LogStore.get().log(TAG, "[hook] <init> x" + hooked + " " + cls.getName());
+        if (hooked == 0 && candidates != null && !candidates.isEmpty()) {
+            // v1.19 P2-3: 参数类型不匹配 → 返回候选重载签名
+            StringBuilder note = new StringBuilder("参数不匹配，候选重载: ");
+            for (int i = 0; i < candidates.size() && i < 8; i++) {
+                if (i > 0) note.append("  ");
+                note.append(candidates.get(i));
+            }
+            if (candidates.size() > 8) note.append(" ... 共 ").append(candidates.size()).append(" 个");
+            out.put("note", note.toString());
+            LogStore.get().log(TAG, "[hook] <init> 0 match, candidates: " + candidates.size());
+        } else {
+            out.put("note", cls.getName() + " <init>");
+            LogStore.get().log(TAG, "[hook] <init> x" + hooked + " " + cls.getName());
+        }
         return out.toString();
     }
 
@@ -211,27 +229,106 @@ public class MethodProbe {
         int hooked = 0;
         // v1.14: 方法名 "*" = hook 类内全部方法（借鉴 SimpleHook findAllMethods 通配）
         boolean allMethods = methodName.equals("*");
+        java.util.List<String> candidates = null; // v1.19 P2-3: 0 命中时给候选签名提示
         for (Method m : cls.getDeclaredMethods()) {
             if (!allMethods && !m.getName().equals(methodName)) continue;
             if (paramTypes != null && !paramTypes.isEmpty() && !matchParams(m.getParameterTypes(), paramTypes)) {
+                if (candidates == null) candidates = new java.util.ArrayList<>();
+                candidates.add(m.getName() + "(" + joinParams(m.getParameterTypes()) + ")");
                 continue;
             }
             // v1.7: 句柄 key 用具体签名（防重载全部 hook 时只挂第一个）
+            // v1.19 P1-2: key 用真实方法名 m.getName() —— 通配 "*" 时 methodName="*"，
+            //   若用它做 key 则 hasHandle 永远查不到已 hook 句柄 → 重复 hook 无限叠加
             String sigKey = joinParams(m.getParameterTypes());
-            if (Config.get().hasHandle(cls.getName(), methodName, sigKey)) {
-                LogStore.get().log(TAG, "[hook] skip (already hooked): " + cls.getName() + "." + methodName + "(" + sigKey + ")");
+            if (Config.get().hasHandle(cls.getName(), m.getName(), sigKey)) {
+                LogStore.get().log(TAG, "[hook] skip (already hooked): " + cls.getName() + "." + m.getName() + "(" + sigKey + ")");
                 continue;
             }
             XposedInterface.HookHandle h = module.hook(m).intercept(MethodProbe::onInvoke);
-            Config.get().addHandle(cls.getName(), methodName, sigKey, h);
+            Config.get().addHandle(cls.getName(), m.getName(), sigKey, h);
             hooked++;
         }
         JSONObject out = new JSONObject();
         out.put("ok", true);
         out.put("hooked", hooked);
-        out.put("note", cls.getName() + "." + methodName + "(" + (paramTypes == null ? "" : paramTypes) + ")");
-        LogStore.get().log(TAG, "[hook] " + cls.getName() + "." + methodName + " x" + hooked);
+        if (hooked == 0 && candidates != null && !candidates.isEmpty()) {
+            // v1.19 P2-3: 参数类型不匹配 → 返回候选重载签名
+            StringBuilder note = new StringBuilder("参数不匹配，候选重载: ");
+            for (int i = 0; i < candidates.size() && i < 8; i++) {
+                if (i > 0) note.append("  ");
+                note.append(candidates.get(i));
+            }
+            if (candidates.size() > 8) note.append(" ... 共 ").append(candidates.size()).append(" 个");
+            out.put("note", note.toString());
+            LogStore.get().log(TAG, "[hook] " + cls.getName() + "." + methodName + " 0 match, candidates: " + candidates.size());
+        } else {
+            out.put("note", cls.getName() + "." + methodName + "(" + (paramTypes == null ? "" : paramTypes) + ")");
+            LogStore.get().log(TAG, "[hook] " + cls.getName() + "." + methodName + " x" + hooked);
+        }
         return out.toString();
+    }
+
+    /** v1.19 探测 b: 全自动 hook 类全部方法（类加载时由 ClassLoadProbe 触发）。
+     *  跳过系统类 / 接口 / Object 继承方法；autoHooked 去重防类重复加载时重复 hook。 */
+    public String hookClassAuto(String className) {
+        try {
+            if (!autoHooked.add(className)) return null; // 已处理过（防 skip 日志刷屏）
+            Class<?> cls = Class.forName(className, false, appCl);
+            if (cls.isInterface()) return null;
+            String n = cls.getName();
+            if (n.startsWith("java.") || n.startsWith("javax.") || n.startsWith("android.")
+                    || n.startsWith("sun.") || n.startsWith("kotlin.") || n.startsWith("kotlinx.")) {
+                return null; // 系统类不自动 hook
+            }
+            int hooked = 0;
+            int skipped = 0;
+            for (Method m : cls.getDeclaredMethods()) {
+                // 跳过 Object 继承的通用方法（equals/hashCode/toString 高频低价值）
+                String mn = m.getName();
+                if ((mn.equals("equals") || mn.equals("hashCode") || mn.equals("toString")
+                        || mn.equals("getClass") || mn.equals("clone") || mn.equals("finalize")) &&
+                        m.getParameterCount() <= 1) {
+                    skipped++;
+                    continue;
+                }
+                String sigKey = joinParams(m.getParameterTypes());
+                if (Config.get().hasHandle(cls.getName(), mn, sigKey)) { skipped++; continue; }
+                try {
+                    XposedInterface.HookHandle h = module.hook(m).intercept(MethodProbe::onInvoke);
+                    Config.get().addHandle(cls.getName(), mn, sigKey, h);
+                    hooked++;
+                } catch (Throwable t) {
+                    skipped++;
+                }
+            }
+            for (Constructor<?> c : cls.getDeclaredConstructors()) {
+                String sigKey = joinParams(c.getParameterTypes());
+                if (Config.get().hasHandle(cls.getName(), "<init>", sigKey)) { skipped++; continue; }
+                try {
+                    XposedInterface.HookHandle h = module.hook(c).intercept(MethodProbe::onInvoke);
+                    Config.get().addHandle(cls.getName(), "<init>", sigKey, h);
+                    hooked++;
+                } catch (Throwable t) {
+                    skipped++;
+                }
+            }
+            if (hooked > 0) {
+                LogStore.get().log(TAG, "[auto] hook " + n + " x" + hooked + " (skip " + skipped + ")");
+            }
+            JSONObject out = new JSONObject();
+            out.put("ok", true);
+            out.put("auto", true);
+            out.put("className", n);
+            out.put("hooked", hooked);
+            out.put("skipped", skipped);
+            return out.toString();
+        } catch (ClassNotFoundException e) {
+            return null;
+        } catch (Throwable t) {
+            LogStore.get().log(TAG, "[auto] hook fail " + className + ": " + t);
+            return null;
+        }
     }
 
     /** 卸载 hook（unhook 内存句柄 + 清 Config.hooks 记录） */

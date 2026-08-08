@@ -40,7 +40,8 @@ public class ModuleMain extends XposedModule {
 
         NetProbe net = new NetProbe(this, cl);
         MethodProbe mth = new MethodProbe(this, cl);
-        ClassLoadProbe clsProbe = new ClassLoadProbe(this, cl);
+        // v1.19 探测 b: 传入 mth 供类加载自动 hook 联动
+        ClassLoadProbe clsProbe = new ClassLoadProbe(this, cl, mth);
         PrefsProbe prefs = new PrefsProbe(this);
         SQLiteProbe sqlite = new SQLiteProbe(this);
         // v1.5: 反编译增强探测

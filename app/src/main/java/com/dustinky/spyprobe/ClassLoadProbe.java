@@ -24,33 +24,29 @@ public class ClassLoadProbe {
 
     private final XposedModule module;
     private final ClassLoader appCl;
+    // v1.19 探测 b: 自动 hook 联动（类加载时调 MethodProbe.hookClassAuto）
+    private final MethodProbe mth;
 
-    public ClassLoadProbe(XposedModule module, ClassLoader appCl) {
+    public ClassLoadProbe(XposedModule module, ClassLoader appCl, MethodProbe mth) {
         this.module = module;
         this.appCl = appCl;
+        this.mth = mth;
     }
 
     public synchronized void install(String phase) {
         // hook 基类 ClassLoader.loadClass(String)（子类会继承，hook 基类一次覆盖所有 loader）
+        // v1.19 P2-4: 1 参重载是 2 参的包装（loadClass(name) 内部调 loadClass(name,false)），
+        //   两个 hook 都 record 会每条刷 2 次 —— 1 参只 proceed，统一由 2 参记录
         try {
             final Method loadClass = ClassLoader.class.getDeclaredMethod("loadClass", String.class);
             loadClass.setAccessible(true);
-            module.hook(loadClass).intercept(chain -> {
-                Object r = chain.proceed();
-                if (Config.get().classCapture) {
-                    Object name = chain.getArg(0);
-                    if (name instanceof String) {
-                        record((String) name);
-                    }
-                }
-                return r;
-            });
+            module.hook(loadClass).intercept(chain -> chain.proceed());
             LogStore.get().log(TAG, "[" + phase + "] hooked ClassLoader.loadClass(String)");
         } catch (Throwable t) {
             LogStore.get().log(TAG, "[" + phase + "] ClassLoader.loadClass hook fail: " + t);
         }
 
-        // hook 带 resolve 的重载（部分加载路径走这个）
+        // hook 带 resolve 的重载（部分加载路径走这个；也是 1 参的内部实现 → 统一在此记录）
         try {
             final Method loadClass2 = ClassLoader.class.getDeclaredMethod("loadClass", String.class, boolean.class);
             loadClass2.setAccessible(true);
@@ -93,6 +89,15 @@ public class ClassLoadProbe {
         } else {
             // 无过滤：只入库不刷屏（最多 MAX_CLASSES）
             loaded.add(name);
+        }
+        // v1.19 探测 b: 全自动探测 —— 类加载时自动 hook 该类全部方法（类名已过滤内部符号）
+        if (Config.get().autoProbe && mth != null) {
+            String af = Config.get().autoProbeFilter;
+            if (af != null && !af.isEmpty()) {
+                if (name.contains(af)) mth.hookClassAuto(name);
+            } else {
+                mth.hookClassAuto(name); // hookClassAuto 内部过滤系统类/接口
+            }
         }
         // 防无限增长（无序集合，随机淘汰一半；类名仅日志/查询用途，顺序不敏感）
         if (loaded.size() > MAX_CLASSES) {

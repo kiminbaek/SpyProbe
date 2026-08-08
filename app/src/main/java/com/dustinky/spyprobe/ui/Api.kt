@@ -178,8 +178,9 @@ class SpyApi(private var port: Int = 9901) {
         } catch (t: Throwable) { null }
     }
 
-    fun sendConfig(map: Map<String, Any>) {
-        try {
+    // v1.19 P2-1: 返回 Boolean —— 成功下发=true（响应含 ok），未连接/异常=false（供 UI 决定是否更新本地快照）
+    fun sendConfig(map: Map<String, Any>): Boolean {
+        return try {
             val o = JSONObject()
             for ((k, v) in map) {
                 when (v) {
@@ -190,8 +191,9 @@ class SpyApi(private var port: Int = 9901) {
                     else -> o.put(k, v.toString())
                 }
             }
-            httpPost("/api/config", o.toString())
-        } catch (t: Throwable) { }
+            val resp = httpPost("/api/config", o.toString()) ?: return false
+            resp.contains("\"ok\":true") || resp.contains("\"ok\": true")
+        } catch (t: Throwable) { false }
     }
 
     // v1.15 P0-3: GET /api/config 回读后端配置（开关状态从后端真实值初始化，不再硬编码默认值）

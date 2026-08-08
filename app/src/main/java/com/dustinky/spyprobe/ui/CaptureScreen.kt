@@ -68,9 +68,19 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
     val status by vm.status.collectAsState()
     val connected by vm.connected.collectAsState()
     val logCount by vm.logCount.collectAsState()
+    val context = LocalContext.current
 
     // v1.15 P0-3: 后端配置快照（开关从后端真实值初始化，不再硬编码默认）
     var cfg by remember { mutableStateOf<Map<String, Any>>(emptyMap()) }
+
+    // v1.19 P2-1: 开关下发成功才更新本地快照（未连接时不显示"已改"假象）
+    fun setSwitch(key: String, value: Boolean) {
+        if (vm.sendConfig(mapOf(key to value))) {
+            cfg = cfg + (key to value)
+        } else {
+            android.widget.Toast.makeText(context, "未连接，开关未生效", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
 
     // v1.18.1: 轮询已移到 ViewModel init 常驻，页面不再 start/stop（否则切页会停掉日志更新）
     LaunchedEffect(Unit) {
@@ -146,14 +156,14 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(bottom = 2.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    SwitchItem("SSL绕过", cfg["sslBypass"] as? Boolean ?: true) { vm.sendConfig(mapOf("sslBypass" to it)); cfg = cfg + ("sslBypass" to it) }
-                    SwitchItem("OkHttp", cfg["okhttp"] as? Boolean ?: true) { vm.sendConfig(mapOf("okhttp" to it)); cfg = cfg + ("okhttp" to it) }
-                    SwitchItem("URLConn", cfg["url"] as? Boolean ?: true) { vm.sendConfig(mapOf("url" to it)); cfg = cfg + ("url" to it) }
+                    SwitchItem("SSL绕过", cfg["sslBypass"] as? Boolean ?: true) { setSwitch("sslBypass", it) }
+                    SwitchItem("OkHttp", cfg["okhttp"] as? Boolean ?: true) { setSwitch("okhttp", it) }
+                    SwitchItem("URLConn", cfg["url"] as? Boolean ?: true) { setSwitch("url", it) }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    SwitchItem("DNS解析", cfg["dns"] as? Boolean ?: true) { vm.sendConfig(mapOf("dns" to it)); cfg = cfg + ("dns" to it) }
-                    SwitchItem("TCP连接", cfg["tcp"] as? Boolean ?: true) { vm.sendConfig(mapOf("tcp" to it)); cfg = cfg + ("tcp" to it) }
-                    SwitchItem("类加载", cfg["classes"] as? Boolean ?: true) { vm.sendConfig(mapOf("classes" to it)); cfg = cfg + ("classes" to it) }
+                    SwitchItem("DNS解析", cfg["dns"] as? Boolean ?: true) { setSwitch("dns", it) }
+                    SwitchItem("TCP连接", cfg["tcp"] as? Boolean ?: true) { setSwitch("tcp", it) }
+                    SwitchItem("类加载", cfg["classes"] as? Boolean ?: true) { setSwitch("classes", it) }
                 }
             }
         }

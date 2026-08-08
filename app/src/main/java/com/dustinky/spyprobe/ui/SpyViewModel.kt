@@ -51,6 +51,11 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
     private val _filter = MutableStateFlow("")
     val filter: StateFlow<String> = _filter.asStateFlow()
 
+    // v1.19 P2-2: 暂停状态提升到 ViewModel（此前在 LogsScreen 局部 remember，
+    //   页面销毁重建时状态丢失 → 轮询被 stopPolling 但 UI 还显示"暂停"）
+    private val _paused = MutableStateFlow(false)
+    val paused: StateFlow<Boolean> = _paused.asStateFlow()
+
     // 状态栏
     private val _status = MutableStateFlow("未连接（目标 App 需在运行）")
     val status: StateFlow<String> = _status.asStateFlow()
@@ -115,6 +120,17 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
         pollingJob = null
     }
 
+    // v1.19 P2-2: 暂停/继续轮询（状态提升，防页面重建状态错位）
+    fun togglePaused() {
+        if (_paused.value) {
+            _paused.value = false
+            startPolling()
+        } else {
+            _paused.value = true
+            stopPolling()
+        }
+    }
+
     fun setFilter(f: String) {
         _filter.value = f
     }
@@ -158,10 +174,14 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------- 配置开关 ----------
-    fun sendConfig(map: Map<String, Any>) {
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) { api.sendConfig(map) }
-        }
+    // v1.19 P2-1: 返回是否成功下发（成功=true；未连接/失败=false，UI 据此决定是否更新本地快照）
+    //   runBlocking 同步等待：本地回环 HTTP 延迟 <10ms，开关点击场景可接受；保证 UI 能拿到真实结果
+    fun sendConfig(map: Map<String, Any>): Boolean {
+        return try {
+            kotlinx.coroutines.runBlocking {
+                withContext(Dispatchers.IO) { api.sendConfig(map) }
+            }
+        } catch (t: Throwable) { false }
     }
 
     // ---------- 应用列表 ----------

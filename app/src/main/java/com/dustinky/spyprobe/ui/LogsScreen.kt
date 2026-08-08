@@ -109,12 +109,10 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
         }
 
         // ===== 操作行：暂停 / 清空 / 导出 =====
-        var paused by remember { mutableStateOf(false) }
+        // v1.19 P2-2: 暂停状态由 ViewModel 持有（页面重建不丢失，轮询与按钮始终一致）
+        val paused by vm.paused.collectAsState()
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 6.dp)) {
-            OutlinedButton(onClick = {
-                paused = !paused
-                if (paused) vm.stopPolling() else vm.startPolling()
-            }, modifier = Modifier.weight(1f)) {
+            OutlinedButton(onClick = { vm.togglePaused() }, modifier = Modifier.weight(1f)) {
                 Text(if (paused) "继续" else "暂停")
             }
             Button(onClick = { vm.clearLogs() }, modifier = Modifier.weight(1f)) {

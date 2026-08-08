@@ -208,13 +208,22 @@ public class AntiDetectProbe {
             } catch (Throwable t) { }
 
             // StackTraceElement.getClassName() —— 调用栈隐藏 xposed 痕迹（fckvip 20 号 hook）
+            // v1.19 P0: 严禁用 thiz.toString() —— StackTraceElement.toString() 内部会调用 getClassName()，
+            //   而 getClassName() 正被本 hook 拦截 → 回调内 toString() → 又进 hook → 无限递归爆栈。
+            //   改用反射读私有字段 declaringClass（绕开 getClassName() 方法，不触发本 hook）。
             try {
                 module.hook(StackTraceElement.class.getMethod("getClassName"))
                         .intercept((chain) -> {
                             if (!Config.get().antiXposed) return chain.proceed();
                             Object thiz = chain.getThisObject();
-                            String cls = thiz == null ? "" : thiz.toString();
-                            if (cls.contains("xposed") || cls.contains("Xposed") || cls.contains("lspd")) {
+                            if (thiz == null) return chain.proceed();
+                            String cls = null;
+                            try {
+                                java.lang.reflect.Field f = StackTraceElement.class.getDeclaredField("declaringClass");
+                                f.setAccessible(true);
+                                cls = (String) f.get(thiz);
+                            } catch (Throwable t) { }
+                            if (cls != null && (cls.contains("xposed") || cls.contains("Xposed") || cls.contains("lspd"))) {
                                 return "";
                             }
                             return chain.proceed();

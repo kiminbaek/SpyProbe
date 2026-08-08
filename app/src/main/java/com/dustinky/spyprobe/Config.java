@@ -44,6 +44,9 @@ public class Config {
     public volatile boolean antiXposed = false;   // 隐藏 Xposed：loadClass/StackTrace/DexPathList/Modifier.isNative
     // v1.15 P0-4: native 层抓包开关（libc+SSL+HTTP2；默认开，高频刷屏时可关）
     public volatile boolean nativeCapture = true;
+    // v1.19: 全自动探测（类加载时自动 hook 该类全部方法，免手动扫描）
+    public volatile boolean autoProbe = false;
+    public volatile String autoProbeFilter = ""; // 关键字过滤（空 = 所有非系统类）
 
     // ===== 方法探测 hook 列表（动态下发）=====
     public static class HookSpec {

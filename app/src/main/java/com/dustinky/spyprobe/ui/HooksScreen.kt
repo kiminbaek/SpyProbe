@@ -400,7 +400,8 @@ private fun AddRuleDialog(vm: SpyViewModel, onDismiss: () -> Unit) {
                     value = method,
                     onValueChange = { method = it },
                     label = { Text("方法名（必填）") },
-                    placeholder = { Text("isVip / checkVip / loadAd") },
+                    // v1.19 P2-5: 提示支持 * 通配
+                    placeholder = { Text("isVip / *（* = 该类全部方法）") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
                 )
@@ -408,7 +409,8 @@ private fun AddRuleDialog(vm: SpyViewModel, onDismiss: () -> Unit) {
                     value = params,
                     onValueChange = { params = it },
                     label = { Text("参数类型（可选，逗号分隔）") },
-                    placeholder = { Text("留空 = 全部重载，如 int,java.lang.String") },
+                    // v1.19 P2-5: 格式提示明确化
+                    placeholder = { Text("如 java.lang.String,int；留空 = 全部重载") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
                 )

@@ -26,6 +26,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -167,11 +168,24 @@ private fun androidx.compose.foundation.layout.ColumnScope.FunctionScanCard(vm: 
 private fun ClassLoadCard(vm: SpyViewModel) {
     var keyword by remember { mutableStateOf("") }
     var logAll by remember { mutableStateOf(false) }
+    // v1.19 探测 b: 全自动探测（类加载时自动 hook 该类全部方法）
+    var autoProbe by remember { mutableStateOf(false) }
+    var autoFilter by remember { mutableStateOf("") }
     // v1.16 P1-10: 结果从拼字符串 Text 一次性渲染 → LazyColumn 逐行（2000 行不再卡顿）
     var resultList by remember { mutableStateOf<List<String>?>(null) }
     var resultMeta by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+
+    // 初始回读后端配置（开关/关键字以真实值为准）
+    LaunchedEffect(Unit) {
+        val c = withContext(Dispatchers.IO) { vm.api.fetchConfig() }
+        if (c != null) {
+            autoProbe = c["autoProbe"] as? Boolean ?: false
+            autoFilter = c["autoProbeFilter"] as? String ?: ""
+        }
+    }
 
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
@@ -183,6 +197,41 @@ private fun ClassLoadCard(vm: SpyViewModel) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = 6.dp))
+
+            // v1.19 探测 b: 全自动探测开关 + 关键字
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(checked = autoProbe, onCheckedChange = { v ->
+                    autoProbe = v
+                    vm.sendConfig(mapOf("autoProbe" to v))
+                })
+                Spacer(Modifier.width(6.dp))
+                Column {
+                    Text("全自动探测", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                    Text("类加载时自动 hook 该类全部方法（跳过系统类/接口/Object 方法）",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = autoFilter,
+                    onValueChange = { autoFilter = it },
+                    placeholder = { Text("类名关键字，空 = 所有非系统类") },
+                    singleLine = true,
+                    enabled = autoProbe,
+                    modifier = Modifier.weight(1f).height(48.dp)
+                )
+                Button(
+                    onClick = {
+                        vm.sendConfig(mapOf("autoProbeFilter" to autoFilter.trim()))
+                        android.widget.Toast.makeText(context, "已应用", android.widget.Toast.LENGTH_SHORT).show()
+                    },
+                    enabled = autoProbe
+                ) { Text("应用") }
+            }
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
                     value = keyword,

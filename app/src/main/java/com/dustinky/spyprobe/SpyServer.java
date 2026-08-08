@@ -254,6 +254,9 @@ public class SpyServer {
                         if (c.has("antiXposed")) cfg.antiXposed = c.getBoolean("antiXposed");
                         // v1.15 P0-4: native 层抓包开关
                         if (c.has("native")) cfg.nativeCapture = c.getBoolean("native");
+                        // v1.19 探测 b: 全自动探测
+                        if (c.has("autoProbe")) cfg.autoProbe = c.getBoolean("autoProbe");
+                        if (c.has("autoProbeFilter")) cfg.autoProbeFilter = c.optString("autoProbeFilter", "");
                         LogStore.get().log(TAG, "config updated: " + body);
                     }
                     JSONObject o = new JSONObject();
@@ -284,6 +287,8 @@ public class SpyServer {
                     o.put("antiRoot", Config.get().antiRoot);     // v1.13
                     o.put("antiXposed", Config.get().antiXposed); // v1.13
                     o.put("native", Config.get().nativeCapture);   // v1.15 P0-4
+                    o.put("autoProbe", Config.get().autoProbe);     // v1.19 探测 b
+                    o.put("autoProbeFilter", Config.get().autoProbeFilter);
                     return o.toString();
                 }
                 case "/api/classes": {
