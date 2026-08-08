@@ -79,7 +79,7 @@ SpyProbe 是一个运行在目标 App 进程内的全面探测工具，专为**�
 
 | 版本 | 说明 |
 |:-----|:-----|
-| v1.9 | AdClose 借鉴全落地：DexKit（导出 dex + 字符串反查）/ 环境检测探测 / TLS 明文抓包 / 万能连接点 / Cronet |
+| v1.9 | DexKit（导出 dex + 字符串反查）/ 环境检测探测 / TLS 明文抓包 / 万能连接点 / Cronet |
 | v1.5 | 全面审核 + 反编译难点增强：URL 捕捉 / Crypto / Log 拦截 / Activity / JSON 5 大新 Probe + isNative 标记 |
 | v1.4 | 增强模式：返回值劫持 + SQLite 记录 |
 | v1.3 | 第三轮审核：重复 hook 防重、多进程端口自动发现 |
