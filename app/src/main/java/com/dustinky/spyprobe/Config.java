@@ -255,8 +255,9 @@ public class Config {
     private static final String KEY_HOOKS = "hooks";
     private static final String KEY_HIJACKS = "hijacks";
 
-    // ===== v1.21: 抓包开关持久化（进程重启后恢复用户开关，不再回默认）=====
-    private static final String KEY_CFG = "cfg_switches";
+    // ===== v1.21/v1.22: 抓包开关持久化（进程重启后恢复用户开关，不再回默认）=====
+    // v1.21 用 getRemotePreferences 远程偏好（走 libxposed service IPC），用户实测重启后仍失效；
+    // v1.22 改为写目标 App 自身 data 目录文件（进程内直读直写，零 IPC，100% 可靠）
 
     /** 保存当前 hooks + hijacks 到模块远程偏好（不污染目标 app 数据） */
     public synchronized void saveRules(android.content.SharedPreferences prefs) {
@@ -318,11 +319,16 @@ public class Config {
         return loaded;
     }
 
-    // ===== v1.21: 抓包开关持久化 =====
+    // ===== v1.21/v1.22: 抓包开关持久化（进程重启后恢复用户开关，不再回默认）=====
+    // v1.21 用 getRemotePreferences 远程偏好（走 libxposed service IPC），用户实测重启后仍失效；
+    // v1.22 改为写目标 App 自身 data 目录文件（进程内直读直写，零 IPC，100% 可靠）
 
-    /** 保存全部抓包开关到模块远程偏好（每次 UI 下发配置后调用） */
-    public synchronized void saveConfig(android.content.SharedPreferences prefs) {
-        if (prefs == null) return;
+    // v1.22: 模块自身调试日志开关（默认关；开启后 LogStore 输出 [DBG] 前缀行，排查持久化/IPC 等问题用）
+    public volatile boolean debugEnabled = false;
+
+    /** 保存全部抓包开关到目标 App data 目录文件（每次 UI 下发配置后调用） */
+    public synchronized void saveConfig(java.io.File file) {
+        if (file == null) return;
         try {
             org.json.JSONObject o = new org.json.JSONObject();
             o.put("sslBypass", sslBypass);
@@ -353,17 +359,55 @@ public class Config {
             o.put("native", nativeCapture);
             o.put("autoProbe", autoProbe);
             o.put("autoProbeFilter", autoProbeFilter == null ? "" : autoProbeFilter);
-            prefs.edit().putString(KEY_CFG, o.toString()).apply();
-        } catch (Throwable t) { }
+            o.put("debug", debugEnabled);
+            // v1.22: 原子写（tmp + rename），防写入中断损坏配置
+            java.io.File tmp = new java.io.File(file.getAbsolutePath() + ".tmp");
+            java.io.FileOutputStream fos = new java.io.FileOutputStream(tmp);
+            try {
+                fos.write(o.toString().getBytes("UTF-8"));
+            } finally {
+                fos.close();
+            }
+            if (tmp.renameTo(file)) {
+                debugLog("config saved -> " + file.getAbsolutePath() + " (" + o.toString().length() + "B)");
+            } else {
+                // rename 失败（跨分区/被占用）时退化为直接写目标文件
+                java.io.FileOutputStream fos2 = new java.io.FileOutputStream(file);
+                try {
+                    fos2.write(o.toString().getBytes("UTF-8"));
+                } finally {
+                    fos2.close();
+                }
+                debugLog("config saved (direct) -> " + file.getAbsolutePath());
+            }
+        } catch (Throwable t) {
+            debugLog("config save FAIL: " + t);
+        }
     }
 
-    /** 进程启动后恢复抓包开关（未保存过则保持默认值） */
-    public synchronized void loadConfig(android.content.SharedPreferences prefs) {
-        if (prefs == null) return;
+    /** 进程启动后从目标 App data 目录文件恢复抓包开关（未保存过则保持默认值） */
+    public synchronized void loadConfig(java.io.File file) {
+        if (file == null) {
+            debugLog("config load: file null");
+            return;
+        }
         try {
-            String s = prefs.getString(KEY_CFG, "");
-            if (s.isEmpty()) return;
-            org.json.JSONObject o = new org.json.JSONObject(s);
+            if (!file.exists()) {
+                debugLog("config load: no file " + file.getAbsolutePath() + ", keep defaults");
+                return;
+            }
+            java.io.FileInputStream fis = new java.io.FileInputStream(file);
+            byte[] buf;
+            try {
+                java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+                byte[] chunk = new byte[4096];
+                int n;
+                while ((n = fis.read(chunk)) > 0) bos.write(chunk, 0, n);
+                buf = bos.toByteArray();
+            } finally {
+                fis.close();
+            }
+            org.json.JSONObject o = new org.json.JSONObject(new String(buf, "UTF-8"));
             sslBypass = o.optBoolean("sslBypass", sslBypass);
             okhttpCapture = o.optBoolean("okhttp", okhttpCapture);
             urlCapture = o.optBoolean("url", urlCapture);
@@ -392,6 +436,21 @@ public class Config {
             nativeCapture = o.optBoolean("native", nativeCapture);
             autoProbe = o.optBoolean("autoProbe", autoProbe);
             autoProbeFilter = o.optString("autoProbeFilter", autoProbeFilter);
+            debugEnabled = o.optBoolean("debug", debugEnabled);
+            // v1.22: 记录关键开关恢复结果，方便用户反馈日志定位
+            debugLog("config restored: prefs=" + prefsCapture + " activity=" + activityCapture
+                    + " crypto=" + cryptoCapture + " native=" + nativeCapture + " autoProbe=" + autoProbe);
+        } catch (Throwable t) {
+            debugLog("config load FAIL: " + t);
+        }
+    }
+
+    /** v1.22: 模块调试日志（仅 Config.debugEnabled=true 时写入 LogStore，带 [DBG] 前缀） */
+    public static void debugLog(String msg) {
+        try {
+            if (Config.get().debugEnabled) {
+                LogStore.get().log("DBG", msg);
+            }
         } catch (Throwable t) { }
     }
 }

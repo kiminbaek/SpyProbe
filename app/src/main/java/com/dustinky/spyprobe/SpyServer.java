@@ -46,19 +46,22 @@ public class SpyServer {
     private final ClassLoadProbe clsProbe;
     private final String pkg;
     private final android.content.SharedPreferences rulesPrefs; // v1.6: 规则持久化
+    private final java.io.File cfgFile; // v1.22: 抓包开关持久化文件（目标 App data 目录）
     private final DexKitProbe dexKit; // v1.9: DexKit（导出 dex / 字符串反查）
     private volatile ServerSocket serverSocket;
     private volatile Thread acceptThread;
     private volatile int actualPort = PORT; // v1.3: 实际绑定端口（多进程 app 时可能偏移）
 
     public SpyServer(NetProbe net, MethodProbe mth, ClassLoadProbe clsProbe, String pkg,
-                     android.content.SharedPreferences rulesPrefs, DexKitProbe dexKit) {
+                     android.content.SharedPreferences rulesPrefs, DexKitProbe dexKit,
+                     java.io.File cfgFile) {
         this.net = net;
         this.mth = mth;
         this.clsProbe = clsProbe;
         this.pkg = pkg;
         this.rulesPrefs = rulesPrefs;
         this.dexKit = dexKit; // v1.9
+        this.cfgFile = cfgFile; // v1.22
     }
 
     public void start() {
@@ -257,9 +260,11 @@ public class SpyServer {
                         // v1.19 探测 b: 全自动探测
                         if (c.has("autoProbe")) cfg.autoProbe = c.getBoolean("autoProbe");
                         if (c.has("autoProbeFilter")) cfg.autoProbeFilter = c.optString("autoProbeFilter", "");
+                        // v1.22: 模块调试日志
+                        if (c.has("debug")) cfg.debugEnabled = c.getBoolean("debug");
                         LogStore.get().log(TAG, "config updated: " + body);
-                        // v1.21: 开关持久化——进程重启后恢复用户配置，不再回默认
-                        if (rulesPrefs != null) Config.get().saveConfig(rulesPrefs);
+                        // v1.22: 开关持久化到目标 App data 目录文件（零 IPC）；v1.21 远程偏好实测失效已弃用
+                        Config.get().saveConfig(cfgFile);
                     }
                     JSONObject o = new JSONObject();
                     o.put("ok", true);
@@ -291,6 +296,7 @@ public class SpyServer {
                     o.put("native", Config.get().nativeCapture);   // v1.15 P0-4
                     o.put("autoProbe", Config.get().autoProbe);     // v1.19 探测 b
                     o.put("autoProbeFilter", Config.get().autoProbeFilter);
+                    o.put("debug", Config.get().debugEnabled);        // v1.22 模块调试日志
                     return o.toString();
                 }
                 case "/api/classes": {

@@ -57,7 +57,9 @@ public class ModuleMain extends XposedModule {
         AntiDetectProbe anti = new AntiDetectProbe(this, cl);
         // v1.6: 规则持久化偏好（模块远程偏好，不污染目标 app 数据）
         android.content.SharedPreferences rulesPrefs = getRemotePreferences("spyprobe_rules");
-        SpyServer server = new SpyServer(net, mth, clsProbe, pkg, rulesPrefs, dexKit);
+        // v1.22: 抓包开关持久化文件——目标 App 自身 data 目录（零 IPC，重启必恢复）
+        final java.io.File cfgFile = resolveCfgFile();
+        SpyServer server = new SpyServer(net, mth, clsProbe, pkg, rulesPrefs, dexKit, cfgFile);
 
         // 立即装网络 hook
         net.install("early");
@@ -90,6 +92,9 @@ public class ModuleMain extends XposedModule {
             // t=2000ms: 加密/Activity/JSON/SharedPreferences + 环境检测 + server
             try {
                 Thread.sleep(500);
+                // v1.22: 恢复用户抓包开关——必须在所有延迟探测安装 + server.start() 之前，
+                // 否则 UI 连上 server 先拿到默认配置、probe 也按默认开关记录
+                Config.get().loadConfig(cfgFile);
                 // v1.10: native 层抓包（libc + SSL_write/SSL_read + HTTP/2），越早装越好
                 try {
                     NativeProbe.init();
@@ -126,8 +131,6 @@ public class ModuleMain extends XposedModule {
                 Thread.sleep(2500);
                 dexKit.init();
                 android.content.SharedPreferences sp = getRemotePreferences("spyprobe_rules");
-                // v1.21: 恢复用户抓包开关（prefs/activity/crypto 等），进程重启不再回默认
-                Config.get().loadConfig(sp);
                 boolean loaded = Config.get().loadRules(sp);
                 if (loaded) log(Log.INFO, TAG, "loaded persisted hook rules, re-hooking...");
                 for (Config.HookSpec spec : Config.get().hooks) {
@@ -146,5 +149,18 @@ public class ModuleMain extends XposedModule {
         }, "SpyProbe-Scheduler").start();
 
         log(Log.INFO, TAG, "SpyProbe ready for " + pkg);
+    }
+
+    /** v1.22: 目标 App data 目录下的抓包开关持久化文件（files/spyprobe_cfg.json）；失败返回 null */
+    private static java.io.File resolveCfgFile() {
+        try {
+            Class<?> at = Class.forName("android.app.ActivityThread");
+            Object app = at.getMethod("currentApplication").invoke(null);
+            if (app != null) {
+                java.io.File filesDir = (java.io.File) app.getClass().getMethod("getFilesDir").invoke(app);
+                if (filesDir != null) return new java.io.File(filesDir, "spyprobe_cfg.json");
+            }
+        } catch (Throwable t) { }
+        return null;
     }
 }

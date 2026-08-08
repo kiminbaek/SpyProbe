@@ -209,9 +209,11 @@ private fun androidx.compose.foundation.layout.RowScope.SwitchItem(label: String
 internal const val NET_FILTER = "(Net|DNS|TCP|HUC|OkHttp|SSL)"
 internal const val MTH_FILTER = "(Mth)"
 
-/** v1.16 P2-9: 日志按 tag 类型着色（网络绿/函数蓝/规则橙/反检测紫/数据橙黄/环境粉/失败红/其它灰） */
+/** v1.16 P2-9: 日志按 tag 类型着色（网络绿/函数蓝/规则橙/反检测紫/数据橙黄/环境粉/失败红/其它灰）
+ *  v1.22: 模块调试日志 [DBG] 用青绿色（区别于抓包日志） */
 internal fun logColor(line: String): Color {
     return when {
+        line.contains("[DBG]") -> Color(0xFF26C6DA)
         line.startsWith("[TCP] FAIL") -> Color(0xFFEF5350)
         line.startsWith("[Net") || line.startsWith("[DNS") || line.startsWith("[TCP") ||
                 line.startsWith("[SSL") || line.startsWith("[HUC") || line.startsWith("[OkHttp") ||

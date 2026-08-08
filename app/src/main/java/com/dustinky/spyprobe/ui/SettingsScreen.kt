@@ -74,6 +74,8 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     var antiXposed by remember { mutableStateOf(false) }
     // v1.15 P0-4: native 层抓包开关（默认 true，高频刷屏可关）
     var native by remember { mutableStateOf(true) }
+    // v1.22: 模块自身调试日志开关（默认关；开启后日志页输出 [DBG] 行，排查持久化/IPC 问题用）
+    var debug by remember { mutableStateOf(false) }
 
     var dexkitOpen by remember { mutableStateOf(false) }
     var aboutOpen by remember { mutableStateOf(false) }
@@ -99,6 +101,7 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
         (cfg["antiRoot"] as? Boolean)?.let { antiRoot = it }
         (cfg["antiXposed"] as? Boolean)?.let { antiXposed = it }
         (cfg["native"] as? Boolean)?.let { native = it }
+        (cfg["debug"] as? Boolean)?.let { debug = it } // v1.22
     }
 
     // v1.15 P0-3: 首次进入回读后端真实配置（防止把用户已改配置覆盖回默认）
@@ -141,7 +144,9 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             "antiRoot" to antiRoot,
             "antiXposed" to antiXposed,
             // v1.15 P0-4: native 层抓包
-            "native" to native
+            "native" to native,
+            // v1.22: 模块调试日志
+            "debug" to debug
         ))
         android.widget.Toast.makeText(context, "配置已下发", android.widget.Toast.LENGTH_SHORT).show()
     }
@@ -217,6 +222,9 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                 SettingCheck("隐藏 Xposed：loadClass/StackTrace/DexPathList/Modifier 净化", antiXposed) { antiXposed = it }
                 Text("与「探测」页的环境检测互为镜像：开反检测后可用 EnvProbe 验证目标 App 还检测到啥",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+                // v1.22: 模块调试日志开关（用户建议：方便查找模块自身问题）
+                SettingCheck("调试日志（日志页输出 [DBG] 模块运行状态，排查用）", debug) { debug = it }
 
                 Button(onClick = { sendAll() }, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
                     Text("下发配置")
