@@ -197,9 +197,11 @@ private fun HijackDialog(vm: SpyViewModel, h: HookEntry, onDismiss: () -> Unit) 
                 when (mode) {
                     MODE_RETURN -> {
                         Text(
+                            // v1.15 P2-2: 补充 void 语义提示
                             "输入强制返回值（命中后不执行原方法，直接返回）：\n" +
                                 "• true / false —— boolean\n• 123 / 3.14 —— 数字\n" +
-                                "• 任意文本 —— String\n• null —— 返回空\n• 留空 = 空串",
+                                "• 任意文本 —— String\n• null —— 返回空\n• 留空 = 空串\n" +
+                                "• 若方法是 void（无返回值）：强制返回会跳过原方法执行（副作用丢失）",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(vertical = 6.dp)

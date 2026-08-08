@@ -42,6 +42,8 @@ public class Config {
     // v1.13: 反检测开关（隐藏 root/Xposed 痕迹，防目标 App 检测；fckvip hook_hide_root 借鉴）
     public volatile boolean antiRoot = false;      // 隐藏 root：File.exists(su)/Runtime.exec/SystemProperties 过滤
     public volatile boolean antiXposed = false;   // 隐藏 Xposed：loadClass/StackTrace/DexPathList/Modifier.isNative
+    // v1.15 P0-4: native 层抓包开关（libc+SSL+HTTP2；默认开，高频刷屏时可关）
+    public volatile boolean nativeCapture = true;
 
     // ===== 方法探测 hook 列表（动态下发）=====
     public static class HookSpec {
@@ -108,11 +110,14 @@ public class Config {
 
     public final List<HijackRule> hijacks = new CopyOnWriteArrayList<>();
 
+    // v1.15 P1-2: className 索引（findHijack 高频调用，先查索引再匹配，避免每次 invoke 全表线性扫描）
+    private final java.util.Map<String, List<HijackRule>> hijackIndex = new ConcurrentHashMap<>();
+
     public synchronized void addHijack(String className, String methodName, String paramTypes, String returnValue) {
         addRule(className, methodName, paramTypes, MODE_RETURN, returnValue, "", "", "", "");
     }
 
-    /** v1.13: 通用规则新增/更新（同 class#method(params)+mode 去重） */
+    /** v1.13: 通用规则新增/更新（同 class#method(params)+mode 去重）；v1.15 P1-2: 同步维护 className 索引 */
     public synchronized void addRule(String className, String methodName, String paramTypes, int mode,
                                      String returnValue, String paramValue, String fieldName, String fieldType, String fieldValue) {
         String pts = paramTypes == null ? "" : paramTypes;
@@ -120,27 +125,42 @@ public class Config {
             if (h.className.equals(className) && h.methodName.equals(methodName)
                     && h.paramTypes.equals(pts) && h.mode == mode) {
                 hijacks.remove(h);
+                List<HijackRule> idx = hijackIndex.get(className);
+                if (idx != null) idx.remove(h);
                 break;
             }
         }
-        hijacks.add(new HijackRule(className, methodName, pts, mode,
+        HijackRule rule = new HijackRule(className, methodName, pts, mode,
                 returnValue == null ? "" : returnValue,
                 paramValue == null ? "" : paramValue,
                 fieldName == null ? "" : fieldName,
                 fieldType == null ? "" : fieldType,
-                fieldValue == null ? "" : fieldValue));
+                fieldValue == null ? "" : fieldValue);
+        hijacks.add(rule);
+        hijackIndex.computeIfAbsent(className, k -> new CopyOnWriteArrayList<>()).add(rule);
     }
 
     public synchronized boolean removeHijack(String className, String methodName, String paramTypes) {
-        return hijacks.removeIf(h -> h.className.equals(className)
+        boolean removed = hijacks.removeIf(h -> h.className.equals(className)
                 && h.methodName.equals(methodName)
                 && (paramTypes == null || paramTypes.isEmpty() || h.paramTypes.equals(paramTypes)));
+        // v1.15 P1-2: 同步清索引
+        if (removed) {
+            List<HijackRule> idx = hijackIndex.get(className);
+            if (idx != null) {
+                idx.removeIf(h -> h.methodName.equals(methodName)
+                        && (paramTypes == null || paramTypes.isEmpty() || h.paramTypes.equals(paramTypes)));
+                if (idx.isEmpty()) hijackIndex.remove(className);
+            }
+        }
+        return removed;
     }
 
-    /** 查找命中劫持规则（精确匹配 class#method(params)，paramTypes 为空=匹配任一重载） */
+    /** 查找命中劫持规则（精确匹配 class#method(params)，paramTypes 为空=匹配任一重载）；v1.15 P1-2: 走 className 索引 */
     public synchronized HijackRule findHijack(String className, String methodName, String paramTypes) {
-        for (HijackRule h : hijacks) {
-            if (!h.className.equals(className)) continue;
+        List<HijackRule> idx = hijackIndex.get(className);
+        if (idx == null) return null;
+        for (HijackRule h : idx) {
             // v1.14: 方法名/参数支持通配符 "*"（借鉴 SimpleHook MainHook）：* = 匹配任意方法名/任意参数
             if (!h.methodName.equals("*") && !h.methodName.equals(methodName)) continue;
             if (paramTypes == null || paramTypes.isEmpty()) return h;

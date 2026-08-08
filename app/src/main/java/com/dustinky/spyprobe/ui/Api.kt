@@ -192,6 +192,22 @@ class SpyApi(private var port: Int = 9901) {
         } catch (t: Throwable) { }
     }
 
+    // v1.15 P0-3: GET /api/config 回读后端配置（开关状态从后端真实值初始化，不再硬编码默认值）
+    fun fetchConfig(): Map<String, Any>? {
+        val resp = httpGet("/api/config") ?: return null
+        return try {
+            val o = JSONObject(resp)
+            val map = HashMap<String, Any>()
+            val it = o.keys()
+            while (it.hasNext()) {
+                val k = it.next()
+                val v = o.opt(k)
+                if (v != null) map[k] = v
+            }
+            map
+        } catch (t: Throwable) { null }
+    }
+
     fun clear(): String? = httpPost("/api/clear", "{}")
 
     fun export(): String? = httpGet("/api/export")
@@ -245,13 +261,15 @@ class SpyApi(private var port: Int = 9901) {
         return Pair(method, params)
     }
 
-    fun hook(cls: String, signature: String, fallbackParams: String): String? {
+    // v1.15 P1-5: 增加 kind 参数 —— kind="constructor" 时 method 强制传 "<init>"（后端构造器 hook 分支）
+    fun hook(cls: String, signature: String, fallbackParams: String, kind: String = "method"): String? {
         val (m, p) = splitSignature(signature)
+        val method = if (kind == "constructor") "<init>" else m
         val params = if (p.isEmpty()) fallbackParams else p
         return try {
             val o = JSONObject()
             o.put("class", cls)
-            o.put("method", m)
+            o.put("method", method)
             o.put("params", params)
             httpPost("/api/hook", o.toString())
         } catch (t: Throwable) { null }

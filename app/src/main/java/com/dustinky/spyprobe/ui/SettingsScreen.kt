@@ -24,6 +24,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -66,9 +67,34 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     // v1.13: 反检测开关（隐藏 root/Xposed，防目标 App 检测）
     var antiRoot by remember { mutableStateOf(false) }
     var antiXposed by remember { mutableStateOf(false) }
+    // v1.15 P0-4: native 层抓包开关（默认 true，高频刷屏可关）
+    var native by remember { mutableStateOf(true) }
 
     var dexkitOpen by remember { mutableStateOf(false) }
     var aboutOpen by remember { mutableStateOf(false) }
+
+    // v1.15 P0-3: 首次进入回读后端真实配置（防止把用户已改配置覆盖回默认）
+    LaunchedEffect(Unit) {
+        val cfg = withContext(Dispatchers.IO) { vm.api.fetchConfig() } ?: return@LaunchedEffect
+        cfg["bodyLimit"]?.toString()?.let { bodyLimit = it }
+        cfg["logLimit"]?.toString()?.let { logLimit = it }
+        (cfg["webView"] as? Boolean)?.let { webView = it }
+        (cfg["prefs"] as? Boolean)?.let { prefs = it }
+        (cfg["sqlite"] as? Boolean)?.let { sqlite = it }
+        (cfg["urlBuild"] as? Boolean)?.let { urlBuild = it }
+        (cfg["logcat"] as? Boolean)?.let { logcat = it }
+        (cfg["crypto"] as? Boolean)?.let { crypto = it }
+        (cfg["activity"] as? Boolean)?.let { activity = it }
+        (cfg["json"] as? Boolean)?.let { json = it }
+        (cfg["detailMode"] as? Boolean)?.let { detailMode = it }
+        (cfg["env"] as? Boolean)?.let { env = it }
+        (cfg["tls"] as? Boolean)?.let { tls = it }
+        (cfg["connect"] as? Boolean)?.let { connect = it }
+        (cfg["cronet"] as? Boolean)?.let { cronet = it }
+        (cfg["antiRoot"] as? Boolean)?.let { antiRoot = it }
+        (cfg["antiXposed"] as? Boolean)?.let { antiXposed = it }
+        (cfg["native"] as? Boolean)?.let { native = it }
+    }
 
     fun sendAll() {
         val limit = bodyLimit.trim().toIntOrNull() ?: 2048
@@ -90,7 +116,9 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             "cronet" to cronet,
             // v1.13: 反检测
             "antiRoot" to antiRoot,
-            "antiXposed" to antiXposed
+            "antiXposed" to antiXposed,
+            // v1.15 P0-4: native 层抓包
+            "native" to native
         ))
         android.widget.Toast.makeText(context, "配置已下发", android.widget.Toast.LENGTH_SHORT).show()
     }
@@ -123,7 +151,8 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
         SettingCheck("记录 SharedPreferences key（读取高频，建议按需开）", prefs) { prefs = it }
         SettingCheck("记录 SQLite 增删改查", sqlite) { sqlite = it }
         SettingCheck("记录 URL 构造（找接口地址/CDN 域名）", urlBuild) { urlBuild = it }
-        SettingCheck("拦截 App 自身 Log 输出（信息量大）", logcat) { logcat = it }
+        // v1.15 P2-7: 文案修正 —— logcat 是"记录"不是"拦截"
+        SettingCheck("记录 App 自身 Log 输出（信息量大）", logcat) { logcat = it }
         SettingCheck("记录加密算法/密钥/IV（Cipher，默认关防刷屏）", crypto) { crypto = it }
         SettingCheck("记录 Activity 生命周期 + Intent 跳转", activity) { activity = it }
         SettingCheck("记录 JSON/Gson 序列化结构", json) { json = it }
@@ -132,6 +161,8 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
         SettingCheck("TLS 明文抓包（ConscryptEngine，HTTPS 明文头）", tls) { tls = it }
         SettingCheck("万能连接点记录（BlockGuardOs.connect，QUIC/自建TCP）", connect) { connect = it }
         SettingCheck("Cronet 网络栈记录（字节系 app，默认关防重复）", cronet) { cronet = it }
+        // v1.15 P0-4: native 层抓包开关（libc+SSL+HTTP2）
+        SettingCheck("native 层抓包（libc+SSL+HTTP2，高频刷屏可关）", native) { native = it }
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
         Text("反检测（v1.13，防目标 App 检测 hook 环境）",

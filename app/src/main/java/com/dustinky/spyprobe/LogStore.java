@@ -20,7 +20,13 @@ public class LogStore {
 
     private final Deque<Entry> entries = new ArrayDeque<>();
     private long seq = 0;
-    private final SimpleDateFormat fmt = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
+    // v1.15 P2-8: SimpleDateFormat 非线程安全 → ThreadLocal（避免每次 log 重建 + 高并发格式化竞争）
+    private static final ThreadLocal<SimpleDateFormat> FMT = new ThreadLocal<SimpleDateFormat>() {
+        @Override
+        protected SimpleDateFormat initialValue() {
+            return new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
+        }
+    };
 
     public static class Entry {
         public final long seq;
@@ -40,7 +46,7 @@ public class LogStore {
     public static LogStore get() { return INSTANCE; }
 
     public synchronized void log(String tag, String msg) {
-        String t = fmt.format(new Date());
+        String t = FMT.get().format(new Date());
         entries.addLast(new Entry(++seq, t, tag, msg));
         // v1.12: 容量动态可配置（Config.logLimit）
         int limit = Config.get().logLimit;

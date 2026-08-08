@@ -82,10 +82,15 @@ fun CaptureScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
+    // v1.15 P0-3: 后端配置快照（开关从后端真实值初始化，不再硬编码默认）
+    var cfg by remember { mutableStateOf<Map<String, Any>>(emptyMap()) }
+
     // 生命周期轮询
     LaunchedEffect(Unit) {
         vm.startPolling()
         vm.refreshStatus()
+        val c = withContext(Dispatchers.IO) { vm.api.fetchConfig() }
+        if (c != null) cfg = c
     }
     androidx.compose.runtime.DisposableEffect(Unit) {
         onDispose { vm.stopPolling() }
@@ -152,17 +157,17 @@ fun CaptureScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             modifier = Modifier.padding(vertical = 6.dp)
         )
 
-        // 开关行 1
+        // 开关行 1（v1.15 P0-3: 从后端回读的 cfg 取初始值）
         Row(verticalAlignment = Alignment.CenterVertically) {
-            SwitchItem("SSL绕过", true) { vm.sendConfig(mapOf("sslBypass" to it)) }
-            SwitchItem("OkHttp", true) { vm.sendConfig(mapOf("okhttp" to it)) }
-            SwitchItem("URLConn", true) { vm.sendConfig(mapOf("url" to it)) }
+            SwitchItem("SSL绕过", cfg["sslBypass"] as? Boolean ?: true) { vm.sendConfig(mapOf("sslBypass" to it)); cfg = cfg + ("sslBypass" to it) }
+            SwitchItem("OkHttp", cfg["okhttp"] as? Boolean ?: true) { vm.sendConfig(mapOf("okhttp" to it)); cfg = cfg + ("okhttp" to it) }
+            SwitchItem("URLConn", cfg["url"] as? Boolean ?: true) { vm.sendConfig(mapOf("url" to it)); cfg = cfg + ("url" to it) }
         }
         // 开关行 2
         Row(verticalAlignment = Alignment.CenterVertically) {
-            SwitchItem("DNS解析", true) { vm.sendConfig(mapOf("dns" to it)) }
-            SwitchItem("TCP连接", true) { vm.sendConfig(mapOf("tcp" to it)) }
-            SwitchItem("类加载", true) { vm.sendConfig(mapOf("classes" to it)) }
+            SwitchItem("DNS解析", cfg["dns"] as? Boolean ?: true) { vm.sendConfig(mapOf("dns" to it)); cfg = cfg + ("dns" to it) }
+            SwitchItem("TCP连接", cfg["tcp"] as? Boolean ?: true) { vm.sendConfig(mapOf("tcp" to it)); cfg = cfg + ("tcp" to it) }
+            SwitchItem("类加载", cfg["classes"] as? Boolean ?: true) { vm.sendConfig(mapOf("classes" to it)); cfg = cfg + ("classes" to it) }
         }
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
@@ -223,7 +228,8 @@ fun CaptureScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
         ) {
             val kw = filter.trim()
             val shown = if (kw.isEmpty()) logLines else logLines.filter { matchesFilter(it, kw) }
-            itemsIndexed(shown, key = { i, _ -> i }) { _, line ->
+            // v1.15 P2-6: key 用日志行内容（原 index 作 key 在增量追加时整列重组闪烁）
+            itemsIndexed(shown, key = { _, line -> line }) { _, line ->
                 Text(
                     line,
                     style = MaterialTheme.typography.bodySmall,
@@ -237,11 +243,11 @@ fun CaptureScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     }
 }
 
+// v1.15 P0-3: SwitchItem 改为受控组件（checked 由外部传入，onChange 同时更新下发+本地快照）
 @Composable
-private fun androidx.compose.foundation.layout.RowScope.SwitchItem(label: String, default: Boolean, onChange: (Boolean) -> Unit) {
-    var checked by remember { mutableStateOf(default) }
+private fun androidx.compose.foundation.layout.RowScope.SwitchItem(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-        Checkbox(checked = checked, onCheckedChange = { checked = it; onChange(it) })
+        Checkbox(checked = checked, onCheckedChange = { onChange(it) })
         Text(label, style = MaterialTheme.typography.bodySmall)
     }
 }

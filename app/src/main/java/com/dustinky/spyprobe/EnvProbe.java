@@ -83,14 +83,15 @@ public class EnvProbe {
             final Method exists = java.io.File.class.getMethod("exists");
             module.hook(exists).intercept(chain -> {
                 boolean r = (Boolean) chain.proceed();
-                if (Config.get().envCapture && r) {
+                // v1.15 P1-6: 去掉 "&& r" —— app 检测 su 返回 false（正常环境）也要记录检测行为本身
+                if (Config.get().envCapture) {
                     Object f = chain.getThisObject();
                     if (f instanceof java.io.File) {
                         String path = ((java.io.File) f).getAbsolutePath();
                         for (String sp : SENSITIVE_PATHS) {
                             if (path.contains(sp)) {
                                 LogStore.get().log(TAG, "[Root检测] File.exists: " + path
-                                        + " <- " + StackUtil.getCompact());
+                                        + " -> " + r + " <- " + StackUtil.getCompact());
                                 break;
                             }
                         }

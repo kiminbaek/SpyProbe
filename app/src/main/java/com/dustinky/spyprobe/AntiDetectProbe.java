@@ -3,6 +3,11 @@ package com.dustinky.spyprobe;
 import android.util.Log;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.Arrays;
@@ -112,6 +117,7 @@ public class AntiDetectProbe {
             } catch (Throwable t) { }
 
             // Runtime.exec(String) / exec(String[]) —— 拦截 su / magisk 命令
+            // v1.15 P1-1: 命中后返回 fake Process（不能 return null —— 调用方 waitFor() 直接 NPE 崩溃）
             try {
                 for (Method m : Runtime.class.getDeclaredMethods()) {
                     if (!m.getName().equals("exec")) continue;
@@ -124,7 +130,7 @@ public class AntiDetectProbe {
                             if (cmd.contains("su") || cmd.contains("magisk") || cmd.contains("busybox")
                                     || cmd.contains("which root") || cmd.contains("whoami")) {
                                 LogStore.get().log(TAG, "[anti-root] Runtime.exec(" + cmd + ") 已拦截");
-                                return null;
+                                return fakeProcess();
                             }
                             return chain.proceed();
                         });
@@ -156,7 +162,10 @@ public class AntiDetectProbe {
             } catch (Throwable t) { }
 
             // ===== 隐藏 Xposed =====
-            // ClassLoader.loadClass(String) —— Xposed 特征类改加载无害路径（fckvip 18 号 hook）
+            // ClassLoader.loadClass(String) —— Xposed 特征类返回 null（"类不存在"语义，fckvip 18 号 hook）
+            // v1.15 P0-2: 原来 proceed(new Object[]{"/system/app/classic.jar"}) 把类名替换成文件路径
+            //   → loadClass 必然 ClassNotFoundException，目标 app 崩溃风险；且污染 ClassLoadProbe 记录。
+            //   现在直接 return null：Class.forName 收到 null 抛 ClassNotFoundException，app 走正常"类不存在"分支。
             try {
                 for (Method m : ClassLoader.class.getDeclaredMethods()) {
                     if (!m.getName().equals("loadClass") || m.getParameterTypes().length < 1) continue;
@@ -166,8 +175,8 @@ public class AntiDetectProbe {
                         List<Object> args = chain.getArgs();
                         String name = args.get(0) == null ? "" : args.get(0).toString();
                         if (containsXposed(name)) {
-                            LogStore.get().log(TAG, "[anti-xposed] loadClass(" + name + ") -> 无害替代");
-                            return chain.proceed(new Object[]{ "/system/app/classic.jar" });
+                            LogStore.get().log(TAG, "[anti-xposed] loadClass(" + name + ") -> null(类不存在)");
+                            return null;
                         }
                         return chain.proceed();
                     });
@@ -189,15 +198,21 @@ public class AntiDetectProbe {
             } catch (Throwable t) { }
 
             // Modifier.isNative(int) —— 防 native 检测 Xposed 方法（fckvip 24 号 hook）
+            // v1.15 P0-1: 原来 hook 静态方法 Modifier.isNative(int)（getThisObject 恒 null → 永久失效）。
+            //   改为 hook 实例方法 Method.getModifiers()：对 xposed 特征类的 Method，返回值去掉 native 位（0x100）。
             try {
-                module.hook(Modifier.class.getMethod("isNative", int.class))
+                module.hook(Method.class.getMethod("getModifiers"))
                         .intercept((chain) -> {
                             if (!Config.get().antiXposed) return chain.proceed();
                             Object thiz = chain.getThisObject();
                             if (thiz instanceof Method) {
-                                String declaring = ((Method) thiz).getDeclaringClass().getName();
+                                Method m = (Method) thiz;
+                                String declaring = m.getDeclaringClass().getName();
                                 if (containsXposed(declaring)) {
-                                    return Boolean.FALSE;
+                                    int mod = ((Integer) chain.proceed()).intValue();
+                                    LogStore.get().log(TAG, "[anti-xposed] Method.getModifiers(" + declaring
+                                            + "." + m.getName() + ") 去掉 native 位");
+                                    return Integer.valueOf(mod & ~Modifier.NATIVE);
                                 }
                             }
                             return chain.proceed();
@@ -242,6 +257,24 @@ public class AntiDetectProbe {
             LogStore.get().log(TAG, "[anti] install error: " + t);
             installed = false;
         }
+    }
+
+    /** v1.15 P1-1: 假 Process（拦截 su/magisk exec 时返回，避免 NPE；waitFor 返回 1=失败语义） */
+    private static Process fakeProcess() {
+        return new Process() {
+            @Override
+            public OutputStream getOutputStream() { return new ByteArrayOutputStream(); }
+            @Override
+            public InputStream getInputStream() { return new ByteArrayInputStream(new byte[0]); }
+            @Override
+            public InputStream getErrorStream() { return new ByteArrayInputStream(new byte[0]); }
+            @Override
+            public int waitFor() { return 1; }
+            @Override
+            public int exitValue() { return 1; }
+            @Override
+            public void destroy() { }
+        };
     }
 
     private static boolean isRootFile(String path) {

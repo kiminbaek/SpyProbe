@@ -54,6 +54,8 @@ public class NativeProbe {
     @SuppressWarnings("unused")
     private static boolean onNativeData(long id, boolean isWrite, ByteBuffer buf, String socketInfo, String stack, boolean isSsl) {
         try {
+            // v1.15 P0-4: native 抓包开关（高频刷屏可关；关时不做任何记录/解析，只放行）
+            if (!Config.get().nativeCapture) return false;
             if (buf == null) return false;
             String dir = isWrite ? ">>>" : "<<<";
             String proto = isSsl ? "TLS" : "TCP";
@@ -76,6 +78,8 @@ public class NativeProbe {
                                        String authority, String scheme, String reqHdr, String respHdr,
                                        int statusCode, boolean isResponse) {
         try {
+            // v1.15 P0-4: native 抓包开关
+            if (!Config.get().nativeCapture) return false;
             if (!isResponse) {
                 LogStore.get().log(TAG, "[H2 REQ #" + streamId + "] " + method + " " + scheme + "://" + authority + path);
                 if (reqHdr != null && !reqHdr.isEmpty()) {
@@ -96,6 +100,8 @@ public class NativeProbe {
     @SuppressWarnings("unused")
     private static void onH2DataChunk(long connId, int streamId, boolean isRequest, ByteBuffer buf) {
         try {
+            // v1.15 P0-4: native 抓包开关
+            if (!Config.get().nativeCapture) return;
             if (buf == null) return;
             byte[] data = new byte[buf.remaining()];
             buf.get(data);
@@ -115,6 +121,8 @@ public class NativeProbe {
     @SuppressWarnings("unused")
     private static void onConnectionClosed(long id, boolean isSsl) {
         try {
+            // v1.15 P0-4: native 抓包开关
+            if (!Config.get().nativeCapture) return;
             LogStore.get().log(TAG, "[conn closed " + (isSsl ? "TLS" : "TCP") + " #" + id + "]");
         } catch (Throwable ignored) {
         }

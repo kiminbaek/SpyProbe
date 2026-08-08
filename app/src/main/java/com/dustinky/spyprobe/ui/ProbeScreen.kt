@@ -115,8 +115,9 @@ private fun FunctionScanCard(vm: SpyViewModel) {
                             .padding(vertical = 1.dp)
                             .clickable {
                                 scope.launch {
+                                    // v1.15 P1-5: 传 m.kind —— 构造器走 "<init>" 分支
                                     val resp = withContext(Dispatchers.IO) {
-                                        vm.api.hook(res.className, m.signature, m.params)
+                                        vm.api.hook(res.className, m.signature, m.params, m.kind)
                                     }
                                     val msg = if (resp == null) "未连接" else {
                                         try {

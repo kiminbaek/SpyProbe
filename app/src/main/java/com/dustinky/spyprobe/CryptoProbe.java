@@ -5,7 +5,9 @@ import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.security.Key;
 import java.security.spec.AlgorithmParameterSpec;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.Collections;
+import java.util.Map;
+import java.util.WeakHashMap;
 
 import javax.crypto.Cipher;
 import javax.crypto.spec.GCMParameterSpec;
@@ -46,7 +48,9 @@ public class CryptoProbe {
         boolean hadData = false;
     }
 
-    private static final ConcurrentHashMap<Cipher, Ctx> CTXS = new ConcurrentHashMap<>();
+    // v1.15 P1-3: CTXS 强引用泄漏 —— Cipher 未 doFinal 即 GC → Ctx 永久残留。
+    //   改 WeakHashMap（Cipher 不复写 equals/hashCode，可安全弱引用）+ synchronizedMap 保证线程安全。
+    private static final Map<Cipher, Ctx> CTXS = Collections.synchronizedMap(new WeakHashMap<Cipher, Ctx>());
     private static final int MAX_CAPTURE = 1024 * 1024; // 1MB 上限防刷屏
 
     public void install(String phase) {
@@ -214,8 +218,67 @@ public class CryptoProbe {
                     return r;
                 });
             } catch (Throwable t) { }
+            // v1.15 P2-3: doFinal(ByteBuffer, ByteBuffer) —— 输出写入 output buffer，返回 int(输出长度)
+            try {
+                Method df = Cipher.class.getMethod("doFinal", ByteBuffer.class, ByteBuffer.class);
+                module.hook(df).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (Config.get().cryptoCapture) {
+                        try {
+                            Object in = chain.getArg(0);
+                            Object out = chain.getArg(1);
+                            if (in instanceof ByteBuffer) {
+                                ByteBuffer dup = ((ByteBuffer) in).duplicate();
+                                int rem = dup.remaining();
+                                byte[] tmp = new byte[Math.min(rem, MAX_CAPTURE)];
+                                dup.get(tmp);
+                                appendStream(chain.getThisObject(), tmp, 0, tmp.length);
+                            }
+                            if (out instanceof ByteBuffer) {
+                                ByteBuffer od = ((ByteBuffer) out).duplicate();
+                                od.flip(); // 读 position 前的内容（proceed 后已写入）
+                                byte[] ob = new byte[od.remaining()];
+                                od.get(ob);
+                                finalizeCipher(chain.getThisObject(), null, ob);
+                            } else {
+                                finalizeCipher(chain.getThisObject(), null, null);
+                            }
+                        } catch (Throwable t) { }
+                    }
+                    return r;
+                });
+            } catch (Throwable t) { }
+            // v1.15 P2-3: doFinal(byte[], int, int, byte[], int) —— 输出写到 outputOffset 起，返回 int(输出长度)
+            try {
+                Method df = Cipher.class.getMethod("doFinal", byte[].class, int.class, int.class, byte[].class, int.class);
+                module.hook(df).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (Config.get().cryptoCapture) {
+                        try {
+                            Object in = chain.getArg(0);
+                            Object off = chain.getArg(1);
+                            Object len = chain.getArg(2);
+                            Object outArr = chain.getArg(3);
+                            Object outOff = chain.getArg(4);
+                            if (in instanceof byte[] && off instanceof Integer && len instanceof Integer) {
+                                appendStream(chain.getThisObject(), (byte[]) in, (Integer) off, (Integer) len);
+                            }
+                            if (r instanceof Integer && outArr instanceof byte[] && outOff instanceof Integer) {
+                                int n = (Integer) r;
+                                int oo = (Integer) outOff;
+                                byte[] ob = new byte[Math.min(n, MAX_CAPTURE)];
+                                System.arraycopy((byte[]) outArr, oo, ob, 0, ob.length);
+                                finalizeCipher(chain.getThisObject(), null, ob);
+                            } else {
+                                finalizeCipher(chain.getThisObject(), null, null);
+                            }
+                        } catch (Throwable t) { }
+                    }
+                    return r;
+                });
+            } catch (Throwable t) { }
 
-            LogStore.get().log(TAG, "[" + phase + "] hooked Cipher (getInstance/init/update/doFinal, v1.14 实例跟踪)");
+            LogStore.get().log(TAG, "[" + phase + "] hooked Cipher (getInstance/init/update/doFinal, v1.14 实例跟踪 + v1.15 补2重载)");
         } catch (Throwable t) {
             LogStore.get().log(TAG, "[" + phase + "] Cipher hook fail: " + t);
         }

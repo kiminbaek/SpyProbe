@@ -390,8 +390,11 @@ public class MethodProbe {
         }
 
         // 调用栈（详细模式才做，getStackTrace 开销大）
+        // v1.15 P2-1: stack()/log 加独立 try —— 若抛异常不拖垮 proceed（外层兜底会执行原方法但返回值记录丢失）
         if (detail) {
-            LogStore.get().log(TAG, "[stack]\n" + stack(14));
+            try {
+                LogStore.get().log(TAG, "[stack]\n" + stack(14));
+            } catch (Throwable t) { }
         }
 
         Object result = chain.proceed();

@@ -62,11 +62,18 @@ public class SQLiteProbe {
                 LogStore.get().log(TAG, "[SQL] rawQuery: " + chain.getArg(0) + " args=" + MethodProbe.str(chain.getArg(1), 200));
             });
 
+            // v1.15 P2-4: rawQuery(String, String[], CancellationSignal) 3 参重载
+            hooked += hookByName(db, "rawQuery", 3, (chain, name) -> {
+                LogStore.get().log(TAG, "[SQL] rawQuery: " + chain.getArg(0) + " args=" + MethodProbe.str(chain.getArg(1), 200));
+            });
+
             // query 各重载（4~8 参）→ 拼可读 SELECT
             hooked += hookQuery(db);
 
             // replace / insertWithOnConflict 等（可选高频）
-            hooked += hookByName(db, "insertWithOnConflict", 5, (chain, name) -> {
+            // v1.15 P1-4: 官方签名 insertWithOnConflict(String, String, ContentValues, int) = 4 参，
+            //   原代码 hookByName(...,5) 找 5 参 → 永远匹配不到 → 静默 hook 0 个
+            hooked += hookByName(db, "insertWithOnConflict", 4, (chain, name) -> {
                 LogStore.get().log(TAG, "[SQL] INSERT(conflict) INTO " + chain.getArg(0) + " " + cv(chain.getArg(2)));
             });
 
