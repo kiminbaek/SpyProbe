@@ -139,7 +139,8 @@ public class AntiDetectProbe {
                             } else {
                                 cmd = a0 == null ? "" : a0.toString().toLowerCase();
                             }
-                            if (cmd.contains("su") || cmd.contains("magisk") || cmd.contains("busybox")
+                            // v1.19 P1-1: su 改独立 token 匹配（cmd.contains("su") 会误伤 status/measure/ensure 等）
+                            if (isSuCmd(cmd) || cmd.contains("magisk") || cmd.contains("busybox")
                                     || cmd.contains("which root") || cmd.contains("whoami")) {
                                 LogStore.get().log(TAG, "[anti-root] Runtime.exec(" + cmd + ") 已拦截");
                                 return fakeProcess();
@@ -306,8 +307,15 @@ public class AntiDetectProbe {
             @Override
             public int exitValue() { return 1; }
             @Override
-            public void destroy() { }
-        };
+            public void destroy() { }        };
+    }
+
+    /** v1.19 P1-1: su 独立 token 匹配（避免误伤 status/measure/ensure 等含 "su" 子串的命令） */
+    private static boolean isSuCmd(String cmd) {
+        if (cmd == null || cmd.isEmpty()) return false;
+        return cmd.equals("su") || cmd.startsWith("su ") || cmd.endsWith(" su")
+                || cmd.contains(" su ") || cmd.contains("su -") || cmd.contains("su -c")
+                || cmd.contains("which su") || cmd.contains("\\su");
     }
 
     private static boolean isRootFile(String path) {
