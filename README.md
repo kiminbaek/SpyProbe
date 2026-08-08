@@ -24,7 +24,7 @@ SpyProbe 是一个运行在目标 App 进程内的全面探测工具，专为**�
 - ✅ **Hook 失败隔离**（v1.12）：动态 hook 回调最外层兜底，任何探测逻辑异常都不拖垮目标方法（借鉴 Guise 隔离原则）
 - ✅ **应用图标懒加载 + 8MiB LRU**（v1.12）：目标选择列表图标按需加载（LazyColumn 懒组合），内存超限自动淘汰最久未用
 - ✅ **日志容量可配置**（v1.12）：日志环形缓冲上限 100-20000 条可调（默认 4096），防日志无限增长
-- ✅ **通用 Hook 规则引擎 4 模式**（v1.13）：返回值（isVip()→true）/ 参数值（vipLevel→3）/ 拦截执行（绕过支付校验）/ 静态变量（UserInfo.IS_VIP=true）——fckvip HookConfigManager 借鉴，规则按类名.方法名配置并持久化
+- ✅ **通用 Hook 规则引擎 7 模式**（v1.14）：记录参数/记录返回/记录两者（SimpleHook 借鉴，纯观测）+ 返回值（isVip()→true）/ 参数值（vipLevel→3）/ 拦截执行（绕过支付校验）/ 静态变量（UserInfo.IS_VIP=true）——fckvip HookConfigManager 借鉴，规则按类名.方法名配置并持久化
 - ✅ **反检测 hook 集**（v1.13）：隐藏 root（File.exists/Runtime.exec/SystemProperties）与 Xposed（loadClass/StackTrace/DexPathList/Modifier），与 EnvProbe 探测互为镜像
 
 ## 架构
@@ -54,7 +54,7 @@ SpyProbe 是一个运行在目标 App 进程内的全面探测工具，专为**�
 
 ## 使用
 
-1. 安装 `SpyProbe-v1.13.apk`
+1. 安装 `SpyProbe-v1.14.apk`
 2. 在 LSPosed 中勾选目标 App 作用域
 3. 重启目标 App
 4. 打开 SpyProbe 控制台，自动发现端口（9901-9910）并连接
