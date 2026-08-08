@@ -9,6 +9,7 @@ import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
@@ -44,15 +45,18 @@ public class SpyServer {
     private final MethodProbe mth;
     private final ClassLoadProbe clsProbe;
     private final String pkg;
+    private final android.content.SharedPreferences rulesPrefs; // v1.6: 规则持久化
     private volatile ServerSocket serverSocket;
     private volatile Thread acceptThread;
     private volatile int actualPort = PORT; // v1.3: 实际绑定端口（多进程 app 时可能偏移）
 
-    public SpyServer(NetProbe net, MethodProbe mth, ClassLoadProbe clsProbe, String pkg) {
+    public SpyServer(NetProbe net, MethodProbe mth, ClassLoadProbe clsProbe, String pkg,
+                     android.content.SharedPreferences rulesPrefs) {
         this.net = net;
         this.mth = mth;
         this.clsProbe = clsProbe;
         this.pkg = pkg;
+        this.rulesPrefs = rulesPrefs;
     }
 
     public void start() {
@@ -230,6 +234,7 @@ public class SpyServer {
                         if (c.has("crypto")) cfg.cryptoCapture = c.getBoolean("crypto");
                         if (c.has("activity")) cfg.activityCapture = c.getBoolean("activity");
                         if (c.has("json")) cfg.jsonCapture = c.getBoolean("json");
+                        if (c.has("detailMode")) cfg.detailMode = c.getBoolean("detailMode"); // v1.6
                         LogStore.get().log(TAG, "config updated: " + body);
                     }
                     JSONObject o = new JSONObject();
@@ -251,14 +256,22 @@ public class SpyServer {
                     o.put("crypto", Config.get().cryptoCapture);
                     o.put("activity", Config.get().activityCapture);
                     o.put("json", Config.get().jsonCapture);
+                    o.put("detailMode", Config.get().detailMode); // v1.6
                     return o.toString();
                 }
                 case "/api/classes": {
                     // ?filter= 关键字过滤；?logall=true 刷屏输出
+                    // v1.6: filter 做 URL 解码（UI 端 Uri.encode 编码了中文/特殊字符）
                     String filter = "";
                     boolean logAll = false;
                     for (String kv : query.split("&")) {
-                        if (kv.startsWith("filter=")) filter = kv.substring(7);
+                        if (kv.startsWith("filter=")) {
+                            try {
+                                filter = URLDecoder.decode(kv.substring(7), "UTF-8");
+                            } catch (Throwable t) {
+                                filter = kv.substring(7);
+                            }
+                        }
                         if (kv.startsWith("logall=true")) logAll = true;
                     }
                     if (!filter.isEmpty() || logAll) {
@@ -285,6 +298,8 @@ public class SpyServer {
                     if (r.optBoolean("ok", false) && r.optInt("hooked", 0) > 0) {
                         Config.HookSpec spec = new Config.HookSpec(cls, methodName, params);
                         Config.get().addHook(spec);
+                        // v1.6: 持久化规则（进程重启自动重挂）
+                        if (rulesPrefs != null) Config.get().saveRules(rulesPrefs);
                     }
                     return resp;
                 }
@@ -300,6 +315,8 @@ public class SpyServer {
                         JSONObject ur = new JSONObject(mth.unhookMethod(cls, methodName, params));
                         unhooked = ur.optInt("unhooked", 0);
                     } catch (Throwable t) { }
+                    // v1.6: 持久化（卸载后规则同步落盘）
+                    if (rulesPrefs != null) Config.get().saveRules(rulesPrefs);
                     JSONObject o = new JSONObject();
                     o.put("ok", true);
                     o.put("removedFromConfig", removed);
@@ -331,6 +348,7 @@ public class SpyServer {
                     if (c.isNull("value")) {
                         boolean removed = Config.get().removeHijack(cls, methodName, params);
                         LogStore.get().log(TAG, "[hijack] removed " + cls + "." + methodName + " removed=" + removed);
+                        if (rulesPrefs != null) Config.get().saveRules(rulesPrefs); // v1.6
                         JSONObject ro = new JSONObject();
                         ro.put("ok", true);
                         ro.put("removed", removed);
@@ -339,6 +357,7 @@ public class SpyServer {
                     String value = c.optString("value", "");
                     Config.get().addHijack(cls, methodName, params, value);
                     LogStore.get().log(TAG, "[hijack] " + cls + "." + methodName + "(" + params + ") -> " + value);
+                    if (rulesPrefs != null) Config.get().saveRules(rulesPrefs); // v1.6
                     JSONObject o = new JSONObject();
                     o.put("ok", true);
                     o.put("class", cls);

@@ -70,6 +70,20 @@ public class SQLiteProbe {
                 LogStore.get().log(TAG, "[SQL] INSERT(conflict) INTO " + chain.getArg(0) + " " + cv(chain.getArg(2)));
             });
 
+            // v1.6: replace —— INSERT OR REPLACE 语义
+            hooked += hookByName(db, "replace", 3, (chain, name) -> {
+                LogStore.get().log(TAG, "[SQL] REPLACE INTO " + chain.getArg(0) + " " + cv(chain.getArg(2)));
+            });
+
+            // v1.6: rawQueryWithFactory(CursorFactory, String sql, String[], String)
+            hooked += hookByName(db, "rawQueryWithFactory", 4, (chain, name) -> {
+                LogStore.get().log(TAG, "[SQL] rawQuery(factory): " + chain.getArg(1)
+                        + " args=" + MethodProbe.str(chain.getArg(2), 200));
+            });
+
+            // v1.6: queryWithFactory —— 自定义 factory 的 query
+            hooked += hookQueryWithFactory(db);
+
             LogStore.get().log(TAG, "[" + phase + "] hooked SQLiteDatabase x" + hooked);
         } catch (Throwable t) {
             LogStore.get().log(TAG, "[" + phase + "] SQLiteDatabase hook fail: " + t);
@@ -109,8 +123,7 @@ public class SQLiteProbe {
     }
 
     /** query 重载拼可读 SELECT */
-    private int hookQuery(Class<?> db) {
-        int hooked = 0;
+    private int hookQuery(Class<?> db) {        int hooked = 0;
         try {
             for (Method m : db.getDeclaredMethods()) {
                 if (!m.getName().equals("query")) continue;
@@ -160,6 +173,54 @@ public class SQLiteProbe {
             }
         } catch (Throwable t) {
             LogStore.get().log(TAG, "[SQL] hook query fail: " + t);
+        }
+        return hooked;
+    }
+
+    /** v1.6: queryWithFactory(CursorFactory, boolean distinct, String table, String[] columns, String selection, String[] selectionArgs, String groupBy, String having, String orderBy, String limit) —— 10 参 */
+    private int hookQueryWithFactory(Class<?> db) {
+        int hooked = 0;
+        try {
+            for (Method m : db.getDeclaredMethods()) {
+                if (!m.getName().equals("queryWithFactory")) continue;
+                if (m.getParameterTypes().length != 10) continue;
+                module.hook(m).intercept(chain -> {
+                    Object r;
+                    try {
+                        r = chain.proceed();
+                    } catch (Throwable t) {
+                        LogStore.get().log(TAG, "[SQL] !!! queryWithFactory FAILED: " + t);
+                        throw t;
+                    }
+                    if (Config.get().sqliteCapture) {
+                        try {
+                            StringBuilder sb = new StringBuilder("[SQL] SELECT");
+                            Object cols = chain.getArg(3);
+                            if (cols != null) {
+                                sb.append(' ').append(joinArr(cols));
+                            } else {
+                                sb.append(" *");
+                            }
+                            sb.append(" FROM ").append(chain.getArg(2));
+                            if (chain.getArg(4) != null) {
+                                sb.append(" WHERE ").append(chain.getArg(4));
+                                if (chain.getArg(5) != null) {
+                                    sb.append(" args=").append(MethodProbe.str(chain.getArg(5), 200));
+                                }
+                            }
+                            if (chain.getArg(6) != null) sb.append(" GROUP BY ").append(chain.getArg(6));
+                            if (chain.getArg(7) != null) sb.append(" HAVING ").append(chain.getArg(7));
+                            if (chain.getArg(8) != null) sb.append(" ORDER BY ").append(chain.getArg(8));
+                            if (chain.getArg(9) != null) sb.append(" LIMIT ").append(chain.getArg(9));
+                            LogStore.get().log(TAG, sb.toString());
+                        } catch (Throwable t) { }
+                    }
+                    return r;
+                });
+                hooked++;
+            }
+        } catch (Throwable t) {
+            LogStore.get().log(TAG, "[SQL] hook queryWithFactory fail: " + t);
         }
         return hooked;
     }

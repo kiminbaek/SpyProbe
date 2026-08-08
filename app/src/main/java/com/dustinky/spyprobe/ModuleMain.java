@@ -18,6 +18,10 @@ import io.github.libxposed.api.XposedModule;
  * 1. 安装网络抓包 hook（SSL 绕过 / OkHttp / HttpURLConnection）
  * 2. 启动本地 HTTP server（127.0.0.1:9901）
  * UI（MainActivity）通过 HTTP 拉取日志、下发配置、探测函数。
+ *
+ * v1.6：
+ *   - 7 个延迟线程合并为 1 个调度线程（按时间点依次安装各探测）
+ *   - hook/hijack 规则持久化到模块远程偏好（getRemotePreferences），进程重启自动重挂
  */
 public class ModuleMain extends XposedModule {
 
@@ -45,7 +49,9 @@ public class ModuleMain extends XposedModule {
         LogCatProbe logcat = new LogCatProbe(this);
         ActivityProbe act = new ActivityProbe(this);
         JsonProbe json = new JsonProbe(this, cl);
-        SpyServer server = new SpyServer(net, mth, clsProbe, pkg);
+        // v1.6: 规则持久化偏好（模块远程偏好，不污染目标 app 数据）
+        android.content.SharedPreferences rulesPrefs = getRemotePreferences("spyprobe_rules");
+        SpyServer server = new SpyServer(net, mth, clsProbe, pkg, rulesPrefs);
 
         // 立即装网络 hook
         net.install("early");
@@ -64,80 +70,42 @@ public class ModuleMain extends XposedModule {
             log(Log.ERROR, TAG, "logcat probe install error: " + t);
         }
 
-        // v1.5: 加密算法记录（延迟确保 Cipher 类就绪）
+        // v1.6: 单个调度线程按时间点依次安装延迟探测 + 持久化规则重挂
         new Thread(() -> {
-            try {
-                Thread.sleep(2000);
-                crypto.install("early");
-            } catch (Throwable t) {
-                log(Log.ERROR, TAG, "crypto probe install error: " + t);
-            }
-        }, "SpyProbe-Crypto").start();
-
-        // v1.5: Activity/Intent 记录（延迟确保 ActivityThread 就绪）
-        new Thread(() -> {
-            try {
-                Thread.sleep(2000);
-                act.install("early");
-            } catch (Throwable t) {
-                log(Log.ERROR, TAG, "activity probe install error: " + t);
-            }
-        }, "SpyProbe-Act").start();
-
-        // v1.5: JSON/Gson 序列化记录（延迟确保类就绪）
-        new Thread(() -> {
-            try {
-                Thread.sleep(2000);
-                json.install("early");
-            } catch (Throwable t) {
-                log(Log.ERROR, TAG, "json probe install error: " + t);
-            }
-        }, "SpyProbe-Json").start();
-
-        // v1.4: 装 SQLite 增删改查记录
-        new Thread(() -> {
-            try {
-                Thread.sleep(2500);
-                sqlite.install("early");
-            } catch (Throwable t) {
-                log(Log.ERROR, TAG, "sqlite probe install error: " + t);
-            }
-        }, "SpyProbe-SQLite").start();
-
-        // v1.3: 装 SharedPreferences key 记录（延迟确保实现类已加载）
-        new Thread(() -> {
-            try {
-                Thread.sleep(2000);
-                prefs.install("early");
-            } catch (Throwable t) {
-                log(Log.ERROR, TAG, "prefs probe install error: " + t);
-            }
-        }, "SpyProbe-Prefs").start();
-
-        // v1.2: 装类加载探测（延迟确保类加载器稳定）
-        new Thread(() -> {
+            // t=1500ms: 类加载探测（延迟确保类加载器稳定）
             try {
                 Thread.sleep(1500);
                 clsProbe.install("early");
             } catch (Throwable t) {
                 log(Log.ERROR, TAG, "class probe install error: " + t);
             }
-        }, "SpyProbe-ClassProbe").start();
 
-        // 起 server（延迟确保 app 网络栈就绪）
-        new Thread(() -> {
+            // t=2000ms: 加密/Activity/JSON/SharedPreferences + server
             try {
-                Thread.sleep(2000);
+                Thread.sleep(500);
+                crypto.install("early");
+                act.install("early");
+                json.install("early");
+                prefs.install("early");
                 server.start();
             } catch (Throwable t) {
-                log(Log.ERROR, TAG, "server start error: " + t);
+                log(Log.ERROR, TAG, "deferred probe install error: " + t);
             }
-        }, "SpyProbe-Boot").start();
 
-        // 配置里已下发的 hook 也要重装（热更新场景）
-        new Thread(() -> {
+            // t=2500ms: SQLite 记录
             try {
-                Thread.sleep(5000);
+                Thread.sleep(500);
+                sqlite.install("early");
+            } catch (Throwable t) {
+                log(Log.ERROR, TAG, "sqlite probe install error: " + t);
+            }
+
+            // t=5000ms: 持久化 hook/hijack 规则重挂（热更新/重启后规则不丢）
+            try {
+                Thread.sleep(2500);
+                android.content.SharedPreferences sp = getRemotePreferences("spyprobe_rules");
+                boolean loaded = Config.get().loadRules(sp);
+                if (loaded) log(Log.INFO, TAG, "loaded persisted hook rules, re-hooking...");
                 for (Config.HookSpec spec : Config.get().hooks) {
                     if (!spec.enabled) continue;
                     try {
@@ -146,10 +114,12 @@ public class ModuleMain extends XposedModule {
                         LogStore.get().log(TAG, "re-hook fail: " + spec.className + "." + spec.methodName + " : " + t);
                     }
                 }
+                if (loaded) LogStore.get().log(TAG, "re-hook done, rules=" + Config.get().hooks.size()
+                        + " hijacks=" + Config.get().hijacks.size());
             } catch (Throwable t) {
                 log(Log.ERROR, TAG, "re-hook error: " + t);
             }
-        }, "SpyProbe-Rehook").start();
+        }, "SpyProbe-Scheduler").start();
 
         log(Log.INFO, TAG, "SpyProbe ready for " + pkg);
     }

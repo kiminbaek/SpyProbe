@@ -1,19 +1,24 @@
 package com.dustinky.spyprobe;
 
 import java.text.SimpleDateFormat;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.Deque;
 import java.util.List;
 import java.util.Locale;
 
 /**
  * 环形缓冲日志（hook 进程内，线程安全）
  * 供 SpyServer 增量拉取；超容量自动淘汰最旧。
+ *
+ * v1.6: 底层 ArrayList → ArrayDeque（淘汰最旧 remove(0) O(n) → pollFirst O(1)，
+ * 高刷屏场景下 Log 写入不再随容量线性退化）。
  */
 public class LogStore {
 
     private static final int MAX_ENTRIES = 4096;
-    private final List<Entry> entries = new ArrayList<>();
+    private final Deque<Entry> entries = new ArrayDeque<>();
     private long seq = 0;
     private final SimpleDateFormat fmt = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
 
@@ -36,8 +41,8 @@ public class LogStore {
 
     public synchronized void log(String tag, String msg) {
         String t = fmt.format(new Date());
-        entries.add(new Entry(++seq, t, tag, msg));
-        while (entries.size() > MAX_ENTRIES) entries.remove(0);
+        entries.addLast(new Entry(++seq, t, tag, msg));
+        while (entries.size() > MAX_ENTRIES) entries.pollFirst();
     }
 
     /** 返回 seq > since 的条目 */

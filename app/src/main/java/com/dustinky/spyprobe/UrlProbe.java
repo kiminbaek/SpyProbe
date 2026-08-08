@@ -29,9 +29,12 @@ public class UrlProbe {
             java.lang.reflect.Constructor<?> ctor = url.getConstructor(String.class);
             module.hook(ctor).intercept(chain -> {
                 Object r = chain.proceed();
-                Object s = chain.getArg(0);
-                if (s instanceof String) {
-                    LogStore.get().log(TAG, "[URL] " + s);
+                // v1.6: 补开关检查（此前不检查 Config.urlBuildCapture，设置关不掉）
+                if (Config.get().urlBuildCapture) {
+                    Object s = chain.getArg(0);
+                    if (s instanceof String) {
+                        LogStore.get().log(TAG, "[URL] " + s);
+                    }
                 }
                 return r;
             });
@@ -45,9 +48,11 @@ public class UrlProbe {
             Method parse = uri.getMethod("parse", String.class);
             module.hook(parse).intercept(chain -> {
                 Object r = chain.proceed();
-                Object s = chain.getArg(0);
-                if (s instanceof String) {
-                    LogStore.get().log(TAG, "[URI] " + s);
+                if (Config.get().urlBuildCapture) {
+                    Object s = chain.getArg(0);
+                    if (s instanceof String) {
+                        LogStore.get().log(TAG, "[URI] " + s);
+                    }
                 }
                 return r;
             });
@@ -61,9 +66,11 @@ public class UrlProbe {
             Method create = uri.getMethod("create", String.class);
             module.hook(create).intercept(chain -> {
                 Object r = chain.proceed();
-                Object s = chain.getArg(0);
-                if (s instanceof String) {
-                    LogStore.get().log(TAG, "[URI] " + s);
+                if (Config.get().urlBuildCapture) {
+                    Object s = chain.getArg(0);
+                    if (s instanceof String) {
+                        LogStore.get().log(TAG, "[URI] " + s);
+                    }
                 }
                 return r;
             });
@@ -77,9 +84,11 @@ public class UrlProbe {
             Method parse = hu.getMethod("parse", String.class);
             module.hook(parse).intercept(chain -> {
                 Object r = chain.proceed();
-                Object s = chain.getArg(0);
-                if (s instanceof String) {
-                    LogStore.get().log(TAG, "[HTTPURL] " + s);
+                if (Config.get().urlBuildCapture) {
+                    Object s = chain.getArg(0);
+                    if (s instanceof String) {
+                        LogStore.get().log(TAG, "[HTTPURL] " + s);
+                    }
                 }
                 return r;
             });

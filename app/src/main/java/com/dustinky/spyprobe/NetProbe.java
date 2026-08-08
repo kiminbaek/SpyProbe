@@ -147,47 +147,35 @@ public class NetProbe {
     // ================= DNS 解析记录（v1.2）=================
     private void installDnsCapture(String phase) {
         // getAllByName(String) 是域名解析主入口（getByName 内部也走它）
+        // v1.6: 成功/失败路径合并为单 hook（原双 hook 拦截链冗余），失败也留痕
         try {
             final Method gab = InetAddress.class.getMethod("getAllByName", String.class);
             module.hook(gab).intercept(chain -> {
-                Object r = chain.proceed();
-                if (Config.get().dnsCapture) {
-                    try {
-                        Object host = chain.getArg(0);
-                        if (host != null && r instanceof InetAddress[]) {
-                            InetAddress[] addrs = (InetAddress[]) r;
-                            StringBuilder sb = new StringBuilder("[DNS] ").append(host).append(" -> [");
-                            for (int i = 0; i < addrs.length; i++) {
-                                if (i > 0) sb.append(", ");
-                                sb.append(addrs[i].getHostAddress());
-                            }
-                            sb.append("]");
-                            LogStore.get().log(TAG, sb.toString());
-                        }
-                    } catch (Throwable t) { }
-                }
-                return r;
-            });
-            LogStore.get().log(TAG, "[" + phase + "] hooked InetAddress.getAllByName");
-        } catch (Throwable t) {
-            LogStore.get().log(TAG, "[" + phase + "] DNS hook fail: " + t);
-        }
-        // 解析失败路径也记录（getAllByName 抛 UnknownHostException）
-        try {
-            final Method gab = InetAddress.class.getMethod("getAllByName", String.class);
-            module.hook(gab).intercept(chain -> {
+                Object host = chain.getArg(0);
                 try {
-                    return chain.proceed();
+                    Object r = chain.proceed();
+                    if (Config.get().dnsCapture && r instanceof InetAddress[]) {
+                        InetAddress[] addrs = (InetAddress[]) r;
+                        StringBuilder sb = new StringBuilder("[DNS] ").append(host).append(" -> [");
+                        for (int i = 0; i < addrs.length; i++) {
+                            if (i > 0) sb.append(", ");
+                            sb.append(addrs[i].getHostAddress());
+                        }
+                        sb.append("]");
+                        LogStore.get().log(TAG, sb.toString());
+                    }
+                    return r;
                 } catch (Throwable t) {
                     if (Config.get().dnsCapture) {
-                        Object host = chain.getArg(0);
                         LogStore.get().log(TAG, "[DNS] FAIL " + host + " : " + t);
                     }
                     throw t;
                 }
             });
-            LogStore.get().log(TAG, "[" + phase + "] hooked InetAddress.getAllByName (fail-path)");
-        } catch (Throwable t) { }
+            LogStore.get().log(TAG, "[" + phase + "] hooked InetAddress.getAllByName");
+        } catch (Throwable t) {
+            LogStore.get().log(TAG, "[" + phase + "] DNS hook fail: " + t);
+        }
     }
 
     // ================= Socket 连接记录（v1.2）=================
@@ -195,9 +183,16 @@ public class NetProbe {
         try {
             final Method connect = java.net.Socket.class.getMethod("connect", java.net.SocketAddress.class);
             module.hook(connect).intercept(chain -> {
-                Object r = chain.proceed();
-                logSocket(chain.getArg(0), -1);
-                return r;
+                Object addr = chain.getArg(0);
+                try {
+                    Object r = chain.proceed();
+                    logSocket(addr, -1);
+                    return r;
+                } catch (Throwable t) {
+                    // v1.6: 连接失败也留痕
+                    logSocketFail(addr, -1, t);
+                    throw t;
+                }
             });
             LogStore.get().log(TAG, "[" + phase + "] hooked Socket.connect(SocketAddress)");
         } catch (Throwable t) {
@@ -206,10 +201,17 @@ public class NetProbe {
         try {
             final Method connect = java.net.Socket.class.getMethod("connect", java.net.SocketAddress.class, int.class);
             module.hook(connect).intercept(chain -> {
-                Object r = chain.proceed();
+                Object addr = chain.getArg(0);
                 Object to = chain.getArg(1);
-                logSocket(chain.getArg(0), to instanceof Integer ? (Integer) to : -1);
-                return r;
+                int timeout = to instanceof Integer ? (Integer) to : -1;
+                try {
+                    Object r = chain.proceed();
+                    logSocket(addr, timeout);
+                    return r;
+                } catch (Throwable t) {
+                    logSocketFail(addr, timeout, t);
+                    throw t;
+                }
             });
             LogStore.get().log(TAG, "[" + phase + "] hooked Socket.connect(SocketAddress,int)");
         } catch (Throwable t) {
@@ -228,7 +230,52 @@ public class NetProbe {
         } catch (Throwable t) { }
     }
 
+    /** v1.6: Socket 连接失败留痕（域名/端口 + 错误） */
+    private void logSocketFail(Object addr, int timeout, Throwable err) {
+        if (!Config.get().tcpCapture) return;
+        try {
+            java.net.InetSocketAddress isa = (java.net.InetSocketAddress) addr;
+            String host = isa.getHostString();
+            String ip = isa.getAddress() != null ? isa.getAddress().getHostAddress() : "?";
+            LogStore.get().log(TAG, "[TCP] FAIL " + host + " (" + ip + "):" + isa.getPort()
+                    + (timeout > 0 ? " timeout=" + timeout : "") + " -> " + err);
+        } catch (Throwable t) { }
+    }
+
     // ================= OkHttp 抓包 =================
+    // v1.6: 反射缓存（每次请求 10+ 次 getMethod → 首次解析后复用）
+    private static Method sReqUrl, sReqMethod, sReqHeaders, sReqBody;
+    private static Method sBodyBuffer, sBodyContentLength;
+    private static Method sBufferUtf8;
+    private static Method sRespPeek, sRespCode, sRespMsg, sRespHeaders, sRespBodyString;
+    /** 请求体最大可读字节（超过不 buffer，防 OOM） */
+    private static final int MAX_REQ_BODY = 1 << 20;
+
+    private static void ensureReqMethods(Object req) throws Exception {
+        if (sReqUrl == null) {
+            Class<?> rc = req.getClass();
+            sReqUrl = rc.getMethod("url");
+            sReqMethod = rc.getMethod("method");
+            sReqHeaders = rc.getMethod("headers");
+            sReqBody = rc.getMethod("body");
+            Class<?> bc = sReqBody.getReturnType();
+            sBodyBuffer = bc.getMethod("buffer");
+            sBodyContentLength = bc.getMethod("contentLength");
+            sBufferUtf8 = sBodyBuffer.getReturnType().getMethod("utf8");
+        }
+    }
+
+    private static void ensureRespMethods(Object resp) throws Exception {
+        if (sRespPeek == null) {
+            Class<?> rc = resp.getClass();
+            sRespPeek = rc.getMethod("peekBody", long.class);
+            sRespCode = rc.getMethod("code");
+            sRespMsg = rc.getMethod("message");
+            sRespHeaders = rc.getMethod("headers");
+            sRespBodyString = sRespPeek.getReturnType().getMethod("string");
+        }
+    }
+
     private void installOkHttpCapture(String phase) {
         // hook okhttp3.internal.http.RealInterceptorChain.proceed(Request)
         // 该方法在 okhttp3/okhttp4 均存在，是请求必经链路（包括异步）
@@ -257,35 +304,35 @@ public class NetProbe {
                     Object method = null;
                     Object url = null;
                     try {
-                        Method urlM = req.getClass().getMethod("url");
-                        Method methodM = req.getClass().getMethod("method");
-                        Method headersM = req.getClass().getMethod("headers");
-                        url = urlM.invoke(req);
-                        method = methodM.invoke(req);
-                        Object headers = headersM.invoke(req);
+                        ensureReqMethods(req);
+                        url = sReqUrl.invoke(req);
+                        method = sReqMethod.invoke(req);
+                        Object headers = sReqHeaders.invoke(req);
                         StringBuilder sb = new StringBuilder();
                         sb.append(">>> ").append(method).append(" ").append(url);
                         if (headers != null) {
                             // okhttp Headers.toString() 格式 "Key: value\n..."
                             sb.append("\n    ").append(headers.toString().replace("\n", "\n    "));
                         }
-                        // P1: 记录请求体（RequestBody.buffer()，one-shot body 会抛异常，catch）
+                        // P0-2(v1.6): 记录请求体前先查 contentLength()，超大 body 不 buffer（防 OOM）
                         try {
-                            Method bodyM = req.getClass().getMethod("body");
-                            Object body = bodyM.invoke(req);
+                            Object body = sReqBody.invoke(req);
                             if (body != null) {
-                                Method bufferM = body.getClass().getMethod("buffer");
-                                Object buffer = bufferM.invoke(body);
-                                if (buffer != null) {
-                                    Method utf8M = buffer.getClass().getMethod("utf8");
-                                    Object bstr = utf8M.invoke(buffer);
-                                    if (bstr != null) {
-                                        String bs = bstr.toString();
-                                        if (bs.length() > Config.get().bodyLimit) {
-                                            bs = bs.substring(0, Config.get().bodyLimit) + "...(" + bs.length() + "B)";
+                                long clen = (Long) sBodyContentLength.invoke(body);
+                                if (clen > 0 && clen <= MAX_REQ_BODY) {
+                                    Object buffer = sBodyBuffer.invoke(body);
+                                    if (buffer != null) {
+                                        Object bstr = sBufferUtf8.invoke(buffer);
+                                        if (bstr != null) {
+                                            String bs = bstr.toString();
+                                            if (bs.length() > Config.get().bodyLimit) {
+                                                bs = bs.substring(0, Config.get().bodyLimit) + "...(" + bs.length() + "B)";
+                                            }
+                                            sb.append("\n    reqBody: ").append(bs.replace("\n", "\n    "));
                                         }
-                                        sb.append("\n    reqBody: ").append(bs.replace("\n", "\n    "));
                                     }
+                                } else if (clen > MAX_REQ_BODY) {
+                                    sb.append("\n    reqBody: <skipped ").append(clen).append("B, too large>");
                                 }
                             }
                         } catch (Throwable t) { /* one-shot body 忽略 */ }
@@ -303,16 +350,13 @@ public class NetProbe {
                     }
                     try {
                         int limit = Math.max(256, Config.get().bodyLimit);
+                        ensureRespMethods(resp);
                         // okhttp Response.peekBody(long) 不消费原流
-                        Method peek = resp.getClass().getMethod("peekBody", long.class);
-                        Object body = peek.invoke(resp, (long) limit);
-                        Method codeM = resp.getClass().getMethod("code");
-                        Method msgM = resp.getClass().getMethod("message");
-                        Method headersM = resp.getClass().getMethod("headers");
-                        Object code = codeM.invoke(resp);
-                        Object msg = msgM.invoke(resp);
-                        Object respHeaders = headersM.invoke(resp);
-                        Object bodyStr = body != null ? body.getClass().getMethod("string").invoke(body) : "";
+                        Object body = sRespPeek.invoke(resp, (long) limit);
+                        Object code = sRespCode.invoke(resp);
+                        Object msg = sRespMsg.invoke(resp);
+                        Object respHeaders = sRespHeaders.invoke(resp);
+                        Object bodyStr = body != null ? sRespBodyString.invoke(body) : "";
                         String b = bodyStr == null ? "" : bodyStr.toString();
                         if (b.length() > limit) b = b.substring(0, limit) + "...(" + b.length() + "B)";
                         StringBuilder sb = new StringBuilder();

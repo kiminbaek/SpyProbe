@@ -97,7 +97,43 @@ public class CryptoProbe {
                 });
             } catch (Throwable t) { }
 
-            LogStore.get().log(TAG, "[" + phase + "] hooked Cipher (getInstance/init/doFinal)");
+            // v1.6: doFinal(byte[], int, int) —— 分块加密常用重载
+            try {
+                Method df = Cipher.class.getMethod("doFinal", byte[].class, int.class, int.class);
+                module.hook(df).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (Config.get().cryptoCapture) {
+                        try {
+                            Object in = chain.getArg(0);
+                            Object off = chain.getArg(1);
+                            Object len = chain.getArg(2);
+                            byte[] out = r instanceof byte[] ? (byte[]) r : null;
+                            LogStore.get().log(TAG, "[doFinal] in=" + MethodProbe.str(in, 96)
+                                    + " off=" + off + " len=" + len + " out=" + MethodProbe.str(out, 96));
+                        } catch (Throwable t) { }
+                    }
+                    return r;
+                });
+            } catch (Throwable t) { }
+
+            // v1.6: update(byte[]) —— 流式加密（Cipher 流式模式数据块经 update 走）
+            try {
+                Method up = Cipher.class.getMethod("update", byte[].class);
+                module.hook(up).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (Config.get().cryptoCapture) {
+                        try {
+                            Object in = chain.getArg(0);
+                            byte[] out = r instanceof byte[] ? (byte[]) r : null;
+                            LogStore.get().log(TAG, "[update] in=" + MethodProbe.str(in, 96)
+                                    + " out=" + MethodProbe.str(out, 96));
+                        } catch (Throwable t) { }
+                    }
+                    return r;
+                });
+            } catch (Throwable t) { }
+
+            LogStore.get().log(TAG, "[" + phase + "] hooked Cipher (getInstance/init/doFinal/update)");
         } catch (Throwable t) {
             LogStore.get().log(TAG, "[" + phase + "] Cipher hook fail: " + t);
         }

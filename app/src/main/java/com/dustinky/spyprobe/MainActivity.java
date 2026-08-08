@@ -111,7 +111,7 @@ public class MainActivity extends Activity {
 
         // 标题
         TextView title = new TextView(this);
-        title.setText("SpyProbe 逆向探测控制台 v1.5");
+        title.setText("SpyProbe 逆向探测控制台 v1.6");
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
         title.setTextColor(Color.WHITE);
         title.setGravity(Gravity.CENTER);
@@ -1085,6 +1085,13 @@ public class MainActivity extends Activity {
         cbJson.setChecked(false);
         box.addView(cbJson);
 
+        // v1.6: 函数探测详细模式开关（关=轻量只记参数摘要，hook 高频方法不拖慢 app）
+        CheckBox cbDetail = new CheckBox(this);
+        cbDetail.setText("函数探测详细模式（参数/字段/调用栈）");
+        cbDetail.setTextColor(Color.BLACK);
+        cbDetail.setChecked(true);
+        box.addView(cbDetail);
+
         scroll.addView(box);
 
         new AlertDialog.Builder(this)
@@ -1106,6 +1113,7 @@ public class MainActivity extends Activity {
                                 o.put("crypto", cbCrypto.isChecked());
                                 o.put("activity", cbAct.isChecked());
                                 o.put("json", cbJson.isChecked());
+                                o.put("detailMode", cbDetail.isChecked()); // v1.6
                                 httpPost("/api/config", o.toString());
                             } catch (Throwable t) { }
                         }).start();

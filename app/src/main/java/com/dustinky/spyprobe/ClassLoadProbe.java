@@ -73,6 +73,8 @@ public class ClassLoadProbe {
     /** 记录类名（匹配过滤器才记录；不匹配也做去重统计） */
     public synchronized void record(String name) {
         if (name == null || name.isEmpty()) return;
+        // v1.6: 过滤数组类/内部符号（"[Lxxx;"/"xxx/yyy"），只保留规范类名
+        if (name.startsWith("[") || name.startsWith("L") || name.indexOf('/') >= 0) return;
         String filter = Config.get().classFilter;
         if (filter != null && !filter.isEmpty()) {
             // 过滤非匹配项，只保留含关键字的类（记录到日志，帮助定位）

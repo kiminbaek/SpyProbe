@@ -283,42 +283,72 @@ public class MethodProbe {
             LogStore.get().log(TAG, "[hijack] check fail: " + t);
         }
 
+        // v1.6: 轻量模式（关详细）只记参数摘要，跳过字段快照+调用栈（hook 高频方法时性能关键）
+        boolean detail = Config.get().detailMode;
+
         StringBuilder sb = new StringBuilder();
         sb.append("[invoke] ").append(caller).append("(");
+        int shown = 0;
         for (int i = 0; i < args.size(); i++) {
             if (i > 0) sb.append(", ");
-            sb.append(str(args.get(i), 300));
+            // 轻量模式最多显示前 4 个参数（防参数巨大刷屏）
+            if (!detail && shown >= 4) {
+                sb.append("...");
+                break;
+            }
+            sb.append(str(args.get(i), detail ? 300 : 100));
+            shown++;
         }
         sb.append(")");
         LogStore.get().log(TAG, sb.toString());
 
-        // v1.2: 实例字段值快照（最多 8 个字段，每个 100 字符）
-        if (thiz != null) {
+        // v1.2: 实例字段值快照（最多 8 个字段，每个 100 字符）—— 详细模式才做
+        if (detail && thiz != null) {
             try {
                 StringBuilder fs = new StringBuilder("[fields] ");
-                java.lang.reflect.Field[] fields = thiz.getClass().getDeclaredFields();
-                int shown = 0;
+                java.lang.reflect.Field[] fields = fieldsOf(thiz.getClass());
+                int fshown = 0;
                 for (java.lang.reflect.Field f : fields) {
-                    if (shown >= 8) break;
+                    if (fshown >= 8) break;
                     if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
                     try {
                         f.setAccessible(true);
-                        if (shown > 0) fs.append("; ");
+                        if (fshown > 0) fs.append("; ");
                         fs.append(f.getName()).append("=").append(str(f.get(thiz), 100));
-                        shown++;
+                        fshown++;
                     } catch (Throwable t) { }
                 }
-                if (shown > 0) LogStore.get().log(TAG, fs.toString());
+                if (fshown > 0) LogStore.get().log(TAG, fs.toString());
             } catch (Throwable t) { }
         }
 
-        LogStore.get().log(TAG, "[stack]\n" + stack(14));
+        // 调用栈（详细模式才做，getStackTrace 开销大）
+        if (detail) {
+            LogStore.get().log(TAG, "[stack]\n" + stack(14));
+        }
 
         Object result = chain.proceed();
         try {
-            LogStore.get().log(TAG, "[return] " + str(result, 300));
+            LogStore.get().log(TAG, "[return] " + str(result, detail ? 300 : 100));
         } catch (Throwable t) { }
         return result;
+    }
+
+    /** v1.6: 字段反射缓存（WeakHashMap 防泄漏，getDeclaredFields 每次调用很贵） */
+    private static final java.util.Map<Class<?>, java.lang.reflect.Field[]> FIELD_CACHE =
+            new java.util.WeakHashMap<>();
+
+    private static java.lang.reflect.Field[] fieldsOf(Class<?> c) {
+        java.lang.reflect.Field[] f = FIELD_CACHE.get(c);
+        if (f == null) {
+            try {
+                f = c.getDeclaredFields();
+            } catch (Throwable t) {
+                f = new java.lang.reflect.Field[0];
+            }
+            FIELD_CACHE.put(c, f);
+        }
+        return f;
     }
 
     /** v1.4: 按返回类型把字符串强制值转成返回值 */

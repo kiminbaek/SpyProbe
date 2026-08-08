@@ -28,6 +28,7 @@ public class Config {
     public volatile boolean cryptoCapture = false; // Cipher 算法/密钥/IV 记录（v1.5，默认关防刷屏）
     public volatile boolean activityCapture = false; // Activity 生命周期 + Intent 跳转（v1.5，默认关）
     public volatile boolean jsonCapture = false;   // JSONObject/Gson 序列化记录（v1.5，默认关）
+    public volatile boolean detailMode = true;     // v1.6: 函数探测详细模式（参数/字段/调用栈）；关=轻量只记参数摘要
     public volatile String classFilter = "";       // 类加载关键字过滤（空=全部入库不刷屏）
     public volatile boolean classLogAll = false;   // 匹配类是否刷屏输出到日志
     public volatile int bodyLimit = 2048;          // 记录响应体最大字节
@@ -157,5 +158,62 @@ public class Config {
 
     private static String keyOf(String className, String methodName, String paramTypes) {
         return className + "#" + methodName + "(" + (paramTypes == null ? "" : paramTypes) + ")";
+    }
+
+    // ===== v1.6: hook/hijack 规则持久化（进程重启自动重挂）=====
+    private static final String PREFS_NAME = "spyprobe_rules";
+    private static final String KEY_HOOKS = "hooks";
+    private static final String KEY_HIJACKS = "hijacks";
+
+    /** 保存当前 hooks + hijacks 到模块远程偏好（不污染目标 app 数据） */
+    public synchronized void saveRules(android.content.SharedPreferences prefs) {
+        try {
+            org.json.JSONArray hArr = new org.json.JSONArray();
+            for (HookSpec h : hooks) {
+                if (!h.enabled) continue;
+                org.json.JSONObject o = new org.json.JSONObject();
+                o.put("c", h.className);
+                o.put("m", h.methodName);
+                o.put("p", h.paramTypes == null ? "" : h.paramTypes);
+                hArr.put(o);
+            }
+            org.json.JSONArray jArr = new org.json.JSONArray();
+            for (HijackRule h : hijacks) {
+                org.json.JSONObject o = new org.json.JSONObject();
+                o.put("c", h.className);
+                o.put("m", h.methodName);
+                o.put("p", h.paramTypes == null ? "" : h.paramTypes);
+                o.put("v", h.returnValue);
+                jArr.put(o);
+            }
+            prefs.edit().putString(KEY_HOOKS, hArr.toString()).putString(KEY_HIJACKS, jArr.toString()).apply();
+        } catch (Throwable t) { }
+    }
+
+    /** 读取持久化规则（进程启动后调用，返回是否加载到内容） */
+    public synchronized boolean loadRules(android.content.SharedPreferences prefs) {
+        boolean loaded = false;
+        try {
+            String hStr = prefs.getString(KEY_HOOKS, "");
+            if (!hStr.isEmpty()) {
+                org.json.JSONArray arr = new org.json.JSONArray(hStr);
+                for (int i = 0; i < arr.length(); i++) {
+                    org.json.JSONObject o = arr.getJSONObject(i);
+                    HookSpec spec = new HookSpec(o.optString("c"), o.optString("m"), o.optString("p"));
+                    addHook(spec);
+                    loaded = true;
+                }
+            }
+            String jStr = prefs.getString(KEY_HIJACKS, "");
+            if (!jStr.isEmpty()) {
+                org.json.JSONArray arr = new org.json.JSONArray(jStr);
+                for (int i = 0; i < arr.length(); i++) {
+                    org.json.JSONObject o = arr.getJSONObject(i);
+                    addHijack(o.optString("c"), o.optString("m"), o.optString("p"), o.optString("v"));
+                    loaded = true;
+                }
+            }
+        } catch (Throwable t) { }
+        return loaded;
     }
 }
