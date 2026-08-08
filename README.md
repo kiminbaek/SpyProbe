@@ -21,10 +21,10 @@ SpyProbe 是一个运行在目标 App 进程内的全面探测工具，专为**�
 - ✅ **万能连接点**（v1.9）：BlockGuardOs.connect 覆盖所有 socket（含 QUIC/HTTP3）
 - ✅ **环境检测探测**（v1.9）：记录 App 检测行为（root 路径/命令/属性/vpn/传感器/防截屏/剪贴板/设备指纹），反编译知道要绕过什么
 - ✅ **Native 层抓包**（v1.10）：shadowhook inline hook——libc 七函数（send/recv/read/write）+ 4 个 SSL 库（libssl/conscrypt/ttboringssl/**libflutter**）TLS 解密明文 + HTTP/2 帧解析，专治 Flutter/Unity 纯 native 网络栈（Java hook 盲区）
-- ✅ **Hook 失败隔离**（v1.12）：动态 hook 回调最外层兜底，任何探测逻辑异常都不拖垮目标方法（借鉴 Guise 隔离原则）
+- ✅ **Hook 失败隔离**（v1.12）：动态 hook 回调最外层兜底，任何探测逻辑异常都不拖垮目标方法
 - ✅ **应用图标懒加载 + 8MiB LRU**（v1.12）：目标选择列表图标按需加载（LazyColumn 懒组合），内存超限自动淘汰最久未用
 - ✅ **日志容量可配置**（v1.12）：日志环形缓冲上限 100-20000 条可调（默认 4096），防日志无限增长
-- ✅ **通用 Hook 规则引擎 7 模式**（v1.14）：记录参数/记录返回/记录两者（SimpleHook 借鉴，纯观测）+ 返回值（isVip()→true）/ 参数值（vipLevel→3）/ 拦截执行（绕过支付校验）/ 静态变量（UserInfo.IS_VIP=true）——fckvip HookConfigManager 借鉴，规则按类名.方法名配置并持久化
+- ✅ **通用 Hook 规则引擎 7 模式**（v1.14）：记录参数/记录返回/记录两者（纯观测）+ 返回值（isVip()→true）/ 参数值（vipLevel→3）/ 拦截执行（绕过支付校验）/ 静态变量（UserInfo.IS_VIP=true）——规则按类名.方法名配置并持久化
 - ✅ **反检测 hook 集**（v1.13）：隐藏 root（File.exists/Runtime.exec/SystemProperties）与 Xposed（loadClass/StackTrace/DexPathList/Modifier），与 EnvProbe 探测互为镜像
 
 ## 架构
@@ -84,7 +84,9 @@ SpyProbe 是一个运行在目标 App 进程内的全面探测工具，专为**�
 
 | 版本 | 说明 |
 |:-----|:-----|
-| v1.12 | Guise 借鉴 ×3：Hook 失败隔离（回调最外层兜底）/ 应用图标懒加载 + 8MiB LRU / 日志容量可配置（100-20000） |
+| v1.14 | 加密跟踪升级（按实例跟踪 init/update/doFinal 完整上下文：算法/密钥/IV/明文/密文/堆栈，流式数据拼接）；新增记录参数/记录返回/记录两者三种纯观测模式；Hook 规则支持方法名与参数通配符 `*`；随机返回值（可定时刷新） |
+| v1.13 | 通用 Hook 规则引擎（返回值/参数值/拦截执行/静态变量）+ 反检测 hook 集（隐藏 root / Xposed） |
+| v1.12 | Hook 失败隔离（回调最外层兜底）/ 应用图标懒加载 + 8MiB LRU / 日志容量可配置（100-20000） |
 | v1.11 | Compose UI 重构：Kotlin + Material3 深色主题 + 4 Tab 底部导航（抓包/探测/Hook/设置），日志流 LazyColumn 化 |
 | v1.10 | Native 层抓包：shadowhook hook libc 七函数 + 4 SSL 库 TLS 解密 + HTTP/2 帧解析，专治 Flutter/Unity |
 | v1.9 | DexKit（导出 dex + 字符串反查）/ 环境检测探测 / TLS 明文抓包 / 万能连接点 / Cronet |
