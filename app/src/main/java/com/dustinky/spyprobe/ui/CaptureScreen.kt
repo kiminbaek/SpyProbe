@@ -1,9 +1,6 @@
 package com.dustinky.spyprobe.ui
 
 import android.graphics.Bitmap
-import android.net.Uri
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -20,25 +17,17 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -60,32 +49,25 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.dustinky.spyprobe.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.nio.charset.StandardCharsets
 import java.util.regex.Pattern
 
-// v1.11: 抓包页 —— 目标/端口/状态/开关/过滤 + LazyColumn 日志流
+// v1.18: 抓包页 —— 目标/端口/状态/记录开关 + 日志入口（日志流已移到独立 LogsScreen）
+// v1.11: 原抓包页含过滤 + LazyColumn 日志流
 
 @Composable
-fun CaptureScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
+fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier = Modifier) {
     val target by vm.targetPkg.collectAsState()
     val port by vm.port.collectAsState()
     val status by vm.status.collectAsState()
     val connected by vm.connected.collectAsState()
-    val logLines by vm.logLines.collectAsState()
-    val filter by vm.filter.collectAsState()
-
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
+    val logCount by vm.logCount.collectAsState()
 
     // v1.15 P0-3: 后端配置快照（开关从后端真实值初始化，不再硬编码默认）
     var cfg by remember { mutableStateOf<Map<String, Any>>(emptyMap()) }
@@ -99,29 +81,6 @@ fun CaptureScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     }
     androidx.compose.runtime.DisposableEffect(Unit) {
         onDispose { vm.stopPolling() }
-    }
-
-    // SAF 导出
-    var exportText by remember { mutableStateOf<String?>(null) }
-    val exportLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("text/plain")
-    ) { uri: Uri? ->
-        val text = exportText
-        if (uri != null && text != null) {
-            scope.launch {
-                withContext(Dispatchers.IO) {
-                    runCatching {
-                        val os = context.contentResolver.openOutputStream(uri)
-                        if (os != null) {
-                            os.write(text.toByteArray(StandardCharsets.UTF_8))
-                            os.flush()
-                            os.close()
-                        }
-                    }
-                }
-            }
-        }
-        exportText = null
     }
 
     Column(modifier = modifier.fillMaxSize().padding(horizontal = 12.dp)) {
@@ -205,83 +164,26 @@ fun CaptureScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
 
-        // 过滤行
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            OutlinedTextField(
-                value = filter,
-                onValueChange = { vm.setFilter(it) },
-                placeholder = { Text("过滤 /api/ Token") },
-                singleLine = true,
-                textStyle = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.weight(2f).height(48.dp)
-            )
-            // v1.16 P2-11: FilterChip selected 跟随当前 filter（此前恒 false 无状态反馈）
-            FilterChip(selected = filter == NET_FILTER, onClick = { vm.setFilter(if (filter == NET_FILTER) "" else NET_FILTER) }, label = { Text("网络") })
-            FilterChip(selected = filter == MTH_FILTER, onClick = { vm.setFilter(if (filter == MTH_FILTER) "" else MTH_FILTER) }, label = { Text("函数") })
-            FilterChip(selected = filter.isEmpty(), onClick = { vm.setFilter("") }, label = { Text("全部") })
-        }
-
-        // 操作行：暂停 / 清空 / 导出（v1.16 P2-10: 暂停轮询便于阅读）
-        var paused by remember { mutableStateOf(false) }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 6.dp)) {
-            OutlinedButton(onClick = {
-                paused = !paused
-                if (paused) vm.stopPolling() else vm.startPolling()
-            }, modifier = Modifier.weight(1f)) {
-                Text(if (paused) "继续" else "暂停")
-            }
-            Button(onClick = { vm.clearLogs() }, modifier = Modifier.weight(1f)) {
-                Icon(Icons.Filled.Delete, contentDescription = null)
-                Spacer(Modifier.width(4.dp))
-                Text("清空")
-            }
-            Button(onClick = {
-                scope.launch {
-                    val resp = withContext(Dispatchers.IO) { vm.api.export() }
-                    if (resp == null) return@launch
-                    val text = runCatching {
-                        val o = org.json.JSONObject(resp)
-                        var t = o.optString("text", "")
-                        val kw = vm.filter.value.trim()
-                        if (kw.isNotEmpty()) {
-                            t = t.split("\n").filter { matchesFilter(it, kw) }.joinToString("\n")
-                        }
-                        t
-                    }.getOrDefault("")
-                    exportText = text
-                    exportLauncher.launch("SpyProbe_${System.currentTimeMillis()}.log")
-                }
-            }, modifier = Modifier.weight(1f)) {
-                Icon(Icons.Filled.Share, contentDescription = null)
-                Spacer(Modifier.width(4.dp))
-                Text("导出")
-            }
-        }
-
-        // 日志流（v1.16: P0-2 key 用 seq、P1-6 仅底部才滚、P2-9 按 tag 着色）
-        val kw = filter.trim()
-        val shown = if (kw.isEmpty()) logLines else logLines.filter { matchesFilter(it.second, kw) }
-        val listState = rememberLazyListState()
-        LaunchedEffect(shown.size, filter) {
-            // P1-6: 用户上翻看历史时不强制拉回底部——只在接近底部时才滚
-            val info = listState.layoutInfo
-            val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: -1
-            val nearBottom = lastVisible < 0 || lastVisible >= info.totalItemsCount - 2
-            if (nearBottom && shown.isNotEmpty()) listState.animateScrollToItem(shown.size - 1)
-        }
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize()
+        // ===== 日志入口卡片（v1.18: 日志流已独立成第 5 Tab，抓包页只留入口） =====
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+            modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
         ) {
-            itemsIndexed(shown, key = { _, p -> p.first }) { _, p ->
-                Text(
-                    p.second,
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 11.sp,
-                    color = logColor(p.second),
-                    modifier = Modifier.padding(vertical = 1.dp)
-                )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().clickable(onClick = onOpenLogs).padding(horizontal = 12.dp, vertical = 12.dp)
+            ) {
+                Icon(Icons.Filled.List, contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("查看日志", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                    Text("已记录 $logCount 条", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Text("›", style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
@@ -297,12 +199,12 @@ private fun androidx.compose.foundation.layout.RowScope.SwitchItem(label: String
     }
 }
 
-// 过滤快捷短语（v1.16 P2-11: FilterChip 选中态判断用）
-private const val NET_FILTER = "(Net|DNS|TCP|HUC|OkHttp|SSL)"
-private const val MTH_FILTER = "(Mth)"
+// 过滤快捷短语（v1.16 P2-11: FilterChip 选中态判断用；v1.18 internal 供 LogsScreen 引用）
+internal const val NET_FILTER = "(Net|DNS|TCP|HUC|OkHttp|SSL)"
+internal const val MTH_FILTER = "(Mth)"
 
 /** v1.16 P2-9: 日志按 tag 类型着色（网络绿/函数蓝/规则橙/反检测紫/数据橙黄/环境粉/失败红/其它灰） */
-private fun logColor(line: String): Color {
+internal fun logColor(line: String): Color {
     return when {
         line.startsWith("[TCP] FAIL") -> Color(0xFFEF5350)
         line.startsWith("[Net") || line.startsWith("[DNS") || line.startsWith("[TCP") ||

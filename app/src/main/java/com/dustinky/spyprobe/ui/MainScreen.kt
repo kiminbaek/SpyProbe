@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -24,7 +25,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.lifecycle.viewmodel.compose.viewModel
 
-// v1.11: Compose 主界面 —— 4 Tab 底部导航
+// v1.18: Compose 主界面 —— 5 Tab 底部导航（日志页独立）
+// v1.11: 4 Tab 底部导航
 
 private data class TabItem(val title: String, val icon: ImageVector)
 
@@ -32,6 +34,7 @@ private val tabs = listOf(
     TabItem("抓包", Icons.Filled.Call),
     TabItem("探测", Icons.Filled.Build),
     TabItem("Hook", Icons.Filled.Lock),
+    TabItem("日志", Icons.Filled.List),
     TabItem("设置", Icons.Filled.Settings)
 )
 
@@ -65,9 +68,10 @@ fun MainScreen(vm: SpyViewModel = viewModel()) {
         }
     ) { padding ->
         when (selected) {
-            0 -> CaptureScreen(vm, Modifier.padding(padding))
+            0 -> CaptureScreen(vm, onOpenLogs = { selected = 3 }, Modifier.padding(padding))
             1 -> ProbeScreen(vm, Modifier.padding(padding))
             2 -> HooksScreen(vm, Modifier.padding(padding))
+            3 -> LogsScreen(vm, Modifier.padding(padding))
             else -> SettingsScreen(vm, Modifier.padding(padding))
         }
     }

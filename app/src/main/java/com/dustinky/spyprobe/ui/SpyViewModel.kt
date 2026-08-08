@@ -11,8 +11,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -37,6 +40,11 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
     // 日志（v1.16 P0-2: Pair<seq, 行文本>，seq 自增唯一，LazyColumn key 用它防重复行崩溃）
     private val _logLines = MutableStateFlow<List<Pair<Long, String>>>(emptyList())
     val logLines: StateFlow<List<Pair<Long, String>>> = _logLines.asStateFlow()
+
+    // v1.18: 日志条数（抓包页角标用，避免 collect 全量日志）
+    val logCount: StateFlow<Int> = _logLines.map { it.size }.stateIn(
+        viewModelScope, SharingStarted.Eagerly, 0
+    )
 
     private var logSeq = 0L
 
