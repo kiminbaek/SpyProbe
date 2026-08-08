@@ -61,6 +61,12 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
     private var since = 0L
     private var pollingJob: Job? = null
 
+    // v1.18.1 修复: 轮询常驻 ViewModel（此前由页面 LaunchedEffect 控制，切到日志页时抓包页销毁触发
+    // stopPolling 导致日志冻结）——现在任何页面都实时更新，暂停按钮才真正控制轮询
+    init {
+        startPolling()
+    }
+
     companion object {
         const val PREFS = "spyprobe"
         const val KEY_TARGET = "target"

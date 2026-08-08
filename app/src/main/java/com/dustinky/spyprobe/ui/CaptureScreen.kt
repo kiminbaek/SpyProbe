@@ -72,15 +72,11 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
     // v1.15 P0-3: 后端配置快照（开关从后端真实值初始化，不再硬编码默认）
     var cfg by remember { mutableStateOf<Map<String, Any>>(emptyMap()) }
 
-    // 生命周期轮询
+    // v1.18.1: 轮询已移到 ViewModel init 常驻，页面不再 start/stop（否则切页会停掉日志更新）
     LaunchedEffect(Unit) {
-        vm.startPolling()
         vm.refreshStatus()
         val c = withContext(Dispatchers.IO) { vm.api.fetchConfig() }
         if (c != null) cfg = c
-    }
-    androidx.compose.runtime.DisposableEffect(Unit) {
-        onDispose { vm.stopPolling() }
     }
 
     Column(modifier = modifier.fillMaxSize().padding(horizontal = 12.dp)) {
