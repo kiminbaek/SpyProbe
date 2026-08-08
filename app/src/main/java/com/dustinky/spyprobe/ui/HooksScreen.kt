@@ -160,7 +160,9 @@ private fun HijackDialog(vm: SpyViewModel, h: HookEntry, onDismiss: () -> Unit) 
     var fieldType by remember { mutableStateOf("") }
     var fieldValue by remember { mutableStateOf("") }
     val context = LocalContext.current
-    val modes = listOf(MODE_RETURN, MODE_PARAM, MODE_BLOCK, MODE_STATIC)
+    // v1.14: 7 模式（+3 记录模式，SimpleHook 借鉴）
+    val modes = listOf(MODE_RETURN, MODE_PARAM, MODE_BLOCK, MODE_STATIC,
+        MODE_RECORD_PARAMS, MODE_RECORD_RETURN, MODE_RECORD_BOTH)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -267,6 +269,19 @@ private fun HijackDialog(vm: SpyViewModel, h: HookEntry, onDismiss: () -> Unit) 
                             )
                         }
                     }
+                    // v1.14: 记录模式（SimpleHook 借鉴）—— 纯观测，不需要额外输入
+                    MODE_RECORD_PARAMS, MODE_RECORD_RETURN, MODE_RECORD_BOTH -> {
+                        Text(
+                            when (mode) {
+                                MODE_RECORD_PARAMS -> "记录参数：每次调用把入参记入日志，不改程序行为。\n适合逆向分析：先观察方法每次收到什么。"
+                                MODE_RECORD_RETURN -> "记录返回值：调用后把结果记入日志，不改程序行为。\n适合逆向分析：观察方法实际返回什么。"
+                                else -> "记录参数+返回值：调用前后都记，不改程序行为。\n最完整的观测模式。"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(vertical = 6.dp)
+                        )
+                    }
                 }
             }
         },
@@ -278,6 +293,10 @@ private fun HijackDialog(vm: SpyViewModel, h: HookEntry, onDismiss: () -> Unit) 
                     MODE_BLOCK -> vm.api.setHijack(h.cls, h.method, h.params, MODE_BLOCK, value = "")
                     MODE_STATIC -> vm.api.setHijack(h.cls, h.method, h.params, MODE_STATIC, value = "",
                         fieldName = fieldName.trim(), fieldType = fieldType.trim(), fieldValue = fieldValue.trim())
+                    // v1.14: 记录模式不需要额外参数
+                    MODE_RECORD_PARAMS -> vm.api.setHijack(h.cls, h.method, h.params, MODE_RECORD_PARAMS, value = "")
+                    MODE_RECORD_RETURN -> vm.api.setHijack(h.cls, h.method, h.params, MODE_RECORD_RETURN, value = "")
+                    MODE_RECORD_BOTH -> vm.api.setHijack(h.cls, h.method, h.params, MODE_RECORD_BOTH, value = "")
                 }
                 android.widget.Toast.makeText(context, "规则已设置: ${h.method} [${modeName(mode)}]",
                     android.widget.Toast.LENGTH_LONG).show()

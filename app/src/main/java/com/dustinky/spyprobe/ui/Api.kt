@@ -40,17 +40,23 @@ data class HookEntry(val cls: String, val method: String, val params: String) {
     fun display(): String = "$cls.$method($params)"
 }
 
-// v1.13: 4 模式 hook 规则（fckvip 借鉴）
+// v1.13: 4 模式 hook 规则（fckvip 借鉴）；v1.14: +3 记录模式（SimpleHook 借鉴）
 const val MODE_RETURN = 0
 const val MODE_PARAM = 1
 const val MODE_BLOCK = 2
 const val MODE_STATIC = 3
+const val MODE_RECORD_PARAMS = 4
+const val MODE_RECORD_RETURN = 5
+const val MODE_RECORD_BOTH = 6
 
 fun modeName(mode: Int): String = when (mode) {
     MODE_RETURN -> "返回值"
     MODE_PARAM -> "参数值"
     MODE_BLOCK -> "拦截执行"
     MODE_STATIC -> "静态变量"
+    MODE_RECORD_PARAMS -> "记录参数"
+    MODE_RECORD_RETURN -> "记录返回"
+    MODE_RECORD_BOTH -> "记录两者"
     else -> "模式$mode"
 }
 
@@ -63,6 +69,9 @@ data class HijackEntry(val cls: String, val method: String, val params: String, 
             MODE_PARAM -> "改参[$paramValue]"
             MODE_BLOCK -> "== 拦截 =="
             MODE_STATIC -> "$fieldName($fieldType) = $fieldValue"
+            MODE_RECORD_PARAMS -> "纯观测: 记参数"
+            MODE_RECORD_RETURN -> "纯观测: 记返回"
+            MODE_RECORD_BOTH -> "纯观测: 记参数+返回"
             else -> "-> $value"
         }
         return "[${modeName(mode)}] $cls.$method($params) $detail"

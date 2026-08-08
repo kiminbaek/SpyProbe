@@ -365,7 +365,7 @@ public class SpyServer {
                 }
                 case "/api/hijack": {
                     // v1.13: POST {"class","method","params","mode","value","paramValue","fieldName","fieldType","fieldValue"}
-                    // mode: 0=返回值(默认,兼容旧版) 1=参数值 2=拦截执行 3=静态变量
+                    // mode: 0=返回值 1=参数值 2=拦截执行 3=静态变量 4=记录参数 5=记录返回 6=记录两者
                     // value 为 JSON null 则取消（匹配 class#method(params)+mode）
                     JSONObject c = new JSONObject(body);
                     String cls = c.optString("class", "");

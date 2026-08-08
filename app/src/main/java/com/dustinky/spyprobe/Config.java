@@ -72,6 +72,9 @@ public class Config {
     public static final int MODE_PARAM  = 1; // 参数值：命中后改写方法入参（vipCheck(level)→3）
     public static final int MODE_BLOCK  = 2; // 拦截执行：命中后方法不执行，返回 null/0（绕过支付校验）
     public static final int MODE_STATIC = 3; // 静态变量：命中后写静态字段（UserInfo.IS_VIP=true）
+    public static final int MODE_RECORD_PARAMS = 4; // 记录参数（v1.14，借鉴 SimpleHook RECORD_PARAMS）：纯观测不改行为
+    public static final int MODE_RECORD_RETURN = 5; // 记录返回值（v1.14，借鉴 SimpleHook RECORD_RETURN）：纯观测不改行为
+    public static final int MODE_RECORD_BOTH   = 6; // 记录参数+返回值（v1.14，借鉴 SimpleHook RECORD_PARAMS_RETURN）
 
     /** v1.13: 通用 hook 规则（原 HijackRule 升级为 4 模式；v1.4 的返回值劫持 = mode RETURN） */
     public static class HijackRule {
@@ -137,9 +140,11 @@ public class Config {
     /** 查找命中劫持规则（精确匹配 class#method(params)，paramTypes 为空=匹配任一重载） */
     public synchronized HijackRule findHijack(String className, String methodName, String paramTypes) {
         for (HijackRule h : hijacks) {
-            if (!h.className.equals(className) || !h.methodName.equals(methodName)) continue;
+            if (!h.className.equals(className)) continue;
+            // v1.14: 方法名/参数支持通配符 "*"（借鉴 SimpleHook MainHook）：* = 匹配任意方法名/任意参数
+            if (!h.methodName.equals("*") && !h.methodName.equals(methodName)) continue;
             if (paramTypes == null || paramTypes.isEmpty()) return h;
-            if (h.paramTypes.isEmpty() || h.paramTypes.equals(paramTypes)) return h;
+            if (h.paramTypes.isEmpty() || h.paramTypes.equals("*") || h.paramTypes.equals(paramTypes)) return h;
         }
         return null;
     }

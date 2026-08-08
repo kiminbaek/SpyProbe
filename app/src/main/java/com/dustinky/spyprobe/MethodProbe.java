@@ -209,8 +209,10 @@ public class MethodProbe {
 
     private String hookMethods(Class<?> cls, String methodName, String paramTypes) throws Throwable {
         int hooked = 0;
+        // v1.14: 方法名 "*" = hook 类内全部方法（借鉴 SimpleHook findAllMethods 通配）
+        boolean allMethods = methodName.equals("*");
         for (Method m : cls.getDeclaredMethods()) {
-            if (!m.getName().equals(methodName)) continue;
+            if (!allMethods && !m.getName().equals(methodName)) continue;
             if (paramTypes != null && !paramTypes.isEmpty() && !matchParams(m.getParameterTypes(), paramTypes)) {
                 continue;
             }
@@ -277,7 +279,10 @@ public class MethodProbe {
         List<Object> args = chain.getArgs();
         String caller = thiz != null ? thiz.getClass().getName() : "<static>";
 
-        // v1.4/v1.13: hook 规则（4 模式：返回值/参数值/拦截执行/静态变量）—— 命中规则改行为，不执行原方法
+        // v1.14: 记录模式待记返回值（proceed 后由调用方记录）
+        final Config.HijackRule[] recordRule = new Config.HijackRule[1];
+
+        // v1.4/v1.13/v1.14: hook 规则（7 模式：返回值/参数值/拦截执行/静态变量/记录参数/记录返回值/记录两者）
         try {
             java.lang.reflect.Executable exe = chain.getExecutable();
             if (exe instanceof java.lang.reflect.Method) {
@@ -310,6 +315,32 @@ public class MethodProbe {
                             LogStore.get().log(TAG, "[RULE:static] " + m.getDeclaringClass().getName() + "." + rule.fieldName
                                     + " = " + rule.fieldValue + " ok=" + ok);
                             // 静态字段写完后照常执行原方法
+                            break;
+                        }
+                        case Config.MODE_RECORD_PARAMS: {
+                            StringBuilder rb = new StringBuilder("[RULE:recordParams] ")
+                                    .append(m.getDeclaringClass().getName()).append(".").append(m.getName())
+                                    .append("(").append(joinParams(m.getParameterTypes())).append(") args=");
+                            for (int i = 0; i < args.size(); i++) {
+                                if (i > 0) rb.append(", ");
+                                rb.append(str(args.get(i), 300));
+                            }
+                            LogStore.get().log(TAG, rb.toString());
+                            break; // 纯观测，继续执行原方法
+                        }
+                        case Config.MODE_RECORD_RETURN:
+                        case Config.MODE_RECORD_BOTH: {
+                            if (rule.mode == Config.MODE_RECORD_BOTH) {
+                                StringBuilder rb = new StringBuilder("[RULE:recordBoth] ")
+                                        .append(m.getDeclaringClass().getName()).append(".").append(m.getName())
+                                        .append("(").append(joinParams(m.getParameterTypes())).append(") args=");
+                                for (int i = 0; i < args.size(); i++) {
+                                    if (i > 0) rb.append(", ");
+                                    rb.append(str(args.get(i), 300));
+                                }
+                                LogStore.get().log(TAG, rb.toString());
+                            }
+                            recordRule[0] = rule; // proceed 后记录返回值
                             break;
                         }
                     }
@@ -367,6 +398,13 @@ public class MethodProbe {
         try {
             LogStore.get().log(TAG, "[return] " + str(result, detail ? 300 : 100));
         } catch (Throwable t) { }
+        // v1.14: 记录模式（RECORD_RETURN / RECORD_BOTH）proceed 后记返回值
+        if (recordRule[0] != null) {
+            try {
+                LogStore.get().log(TAG, "[RULE:recordReturn] " + recordRule[0].className + "." + recordRule[0].methodName
+                        + "(" + recordRule[0].paramTypes + ") -> " + str(result, 300));
+            } catch (Throwable t) { }
+        }
         return result;
     }
 
@@ -462,6 +500,34 @@ public class MethodProbe {
         if (rt == void.class) return null;
         if (val == null || "null".equalsIgnoreCase(val.trim())) return null;
         String v = val.trim();
+        // v1.14: RandomReturn 随机返回值（借鉴 SimpleHook applyRandomReturnRule）——
+        //   格式 {"random":"seed","length":10} 生成随机串；可选 "updateTime":秒 定时刷新（存 SharedPreferences）
+        if (rt == String.class && v.startsWith("{") && v.contains("\"random\"")) {
+            try {
+                JSONObject jo = new JSONObject(v);
+                String seed = jo.optString("random", "abcdefghijklmnopqrstuvwxyz0123456789");
+                int len = jo.optInt("length", 10);
+                long updateTime = jo.optLong("updateTime", -1L);
+                String key = jo.optString("key", "rnd");
+                String defaultValue = jo.optString("defaultValue", "");
+                if (updateTime == -1L) {
+                    return randomString(seed, len);
+                }
+                // 定时刷新用进程内缓存（libxposed 静态方法无 module 引用，进程存活期间有效）
+                long now = System.currentTimeMillis() / 1000;
+                Long last = RND_TIME.get(key);
+                String cached = RND_VAL.get(key);
+                if (last == null || cached == null || (now - last) >= updateTime) {
+                    String fresh = randomString(seed, len);
+                    RND_TIME.put(key, now);
+                    RND_VAL.put(key, fresh);
+                    return fresh;
+                }
+                return cached;
+            } catch (Throwable t) {
+                LogStore.get().log(TAG, "[hijack] randomReturn parse fail: " + t);
+            }
+        }
         try {
             if (rt == boolean.class || rt == Boolean.class) return Boolean.parseBoolean(v);
             if (rt == int.class || rt == Integer.class) return Integer.parseInt(v);
@@ -477,6 +543,20 @@ public class MethodProbe {
         }
         // 其它对象类型：返回 null（无法凭空构造实例）
         return null;
+    }
+
+    /** v1.14: RandomReturn 定时刷新缓存（进程内） */
+    private static final java.util.Map<String, Long> RND_TIME = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final java.util.Map<String, String> RND_VAL = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** v1.14: 从种子字符集生成随机字符串（RandomReturn 用） */
+    private static String randomString(String seed, int len) {
+        java.util.Random r = new java.util.Random();
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < len; i++) {
+            sb.append(seed.charAt(r.nextInt(seed.length())));
+        }
+        return sb.toString();
     }
 
     /** 参数类型拼接成 "java.lang.String,int" 形式（与 hook key 一致） */

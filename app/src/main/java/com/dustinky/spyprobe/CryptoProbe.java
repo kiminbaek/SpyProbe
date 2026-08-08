@@ -1,23 +1,28 @@
 package com.dustinky.spyprobe;
 
+import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Method;
+import java.nio.ByteBuffer;
 import java.security.Key;
 import java.security.spec.AlgorithmParameterSpec;
+import java.util.concurrent.ConcurrentHashMap;
 
 import javax.crypto.Cipher;
+import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.IvParameterSpec;
-import javax.crypto.spec.SecretKeySpec;
 
 import io.github.libxposed.api.XposedModule;
 
 /**
- * 加密算法记录（v1.5 新增）：
- * hook javax.crypto.Cipher 的 getInstance/init/doFinal，记录：
+ * 加密算法记录（v1.5 新增，v1.14 重写）：
+ * hook javax.crypto.Cipher 的 getInstance/init/update/doFinal，按 Cipher 实例跟踪完整上下文：
  *   - 算法（transformation，如 AES/CBC/PKCS5Padding）
- *   - 密钥（algorithm + hex 前 64B）
- *   - IV（hex 前 64B）
- *   - 明文/密文（doFinal 输入输出前 64B）
- * 用途：反编译时知道 app 用啥加密、密钥放哪（字符串/静态字段/运行时算出）。
+ *   - 加解密方向（ENCRYPT/DECRYPT）
+ *   - 密钥（algorithm + base64/hex，完整）
+ *   - IV（hex，完整）
+ *   - 明文/密文（update 分块拼接 + doFinal 汇总，上限 1MB 防刷屏）
+ *   - 调用堆栈
+ * v1.14 借鉴 SimpleHook CipherHook：ConcurrentHashMap 实例上下文 + 数据流拼接 + 完整输出。
  * 注意：默认关（cryptoCapture=false）防刷屏；数据加密在 native/pure-Dart 层时这里看不到。
  */
 public class CryptoProbe {
@@ -30,6 +35,20 @@ public class CryptoProbe {
         this.module = module;
     }
 
+    /** 单个 Cipher 实例的跟踪上下文（init 记录，update 拼接，doFinal 汇总后移除） */
+    private static class Ctx {
+        String algorithm = "unknown";
+        String cryptMode = "?";
+        String keyAlgo = null;
+        String keyHex = null;
+        String ivHex = null;
+        final ByteArrayOutputStream dataStream = new ByteArrayOutputStream(256);
+        boolean hadData = false;
+    }
+
+    private static final ConcurrentHashMap<Cipher, Ctx> CTXS = new ConcurrentHashMap<>();
+    private static final int MAX_CAPTURE = 1024 * 1024; // 1MB 上限防刷屏
+
     public void install(String phase) {
         try {
             // getInstance(String) / getInstance(String, String) —— 记算法
@@ -39,48 +58,129 @@ public class CryptoProbe {
                     Object r = chain.proceed();
                     if (Config.get().cryptoCapture && r instanceof Cipher) {
                         try {
-                            LogStore.get().log(TAG, "[getInstance] " + chain.getArg(0));
+                            Ctx ctx = CTXS.computeIfAbsent((Cipher) r, k -> new Ctx());
+                            ctx.algorithm = String.valueOf(chain.getArg(0));
+                            LogStore.get().log(TAG, "[getInstance] " + ctx.algorithm);
+                        } catch (Throwable t) { }
+                    }
+                    return r;
+                });
+            } catch (Throwable t) { }
+            try {
+                Method gi2 = Cipher.class.getMethod("getInstance", String.class, String.class);
+                module.hook(gi2).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (Config.get().cryptoCapture && r instanceof Cipher) {
+                        try {
+                            Ctx ctx = CTXS.computeIfAbsent((Cipher) r, k -> new Ctx());
+                            ctx.algorithm = String.valueOf(chain.getArg(0));
+                            LogStore.get().log(TAG, "[getInstance] " + ctx.algorithm + " provider=" + chain.getArg(1));
                         } catch (Throwable t) { }
                     }
                     return r;
                 });
             } catch (Throwable t) { }
 
-            // init(int opmode, Key key) / init(int, Key, AlgorithmParameterSpec) —— 记算法+密钥+IV
+            // init(int, Key) —— 记模式+密钥
             try {
                 Method init = Cipher.class.getMethod("init", int.class, Key.class);
                 module.hook(init).intercept(chain -> {
                     Object r = chain.proceed();
-                    if (Config.get().cryptoCapture) logInit(chain.getThisObject(), chain.getArg(0), chain.getArg(1), null);
+                    if (Config.get().cryptoCapture) initCtx(chain.getThisObject(), chain.getArg(0), chain.getArg(1), null);
                     return r;
                 });
             } catch (Throwable t) { }
+            // init(int, Key, AlgorithmParameterSpec) —— 记模式+密钥+IV
             try {
                 Method init2 = Cipher.class.getMethod("init", int.class, Key.class, AlgorithmParameterSpec.class);
                 module.hook(init2).intercept(chain -> {
                     Object r = chain.proceed();
-                    if (Config.get().cryptoCapture) logInit(chain.getThisObject(), chain.getArg(0), chain.getArg(1), chain.getArg(2));
+                    if (Config.get().cryptoCapture) initCtx(chain.getThisObject(), chain.getArg(0), chain.getArg(1), chain.getArg(2));
                     return r;
                 });
             } catch (Throwable t) { }
+            // init(int, Key, SecureRandom)
             try {
                 Method init3 = Cipher.class.getMethod("init", int.class, Key.class, java.security.SecureRandom.class);
                 module.hook(init3).intercept(chain -> {
                     Object r = chain.proceed();
-                    if (Config.get().cryptoCapture) logInit(chain.getThisObject(), chain.getArg(0), chain.getArg(1), null);
+                    if (Config.get().cryptoCapture) initCtx(chain.getThisObject(), chain.getArg(0), chain.getArg(1), null);
                     return r;
                 });
             } catch (Throwable t) { }
+            // init(int, Key, AlgorithmParameterSpec, SecureRandom)
             try {
                 Method init4 = Cipher.class.getMethod("init", int.class, Key.class, AlgorithmParameterSpec.class, java.security.SecureRandom.class);
                 module.hook(init4).intercept(chain -> {
                     Object r = chain.proceed();
-                    if (Config.get().cryptoCapture) logInit(chain.getThisObject(), chain.getArg(0), chain.getArg(1), chain.getArg(2));
+                    if (Config.get().cryptoCapture) initCtx(chain.getThisObject(), chain.getArg(0), chain.getArg(1), chain.getArg(2));
                     return r;
                 });
             } catch (Throwable t) { }
 
-            // doFinal(byte[]) —— 记输入/输出前 64B
+            // update(byte[]) —— 流式数据拼接（v1.14 增强：不再是单条日志，拼进 Ctx.dataStream）
+            try {
+                Method up = Cipher.class.getMethod("update", byte[].class);
+                module.hook(up).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (Config.get().cryptoCapture) {
+                        try {
+                            Object in = chain.getArg(0);
+                            if (in instanceof byte[]) appendStream(chain.getThisObject(), (byte[]) in, 0, ((byte[]) in).length);
+                        } catch (Throwable t) { }
+                    }
+                    return r;
+                });
+            } catch (Throwable t) { }
+            // v1.14: update(byte[], int, int) —— 分块流式
+            try {
+                Method up2 = Cipher.class.getMethod("update", byte[].class, int.class, int.class);
+                module.hook(up2).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (Config.get().cryptoCapture) {
+                        try {
+                            Object in = chain.getArg(0);
+                            Object off = chain.getArg(1);
+                            Object len = chain.getArg(2);
+                            if (in instanceof byte[] && off instanceof Integer && len instanceof Integer) {
+                                appendStream(chain.getThisObject(), (byte[]) in, (Integer) off, (Integer) len);
+                            }
+                        } catch (Throwable t) { }
+                    }
+                    return r;
+                });
+            } catch (Throwable t) { }
+            // v1.14: update(ByteBuffer) —— ByteBuffer 流式
+            try {
+                Method up3 = Cipher.class.getMethod("update", ByteBuffer.class);
+                module.hook(up3).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (Config.get().cryptoCapture) {
+                        try {
+                            Object in = chain.getArg(0);
+                            if (in instanceof ByteBuffer) {
+                                ByteBuffer dup = ((ByteBuffer) in).duplicate();
+                                int rem = dup.remaining();
+                                byte[] tmp = new byte[Math.min(rem, MAX_CAPTURE)];
+                                dup.get(tmp);
+                                appendStream(chain.getThisObject(), tmp, 0, tmp.length);
+                            }
+                        } catch (Throwable t) { }
+                    }
+                    return r;
+                });
+            } catch (Throwable t) { }
+
+            // doFinal() —— 无参收尾
+            try {
+                Method df = Cipher.class.getMethod("doFinal");
+                module.hook(df).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (Config.get().cryptoCapture) finalizeCipher(chain.getThisObject(), null, r);
+                    return r;
+                });
+            } catch (Throwable t) { }
+            // doFinal(byte[]) —— 一次收尾
             try {
                 Method df = Cipher.class.getMethod("doFinal", byte[].class);
                 module.hook(df).intercept(chain -> {
@@ -88,16 +188,14 @@ public class CryptoProbe {
                     if (Config.get().cryptoCapture) {
                         try {
                             Object in = chain.getArg(0);
-                            byte[] out = r instanceof byte[] ? (byte[]) r : null;
-                            LogStore.get().log(TAG, "[doFinal] in=" + MethodProbe.str(in, 96)
-                                    + " out=" + MethodProbe.str(out, 96));
+                            if (in instanceof byte[]) appendStream(chain.getThisObject(), (byte[]) in, 0, ((byte[]) in).length);
+                            finalizeCipher(chain.getThisObject(), null, r);
                         } catch (Throwable t) { }
                     }
                     return r;
                 });
             } catch (Throwable t) { }
-
-            // v1.6: doFinal(byte[], int, int) —— 分块加密常用重载
+            // doFinal(byte[], int, int) —— 分块收尾
             try {
                 Method df = Cipher.class.getMethod("doFinal", byte[].class, int.class, int.class);
                 module.hook(df).intercept(chain -> {
@@ -107,70 +205,101 @@ public class CryptoProbe {
                             Object in = chain.getArg(0);
                             Object off = chain.getArg(1);
                             Object len = chain.getArg(2);
-                            byte[] out = r instanceof byte[] ? (byte[]) r : null;
-                            LogStore.get().log(TAG, "[doFinal] in=" + MethodProbe.str(in, 96)
-                                    + " off=" + off + " len=" + len + " out=" + MethodProbe.str(out, 96));
+                            if (in instanceof byte[] && off instanceof Integer && len instanceof Integer) {
+                                appendStream(chain.getThisObject(), (byte[]) in, (Integer) off, (Integer) len);
+                            }
+                            finalizeCipher(chain.getThisObject(), null, r);
                         } catch (Throwable t) { }
                     }
                     return r;
                 });
             } catch (Throwable t) { }
 
-            // v1.6: update(byte[]) —— 流式加密（Cipher 流式模式数据块经 update 走）
-            try {
-                Method up = Cipher.class.getMethod("update", byte[].class);
-                module.hook(up).intercept(chain -> {
-                    Object r = chain.proceed();
-                    if (Config.get().cryptoCapture) {
-                        try {
-                            Object in = chain.getArg(0);
-                            byte[] out = r instanceof byte[] ? (byte[]) r : null;
-                            LogStore.get().log(TAG, "[update] in=" + MethodProbe.str(in, 96)
-                                    + " out=" + MethodProbe.str(out, 96));
-                        } catch (Throwable t) { }
-                    }
-                    return r;
-                });
-            } catch (Throwable t) { }
-
-            LogStore.get().log(TAG, "[" + phase + "] hooked Cipher (getInstance/init/doFinal/update)");
+            LogStore.get().log(TAG, "[" + phase + "] hooked Cipher (getInstance/init/update/doFinal, v1.14 实例跟踪)");
         } catch (Throwable t) {
             LogStore.get().log(TAG, "[" + phase + "] Cipher hook fail: " + t);
         }
     }
 
-    private static void logInit(Object cipher, Object opmode, Object key, Object spec) {
+    /** init 时把算法/模式/密钥/IV 记入实例上下文 */
+    private static void initCtx(Object cipher, Object opmode, Object key, Object spec) {
         try {
-            String algo = "";
-            try {
-                if (cipher instanceof Cipher) algo = ((Cipher) cipher).getAlgorithm();
-            } catch (Throwable t) { }
-            String mode = "?";
+            if (!(cipher instanceof Cipher)) return;
+            Cipher c = (Cipher) cipher;
+            Ctx ctx = CTXS.computeIfAbsent(c, k -> new Ctx());
+            try { ctx.algorithm = c.getAlgorithm(); } catch (Throwable t) { }
             if (opmode instanceof Integer) {
                 int m = (Integer) opmode;
-                mode = m == Cipher.ENCRYPT_MODE ? "ENCRYPT" : m == Cipher.DECRYPT_MODE ? "DECRYPT" : String.valueOf(m);
+                ctx.cryptMode = m == Cipher.ENCRYPT_MODE ? "ENCRYPT" : m == Cipher.DECRYPT_MODE ? "DECRYPT"
+                        : m == Cipher.WRAP_MODE ? "WRAP" : m == Cipher.UNWRAP_MODE ? "UNWRAP" : String.valueOf(m);
             }
-            StringBuilder sb = new StringBuilder();
-            sb.append("[init] ").append(algo).append(" mode=").append(mode);
             if (key instanceof Key) {
                 Key k = (Key) key;
-                sb.append(" key=").append(k.getAlgorithm()).append(":").append(hexOf(k.getEncoded()));
+                ctx.keyAlgo = k.getAlgorithm();
+                try {
+                    byte[] enc = k.getEncoded();
+                    if (enc != null) ctx.keyHex = MethodProbe.hex(enc, Math.min(enc.length, 128)) + (enc.length > 128 ? "...(" + enc.length + "B)" : "");
+                } catch (Throwable t) { }
             } else if (key != null) {
-                sb.append(" key=").append(key.getClass().getName());
+                ctx.keyHex = "<" + key.getClass().getName() + ">";
             }
             if (spec instanceof IvParameterSpec) {
-                sb.append(" iv=").append(hexOf(((IvParameterSpec) spec).getIV()));
-            } else if (spec != null) {
-                sb.append(" params=").append(spec.getClass().getSimpleName());
+                byte[] iv = ((IvParameterSpec) spec).getIV();
+                ctx.ivHex = MethodProbe.hex(iv, Math.min(iv.length, 128)) + (iv.length > 128 ? "...(" + iv.length + "B)" : "");
+            } else if (spec instanceof GCMParameterSpec) {
+                byte[] iv = ((GCMParameterSpec) spec).getIV();
+                ctx.ivHex = "gcm:" + MethodProbe.hex(iv, Math.min(iv.length, 128));
+            } else if (spec instanceof AlgorithmParameterSpec) {
+                ctx.ivHex = "<" + spec.getClass().getSimpleName() + ">";
             }
-            LogStore.get().log(TAG, sb.toString());
+            LogStore.get().log(TAG, "[init] " + ctx.algorithm + " mode=" + ctx.cryptMode
+                    + " key=" + (ctx.keyAlgo != null ? ctx.keyAlgo + ":" : "") + ctx.keyHex
+                    + " iv=" + ctx.ivHex);
         } catch (Throwable t) {
             LogStore.get().log(TAG, "[init] parse fail: " + t);
         }
     }
 
-    private static String hexOf(byte[] b) {
-        if (b == null) return "null";
-        return MethodProbe.hex(b, Math.min(b.length, 64)) + (b.length > 64 ? "...(" + b.length + "B)" : "");
+    /** update 分块数据拼接进实例流（带上限） */
+    private static void appendStream(Object cipher, byte[] data, int off, int len) {
+        try {
+            if (!(cipher instanceof Cipher)) return;
+            Cipher c = (Cipher) cipher;
+            Ctx ctx = CTXS.computeIfAbsent(c, k -> new Ctx());
+            if (ctx.dataStream.size() < MAX_CAPTURE) {
+                int room = MAX_CAPTURE - ctx.dataStream.size();
+                int take = Math.min(len, room);
+                ctx.dataStream.write(data, off, take);
+                ctx.hadData = true;
+            }
+        } catch (Throwable t) { }
+    }
+
+    /** doFinal 汇总输出：算法/模式/密钥/IV/明文/密文/堆栈，然后移除实例上下文 */
+    private static void finalizeCipher(Object cipher, Object extraInput, Object result) {
+        try {
+            if (!(cipher instanceof Cipher)) return;
+            Cipher c = (Cipher) cipher;
+            Ctx ctx = CTXS.remove(c);
+            if (ctx == null) ctx = new Ctx();
+            byte[] resultBytes = result instanceof byte[] ? (byte[]) result : null;
+            StringBuilder sb = new StringBuilder("[doFinal] ").append(ctx.algorithm)
+                    .append(" mode=").append(ctx.cryptMode)
+                    .append(" key=").append(ctx.keyAlgo != null ? ctx.keyAlgo + ":" : "").append(ctx.keyHex)
+                    .append(" iv=").append(ctx.ivHex);
+            byte[] inBytes = ctx.hadData ? ctx.dataStream.toByteArray() : null;
+            if (inBytes != null) {
+                sb.append(" in=").append(MethodProbe.hex(inBytes, Math.min(inBytes.length, 128)))
+                        .append(inBytes.length > 128 ? "...(" + inBytes.length + "B)" : "(" + inBytes.length + "B)");
+            }
+            sb.append(" out=").append(resultBytes != null
+                    ? MethodProbe.hex(resultBytes, Math.min(resultBytes.length, 128))
+                    + (resultBytes.length > 128 ? "...(" + resultBytes.length + "B)" : "(" + resultBytes.length + "B)")
+                    : "null");
+            LogStore.get().log(TAG, sb.toString());
+            LogStore.get().log(TAG, "[stack]\n" + MethodProbe.stack(10));
+        } catch (Throwable t) {
+            LogStore.get().log(TAG, "[doFinal] parse fail: " + t);
+        }
     }
 }
