@@ -20,6 +20,7 @@ SpyProbe 是一个运行在目标 App 进程内的全面探测工具，专为**�
 - ✅ **TLS 明文抓包**（v1.9）：ConscryptEngine wrap/unwrap，HTTPS 明文头直接可见
 - ✅ **万能连接点**（v1.9）：BlockGuardOs.connect 覆盖所有 socket（含 QUIC/HTTP3）
 - ✅ **环境检测探测**（v1.9）：记录 App 检测行为（root 路径/命令/属性/vpn/传感器/防截屏/剪贴板/设备指纹），反编译知道要绕过什么
+- ✅ **Native 层抓包**（v1.10）：shadowhook inline hook——libc 七函数（send/recv/read/write）+ 4 个 SSL 库（libssl/conscrypt/ttboringssl/**libflutter**）TLS 解密明文 + HTTP/2 帧解析，专治 Flutter/Unity 纯 native 网络栈（Java hook 盲区）
 
 ## 架构
 
@@ -38,6 +39,7 @@ SpyProbe 是一个运行在目标 App 进程内的全面探测工具，专为**�
 ├─ DexKitProbe   —— DexKit 导出 dex + 字符串反查（v1.9）
 ├─ EnvProbe      —— 环境检测探测：root/vpn/传感器/防截屏/设备指纹（v1.9）
 ├─ StackUtil     —— 调用栈工具（v1.9）
+├─ NativeProbe   —— native 层抓包：shadowhook libc/SSL/HTTP2 + JNI 桥接 LogStore（v1.10）
 ├─ LogStore      —— 环形缓冲日志（4096 条）
 └─ SpyServer     —— 本地 HTTP server（127.0.0.1:9901-9910，多进程自动偏移）
 
