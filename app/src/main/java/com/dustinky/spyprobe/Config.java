@@ -130,9 +130,16 @@ public class Config {
         boolean removed = hooks.removeIf(h -> h.className.equals(className)
                 && h.methodName.equals(methodName)
                 && (paramTypes == null || paramTypes.isEmpty() || h.paramTypes.equals(paramTypes)));
-        // 同时清理句柄
-        String key = keyOf(className, methodName, paramTypes);
-        handles.remove(key);
+        // 同时清理句柄（paramTypes 空 = 通配删除该 class#method 的所有具体签名句柄）
+        if (paramTypes == null || paramTypes.isEmpty()) {
+            String prefix = className + "#" + methodName + "(";
+            java.util.Iterator<Map.Entry<String, List<XposedInterface.HookHandle>>> it = handles.entrySet().iterator();
+            while (it.hasNext()) {
+                if (it.next().getKey().startsWith(prefix)) it.remove();
+            }
+        } else {
+            handles.remove(keyOf(className, methodName, paramTypes));
+        }
         return removed;
     }
 
@@ -145,7 +152,22 @@ public class Config {
         return handles.containsKey(keyOf(className, methodName, paramTypes));
     }
 
+    /** 卸载句柄：paramTypes 非空精确匹配具体签名；空=通配卸载该 class#method 全部重载句柄 */
     public synchronized int unhookHandles(String className, String methodName, String paramTypes) {
+        if (paramTypes == null || paramTypes.isEmpty()) {
+            String prefix = className + "#" + methodName + "(";
+            int n = 0;
+            java.util.Iterator<Map.Entry<String, List<XposedInterface.HookHandle>>> it = handles.entrySet().iterator();
+            while (it.hasNext()) {
+                Map.Entry<String, List<XposedInterface.HookHandle>> e = it.next();
+                if (!e.getKey().startsWith(prefix)) continue;
+                for (XposedInterface.HookHandle h : e.getValue()) {
+                    try { h.unhook(); n++; } catch (Throwable t) { }
+                }
+                it.remove();
+            }
+            return n;
+        }
         String key = keyOf(className, methodName, paramTypes);
         List<XposedInterface.HookHandle> list = handles.remove(key);
         if (list == null) return 0;

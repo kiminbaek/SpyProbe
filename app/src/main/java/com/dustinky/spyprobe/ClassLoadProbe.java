@@ -73,8 +73,12 @@ public class ClassLoadProbe {
     /** 记录类名（匹配过滤器才记录；不匹配也做去重统计） */
     public synchronized void record(String name) {
         if (name == null || name.isEmpty()) return;
-        // v1.6: 过滤数组类/内部符号（"[Lxxx;"/"xxx/yyy"），只保留规范类名
-        if (name.startsWith("[") || name.startsWith("L") || name.indexOf('/') >= 0) return;
+        // v1.7: 只过滤真正的 JVM 内部符号，不再误杀 L 开头的正常类：
+        //   "[Lxxx;" / "[I" —— 数组描述符
+        //   "Lcom/foo/Bar;" —— 内部描述符（L 开头且分号结尾）
+        //   "com/foo/Bar"   —— 斜杠格式
+        // 注意：LocationManager/ListView/LinearLayout 等以 L 开头的规范类名必须保留
+        if (name.startsWith("[") || (name.startsWith("L") && name.endsWith(";")) || name.indexOf('/') >= 0) return;
         String filter = Config.get().classFilter;
         if (filter != null && !filter.isEmpty()) {
             // 过滤非匹配项，只保留含关键字的类（记录到日志，帮助定位）

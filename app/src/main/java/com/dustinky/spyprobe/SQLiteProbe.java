@@ -177,13 +177,20 @@ public class SQLiteProbe {
         return hooked;
     }
 
-    /** v1.6: queryWithFactory(CursorFactory, boolean distinct, String table, String[] columns, String selection, String[] selectionArgs, String groupBy, String having, String orderBy, String limit) —— 10 参 */
+    /** v1.6: queryWithFactory —— 两种重载：
+     *   10 参 (API17+)：queryWithFactory(CursorFactory, boolean distinct, String table, String[] columns,
+     *                      String selection, String[] selectionArgs, String groupBy, String having, String orderBy, String limit)
+     *    9 参 (旧版)   ：queryWithFactory(CursorFactory, String table, String[] columns,
+     *                      String selection, String[] selectionArgs, String groupBy, String having, String orderBy, String limit)
+     */
     private int hookQueryWithFactory(Class<?> db) {
         int hooked = 0;
         try {
             for (Method m : db.getDeclaredMethods()) {
                 if (!m.getName().equals("queryWithFactory")) continue;
-                if (m.getParameterTypes().length != 10) continue;
+                int argc = m.getParameterTypes().length;
+                if (argc != 9 && argc != 10) continue;
+                final int fArgc = argc;
                 module.hook(m).intercept(chain -> {
                     Object r;
                     try {
@@ -194,24 +201,27 @@ public class SQLiteProbe {
                     }
                     if (Config.get().sqliteCapture) {
                         try {
+                            // 9 参布局：0=factory 1=table 2=columns 3=selection 4=selectionArgs 5=groupBy 6=having 7=orderBy 8=limit
+                            // 10 参布局：0=factory 1=distinct 2=table 3=columns 4=selection 5=selectionArgs 6=groupBy 7=having 8=orderBy 9=limit
+                            int base = (fArgc == 9) ? 1 : 2;
                             StringBuilder sb = new StringBuilder("[SQL] SELECT");
-                            Object cols = chain.getArg(3);
+                            Object cols = chain.getArg(base + 1);
                             if (cols != null) {
                                 sb.append(' ').append(joinArr(cols));
                             } else {
                                 sb.append(" *");
                             }
-                            sb.append(" FROM ").append(chain.getArg(2));
-                            if (chain.getArg(4) != null) {
-                                sb.append(" WHERE ").append(chain.getArg(4));
-                                if (chain.getArg(5) != null) {
-                                    sb.append(" args=").append(MethodProbe.str(chain.getArg(5), 200));
+                            sb.append(" FROM ").append(chain.getArg(base));
+                            if (chain.getArg(base + 2) != null) {
+                                sb.append(" WHERE ").append(chain.getArg(base + 2));
+                                if (chain.getArg(base + 3) != null) {
+                                    sb.append(" args=").append(MethodProbe.str(chain.getArg(base + 3), 200));
                                 }
                             }
-                            if (chain.getArg(6) != null) sb.append(" GROUP BY ").append(chain.getArg(6));
-                            if (chain.getArg(7) != null) sb.append(" HAVING ").append(chain.getArg(7));
-                            if (chain.getArg(8) != null) sb.append(" ORDER BY ").append(chain.getArg(8));
-                            if (chain.getArg(9) != null) sb.append(" LIMIT ").append(chain.getArg(9));
+                            if (chain.getArg(base + 4) != null) sb.append(" GROUP BY ").append(chain.getArg(base + 4));
+                            if (chain.getArg(base + 5) != null) sb.append(" HAVING ").append(chain.getArg(base + 5));
+                            if (chain.getArg(base + 6) != null) sb.append(" ORDER BY ").append(chain.getArg(base + 6));
+                            if (chain.getArg(base + 7) != null) sb.append(" LIMIT ").append(chain.getArg(base + 7));
                             LogStore.get().log(TAG, sb.toString());
                         } catch (Throwable t) { }
                     }

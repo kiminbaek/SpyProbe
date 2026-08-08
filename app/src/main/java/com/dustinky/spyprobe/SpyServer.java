@@ -183,7 +183,12 @@ public class SpyServer {
                     long since = 0;
                     for (String kv : query.split("&")) {
                         if (kv.startsWith("since=")) {
-                            since = Long.parseLong(kv.substring(6));
+                            // v1.7: 非法 since 值不 500，回退 0
+                            try {
+                                since = Long.parseLong(kv.substring(6));
+                            } catch (Throwable t) {
+                                since = 0;
+                            }
                         }
                     }
                     List<LogStore.Entry> logs = LogStore.get().since(since);

@@ -4,21 +4,28 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.Editable;
 import android.text.InputType;
+import android.text.TextWatcher;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -111,7 +118,7 @@ public class MainActivity extends Activity {
 
         // 标题
         TextView title = new TextView(this);
-        title.setText("SpyProbe 逆向探测控制台 v1.6");
+        title.setText("SpyProbe 逆向探测控制台 v1.7");
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
         title.setTextColor(Color.WHITE);
         title.setGravity(Gravity.CENTER);
@@ -275,24 +282,133 @@ public class MainActivity extends Activity {
     }
 
     // ================= 目标选择 =================
+    /** v1.7: 读取已安装应用列表勾选（不再手输包名）—— 后台线程读，UI 列表展示 */
     private void pickTarget() {
-        // P0-2: 移除废对话框，直接弹输入框
+        new Thread(() -> {
+            final java.util.List<String[]> apps = new ArrayList<>(); // [label, pkg]
+            try {
+                PackageManager pm = getPackageManager();
+                Intent launcher = new Intent(Intent.ACTION_MAIN);
+                launcher.addCategory(Intent.CATEGORY_LAUNCHER);
+                java.util.Set<String> seen = new java.util.HashSet<>();
+                for (ResolveInfo ri : pm.queryIntentActivities(launcher, 0)) {
+                    if (ri.activityInfo == null || ri.activityInfo.packageName == null) continue;
+                    String pkgName = ri.activityInfo.packageName;
+                    if (pkgName.equals(getPackageName())) continue; // 排除 SpyProbe 自己
+                    if (!seen.add(pkgName)) continue;
+                    String label;
+                    try {
+                        label = ri.loadLabel(pm).toString();
+                    } catch (Throwable t) {
+                        label = pkgName;
+                    }
+                    apps.add(new String[]{label, pkgName});
+                }
+                apps.sort((a, b) -> a[0].compareToIgnoreCase(b[0]));
+            } catch (Throwable t) { }
+            final java.util.List<String[]> fApps = apps;
+            runOnUiThread(() -> showTargetPicker(fApps));
+        }).start();
+    }
+
+    /** v1.7: 应用选择对话框（搜索框 + 列表勾选 + 手输兜底） */
+    private void showTargetPicker(final java.util.List<String[]> apps) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(12), dp(8), dp(12), dp(8));
+
+        EditText search = new EditText(this);
+        search.setHint("搜索应用名 / 包名（如 微信 / com.tencent.mm）");
+        box.addView(search);
+
+        ListView list = new ListView(this);
+        final java.util.List<String> display = new ArrayList<>();
+        final java.util.List<String> pkgs = new ArrayList<>();
+        for (String[] a : apps) {
+            display.add(a[0] + "\n" + a[1]);
+            pkgs.add(a[1]);
+        }
+        final ArrayAdapter<String> adapter = new ArrayAdapter<>(this,
+                android.R.layout.simple_list_item_2, android.R.id.text1, display) {
+            @Override
+            public View getView(int position, View convertView, ViewGroup parent) {
+                View v = super.getView(position, convertView, parent);
+                try {
+                    // 必须用 getItem(position)（过滤后正确项），不能用全量 display 索引
+                    String item = String.valueOf(getItem(position));
+                    String[] parts = item.split("\n");
+                    TextView t1 = v.findViewById(android.R.id.text1);
+                    TextView t2 = v.findViewById(android.R.id.text2);
+                    t1.setText(parts[0]);
+                    t1.setTextColor(Color.WHITE);
+                    t1.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+                    t2.setText(parts.length > 1 ? parts[1] : "");
+                    t2.setTextColor(Color.parseColor("#BBBBBB"));
+                    t2.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+                } catch (Throwable t) { }
+                return v;
+            }
+        };
+        list.setAdapter(adapter);
+        list.setBackgroundColor(Color.parseColor("#2A2A2A"));
+        box.addView(list, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(380)));
+
+        // 搜索过滤
+        search.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int st, int c, int a) { }
+            @Override public void onTextChanged(CharSequence s, int st, int b, int c) {
+                String kw = s.toString().trim().toLowerCase();
+                adapter.getFilter().filter(kw);
+            }
+            @Override public void afterTextChanged(Editable s) { }
+        });
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("选择目标 App（" + apps.size() + " 个）")
+                .setMessage("需先在 LSPosed 模块作用域中勾选该 App")
+                .setView(box)
+                .setNegativeButton("手输包名", (d, w) -> showManualPkgDialog())
+                .setPositiveButton("取消", null)
+                .create();
+
+        list.setOnItemClickListener((parent, view, position, id) -> {
+            // ArrayAdapter.getFilter 过滤后 position 对应过滤后列表，需从过滤后的数据取包名
+            String selected;
+            try {
+                // 过滤后 count 变化，用 getItem 拿当前列表项
+                selected = String.valueOf(adapter.getItem(position));
+            } catch (Throwable t) {
+                selected = null;
+            }
+            if (selected == null) return;
+            String[] parts = selected.split("\n");
+            String pkg = parts.length > 1 ? parts[1] : selected;
+            applyTarget(pkg);
+            dialog.dismiss();
+        });
+        dialog.show();
+    }
+
+    /** 手输包名兜底（列表搜不到时） */
+    private void showManualPkgDialog() {
         EditText input = new EditText(this);
         input.setInputType(InputType.TYPE_CLASS_TEXT);
         input.setText(targetPkg);
         new AlertDialog.Builder(this)
-                .setTitle("目标 App 包名")
+                .setTitle("手输包名")
                 .setMessage("请输入目标 App 包名（需先在 LSPosed 中为本模块勾选该包作用域）：")
                 .setView(input)
                 .setNegativeButton("取消", null)
-                .setPositiveButton("确定", (d, w) -> {
-                    targetPkg = input.getText().toString().trim();
-                    prefs.edit().putString(KEY_TARGET, targetPkg).apply();
-                    // P1-9: 按钮文本即时刷新
-                    btnTarget.setText(targetPkg.isEmpty() ? "选择目标 App" : targetPkg);
-                    refreshStatus();
-                })
+                .setPositiveButton("确定", (d, w) -> applyTarget(input.getText().toString().trim()))
                 .show();
+    }
+
+    private void applyTarget(String pkg) {
+        targetPkg = pkg;
+        prefs.edit().putString(KEY_TARGET, targetPkg).apply();
+        btnTarget.setText(targetPkg.isEmpty() ? "选择目标 App" : targetPkg);
+        refreshStatus();
     }
 
     private void editPort() {
@@ -1099,28 +1215,30 @@ public class MainActivity extends Activity {
                 .setView(scroll)
                 .setNegativeButton("取消", null)
                 .setPositiveButton("确定", (d, w) -> {
+                    // v1.7: 上限输入非法时用默认 2048，其余配置照常下发（原实现 parseInt 失败直接跳 catch，谎报"其余已下发"）
+                    int limit = 2048;
                     try {
-                        int limit = Integer.parseInt(input.getText().toString().trim());
-                        new Thread(() -> {
-                            try {
-                                JSONObject o = new JSONObject();
-                                o.put("bodyLimit", limit);
-                                o.put("webView", cbWeb.isChecked());
-                                o.put("prefs", cbPrefs.isChecked());
-                                o.put("sqlite", cbSql.isChecked());
-                                o.put("urlBuild", cbUrlBuild.isChecked());
-                                o.put("logcat", cbLogcat.isChecked());
-                                o.put("crypto", cbCrypto.isChecked());
-                                o.put("activity", cbAct.isChecked());
-                                o.put("json", cbJson.isChecked());
-                                o.put("detailMode", cbDetail.isChecked()); // v1.6
-                                httpPost("/api/config", o.toString());
-                            } catch (Throwable t) { }
-                        }).start();
-                        Toast.makeText(this, "配置已下发", Toast.LENGTH_SHORT).show();
-                    } catch (Throwable t) {
-                        Toast.makeText(this, "输入无效（上限未改，其余已下发）", Toast.LENGTH_SHORT).show();
-                    }
+                        String s = input.getText().toString().trim();
+                        if (!s.isEmpty()) limit = Integer.parseInt(s);
+                    } catch (Throwable t) { }
+                    final int fLimit = limit;
+                    new Thread(() -> {
+                        try {
+                            JSONObject o = new JSONObject();
+                            o.put("bodyLimit", fLimit);
+                            o.put("webView", cbWeb.isChecked());
+                            o.put("prefs", cbPrefs.isChecked());
+                            o.put("sqlite", cbSql.isChecked());
+                            o.put("urlBuild", cbUrlBuild.isChecked());
+                            o.put("logcat", cbLogcat.isChecked());
+                            o.put("crypto", cbCrypto.isChecked());
+                            o.put("activity", cbAct.isChecked());
+                            o.put("json", cbJson.isChecked());
+                            o.put("detailMode", cbDetail.isChecked()); // v1.6
+                            httpPost("/api/config", o.toString());
+                        } catch (Throwable t) { }
+                    }).start();
+                    Toast.makeText(this, "配置已下发", Toast.LENGTH_SHORT).show();
                 })
                 .show();
     }

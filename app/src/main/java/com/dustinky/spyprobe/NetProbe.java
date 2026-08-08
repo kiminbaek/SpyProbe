@@ -179,25 +179,10 @@ public class NetProbe {
     }
 
     // ================= Socket 连接记录（v1.2）=================
+    // v1.7: 只 hook connect(SocketAddress,int) 一个重载 ——
+    //   Socket.connect(SocketAddress) 内部委托 connect(SocketAddress,int)，
+    //   同时 hook 两个重载会把同一个连接记 2 次 [TCP]。
     private void installSocketCapture(String phase) {
-        try {
-            final Method connect = java.net.Socket.class.getMethod("connect", java.net.SocketAddress.class);
-            module.hook(connect).intercept(chain -> {
-                Object addr = chain.getArg(0);
-                try {
-                    Object r = chain.proceed();
-                    logSocket(addr, -1);
-                    return r;
-                } catch (Throwable t) {
-                    // v1.6: 连接失败也留痕
-                    logSocketFail(addr, -1, t);
-                    throw t;
-                }
-            });
-            LogStore.get().log(TAG, "[" + phase + "] hooked Socket.connect(SocketAddress)");
-        } catch (Throwable t) {
-            LogStore.get().log(TAG, "[" + phase + "] Socket.connect(SocketAddress) hook fail: " + t);
-        }
         try {
             final Method connect = java.net.Socket.class.getMethod("connect", java.net.SocketAddress.class, int.class);
             module.hook(connect).intercept(chain -> {

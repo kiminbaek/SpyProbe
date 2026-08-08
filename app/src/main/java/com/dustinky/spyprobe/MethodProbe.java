@@ -189,13 +189,14 @@ public class MethodProbe {
             if (paramTypes != null && !paramTypes.isEmpty() && !matchParams(c.getParameterTypes(), paramTypes)) {
                 continue;
             }
-            // v1.3: 防重复 hook（UI 重复点同一方法不翻倍）
-            if (Config.get().hasHandle(cls.getName(), "<init>", paramTypes == null ? "" : paramTypes)) {
-                LogStore.get().log(TAG, "[hook] skip (already hooked): " + cls.getName() + " <init>");
+            // v1.7: 句柄 key 用具体签名（防重载全部 hook 时只挂第一个）；paramTypes 仅作 UI 过滤
+            String sigKey = joinParams(c.getParameterTypes());
+            if (Config.get().hasHandle(cls.getName(), "<init>", sigKey)) {
+                LogStore.get().log(TAG, "[hook] skip (already hooked): " + cls.getName() + " <init>(" + sigKey + ")");
                 continue;
             }
             XposedInterface.HookHandle h = module.hook(c).intercept(MethodProbe::onInvoke);
-            Config.get().addHandle(cls.getName(), "<init>", paramTypes == null ? "" : paramTypes, h);
+            Config.get().addHandle(cls.getName(), "<init>", sigKey, h);
             hooked++;
         }
         JSONObject out = new JSONObject();
@@ -208,25 +209,25 @@ public class MethodProbe {
 
     private String hookMethods(Class<?> cls, String methodName, String paramTypes) throws Throwable {
         int hooked = 0;
-        String paramKey = paramTypes == null ? "" : paramTypes;
         for (Method m : cls.getDeclaredMethods()) {
             if (!m.getName().equals(methodName)) continue;
             if (paramTypes != null && !paramTypes.isEmpty() && !matchParams(m.getParameterTypes(), paramTypes)) {
                 continue;
             }
-            // v1.3: 防重复 hook（同 class#method(params) 已 hook 则跳过）
-            if (Config.get().hasHandle(cls.getName(), methodName, paramKey)) {
-                LogStore.get().log(TAG, "[hook] skip (already hooked): " + cls.getName() + "." + methodName + "(" + paramKey + ")");
+            // v1.7: 句柄 key 用具体签名（防重载全部 hook 时只挂第一个）
+            String sigKey = joinParams(m.getParameterTypes());
+            if (Config.get().hasHandle(cls.getName(), methodName, sigKey)) {
+                LogStore.get().log(TAG, "[hook] skip (already hooked): " + cls.getName() + "." + methodName + "(" + sigKey + ")");
                 continue;
             }
             XposedInterface.HookHandle h = module.hook(m).intercept(MethodProbe::onInvoke);
-            Config.get().addHandle(cls.getName(), methodName, paramKey, h);
+            Config.get().addHandle(cls.getName(), methodName, sigKey, h);
             hooked++;
         }
         JSONObject out = new JSONObject();
         out.put("ok", true);
         out.put("hooked", hooked);
-        out.put("note", cls.getName() + "." + methodName + "(" + paramKey + ")");
+        out.put("note", cls.getName() + "." + methodName + "(" + (paramTypes == null ? "" : paramTypes) + ")");
         LogStore.get().log(TAG, "[hook] " + cls.getName() + "." + methodName + " x" + hooked);
         return out.toString();
     }
