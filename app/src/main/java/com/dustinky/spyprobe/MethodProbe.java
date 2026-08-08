@@ -411,9 +411,10 @@ public class MethodProbe {
         return result;
     }
 
-    /** v1.6: 字段反射缓存（WeakHashMap 防泄漏，getDeclaredFields 每次调用很贵） */
+    /** v1.6: 字段反射缓存（WeakHashMap 防泄漏，getDeclaredFields 每次调用很贵）
+     *  v1.16 P2-2: synchronizedMap 包装（hook 回调多线程并发 get/put 原本不安全） */
     private static final java.util.Map<Class<?>, java.lang.reflect.Field[]> FIELD_CACHE =
-            new java.util.WeakHashMap<>();
+            java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
 
     private static java.lang.reflect.Field[] fieldsOf(Class<?> c) {
         java.lang.reflect.Field[] f = FIELD_CACHE.get(c);
@@ -504,7 +505,8 @@ public class MethodProbe {
         if (val == null || "null".equalsIgnoreCase(val.trim())) return null;
         String v = val.trim();
         // v1.14: RandomReturn 随机返回值（借鉴 SimpleHook applyRandomReturnRule）——
-        //   格式 {"random":"seed","length":10} 生成随机串；可选 "updateTime":秒 定时刷新（存 SharedPreferences）
+        //   格式 {"random":"seed","length":10} 生成随机串；可选 "updateTime":秒 定时刷新
+        //   v1.16 P2-1: 刷新缓存用进程内 Map（RND_TIME/RND_VAL），不存 SharedPreferences（注释同步）
         if (rt == String.class && v.startsWith("{") && v.contains("\"random\"")) {
             try {
                 JSONObject jo = new JSONObject(v);

@@ -2,15 +2,20 @@ package com.dustinky.spyprobe.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Refresh
@@ -151,6 +156,7 @@ private fun HookItem(vm: SpyViewModel, h: HookEntry, onChanged: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun HijackDialog(vm: SpyViewModel, h: HookEntry, onDismiss: () -> Unit) {
     var mode by remember { mutableStateOf(MODE_RETURN) }
@@ -168,7 +174,12 @@ private fun HijackDialog(vm: SpyViewModel, h: HookEntry, onDismiss: () -> Unit) 
         onDismissRequest = onDismiss,
         title = { Text("Hook 规则 ${h.method}") },
         text = {
-            Column {
+            // v1.16 P1-9: 内容超高 → 垂直滚动 + 限高（窄屏 7 模式+输入框放得下）
+            Column(
+                modifier = Modifier
+                    .verticalScroll(rememberScrollState())
+                    .heightIn(max = 420.dp)
+            ) {
                 Text("class: ${h.cls}\nparams: ${if (h.params.isEmpty()) "全部重载" else h.params}",
                     style = MaterialTheme.typography.bodySmall)
 
@@ -176,13 +187,16 @@ private fun HijackDialog(vm: SpyViewModel, h: HookEntry, onDismiss: () -> Unit) 
                 Text("模式：", style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 8.dp, bottom = 4.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // v1.16 P1-7: Row+weight 挤一行显示不全 → FlowRow 自动换行
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
                     modes.forEach { m ->
                         val selected = mode == m
                         Button(
                             onClick = { mode = m },
-                            enabled = true,
-                            modifier = Modifier.weight(1f)
+                            enabled = true
                         ) {
                             Text(
                                 modeName(m),

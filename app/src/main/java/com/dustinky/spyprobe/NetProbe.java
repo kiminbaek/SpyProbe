@@ -512,14 +512,27 @@ public class NetProbe {
             if (addr instanceof java.net.InetAddress) {
                 java.net.InetAddress ia = (java.net.InetAddress) addr;
                 String ip = ia.getHostAddress();
-                // 跳过回环/本地（噪音）
+                // v1.16 P1-4: 172.16-31 才是私网，172.0-15/172.32-255 是公网（此前跳过所有 172.x 误伤公网连接）
                 if (ia.isLoopbackAddress() || ip.startsWith("10.") || ip.startsWith("192.168.")
-                        || ip.startsWith("172.") || ip.startsWith("127.") || ip.startsWith("0.")) return;
+                        || ip.startsWith("127.") || ip.startsWith("0.") || isPrivate172(ip)) return;
                 int p = port instanceof Integer ? (Integer) port : -1;
                 LogStore.get().log(TAG, (fail ? "[TCP] FAIL " : "[TCP] ") + ip + ":" + p
                         + " <- " + StackUtil.getCompact());
             }
         } catch (Throwable t) { }
+    }
+
+    /** v1.16 P1-4: 172.16.0.0/12 私网判断（172.x 只有 16-31 段是私网） */
+    private static boolean isPrivate172(String ip) {
+        if (ip == null || !ip.startsWith("172.")) return false;
+        int dot = ip.indexOf('.', 4);
+        if (dot <= 4) return false;
+        try {
+            int second = Integer.parseInt(ip.substring(4, dot));
+            return second >= 16 && second <= 31;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     // ================= Cronet 网络栈记录（v1.9，借鉴 AdClose）=================

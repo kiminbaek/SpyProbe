@@ -335,13 +335,15 @@ public class SpyServer {
                     String cls = c.optString("class", "");
                     String methodName = c.optString("method", "");
                     String params = c.optString("params", "");
-                    // 从 Config.hooks 移除（下次 re-hook 不再挂），并尽力 unhook 内存句柄
-                    boolean removed = Config.get().removeHook(cls, methodName, params);
+                    // v1.16 P0-1: 先真正 unhook 内存句柄拿真实计数，再清 Config.hooks 记录
+                    // （此前 removeHook 先跑把 map 清空，unhookMethod 恒返回 0）
                     int unhooked = 0;
                     try {
                         JSONObject ur = new JSONObject(mth.unhookMethod(cls, methodName, params));
                         unhooked = ur.optInt("unhooked", 0);
                     } catch (Throwable t) { }
+                    boolean removed = Config.get().removeHook(cls, methodName, params);
+
                     // v1.6: 持久化（卸载后规则同步落盘）
                     if (rulesPrefs != null) Config.get().saveRules(rulesPrefs);
                     JSONObject o = new JSONObject();

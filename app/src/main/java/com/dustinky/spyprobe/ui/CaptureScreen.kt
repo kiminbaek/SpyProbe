@@ -37,8 +37,10 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -120,25 +122,19 @@ fun CaptureScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     }
 
     Column(modifier = modifier.fillMaxSize().padding(horizontal = 12.dp)) {
-        // 标题
-        Text(
-            "SpyProbe 逆向探测控制台 v${BuildConfig.VERSION_NAME}",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(top = 10.dp, bottom = 4.dp)
-        )
+        // v1.16 P2-16: 顶部大标题由 TopAppBar 统一提供，此处删除（控制台版本信息保留在设置页关于）
 
-        // 目标 + 端口行
+        // 目标 + 端口行（v1.16 P2-12: 实心 Button → OutlinedButton 更轻量）
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             var showPicker by remember { mutableStateOf(false) }
-            Button(
+            OutlinedButton(
                 onClick = { showPicker = true },
                 modifier = Modifier.weight(1.6f)
             ) {
                 Text(if (target.isEmpty()) "选择目标 App" else target, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             var showPortDialog by remember { mutableStateOf(false) }
-            Button(onClick = { showPortDialog = true }, modifier = Modifier.weight(1f)) {
+            OutlinedButton(onClick = { showPortDialog = true }, modifier = Modifier.weight(1f)) {
                 Text("端口:$port")
             }
             if (showPicker) {
@@ -182,13 +178,21 @@ fun CaptureScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                 textStyle = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.weight(2f).height(48.dp)
             )
-            FilterChip(selected = false, onClick = { vm.setFilter("(Net|DNS|TCP|HUC|OkHttp|SSL)") }, label = { Text("网络") })
-            FilterChip(selected = false, onClick = { vm.setFilter("(Mth)") }, label = { Text("函数") })
-            FilterChip(selected = false, onClick = { vm.setFilter("") }, label = { Text("全部") })
+            // v1.16 P2-11: FilterChip selected 跟随当前 filter（此前恒 false 无状态反馈）
+            FilterChip(selected = filter == NET_FILTER, onClick = { vm.setFilter(if (filter == NET_FILTER) "" else NET_FILTER) }, label = { Text("网络") })
+            FilterChip(selected = filter == MTH_FILTER, onClick = { vm.setFilter(if (filter == MTH_FILTER) "" else MTH_FILTER) }, label = { Text("函数") })
+            FilterChip(selected = filter.isEmpty(), onClick = { vm.setFilter("") }, label = { Text("全部") })
         }
 
-        // 操作行：清空 / 导出
+        // 操作行：暂停 / 清空 / 导出（v1.16 P2-10: 暂停轮询便于阅读）
+        var paused by remember { mutableStateOf(false) }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 6.dp)) {
+            OutlinedButton(onClick = {
+                paused = !paused
+                if (paused) vm.stopPolling() else vm.startPolling()
+            }, modifier = Modifier.weight(1f)) {
+                Text(if (paused) "继续" else "暂停")
+            }
             Button(onClick = { vm.clearLogs() }, modifier = Modifier.weight(1f)) {
                 Icon(Icons.Filled.Delete, contentDescription = null)
                 Spacer(Modifier.width(4.dp))
@@ -217,25 +221,28 @@ fun CaptureScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             }
         }
 
-        // 日志流
+        // 日志流（v1.16: P0-2 key 用 seq、P1-6 仅底部才滚、P2-9 按 tag 着色）
+        val kw = filter.trim()
+        val shown = if (kw.isEmpty()) logLines else logLines.filter { matchesFilter(it.second, kw) }
         val listState = rememberLazyListState()
-        LaunchedEffect(logLines.size) {
-            if (logLines.isNotEmpty()) listState.animateScrollToItem(logLines.size - 1)
+        LaunchedEffect(shown.size, filter) {
+            // P1-6: 用户上翻看历史时不强制拉回底部——只在接近底部时才滚
+            val info = listState.layoutInfo
+            val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+            val nearBottom = lastVisible < 0 || lastVisible >= info.totalItemsCount - 2
+            if (nearBottom && shown.isNotEmpty()) listState.animateScrollToItem(shown.size - 1)
         }
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize()
         ) {
-            val kw = filter.trim()
-            val shown = if (kw.isEmpty()) logLines else logLines.filter { matchesFilter(it, kw) }
-            // v1.15 P2-6: key 用日志行内容（原 index 作 key 在增量追加时整列重组闪烁）
-            itemsIndexed(shown, key = { _, line -> line }) { _, line ->
+            itemsIndexed(shown, key = { _, p -> p.first }) { _, p ->
                 Text(
-                    line,
+                    p.second,
                     style = MaterialTheme.typography.bodySmall,
                     fontFamily = FontFamily.Monospace,
                     fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.primary,
+                    color = logColor(p.second),
                     modifier = Modifier.padding(vertical = 1.dp)
                 )
             }
@@ -244,11 +251,34 @@ fun CaptureScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
 }
 
 // v1.15 P0-3: SwitchItem 改为受控组件（checked 由外部传入，onChange 同时更新下发+本地快照）
+// v1.16 P1-8: Checkbox → M3 Switch（语义是开关，观感统一）
 @Composable
 private fun androidx.compose.foundation.layout.RowScope.SwitchItem(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-        Checkbox(checked = checked, onCheckedChange = { onChange(it) })
-        Text(label, style = MaterialTheme.typography.bodySmall)
+        Switch(checked = checked, onCheckedChange = { onChange(it) })
+        Text(label, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(start = 4.dp))
+    }
+}
+
+// 过滤快捷短语（v1.16 P2-11: FilterChip 选中态判断用）
+private const val NET_FILTER = "(Net|DNS|TCP|HUC|OkHttp|SSL)"
+private const val MTH_FILTER = "(Mth)"
+
+/** v1.16 P2-9: 日志按 tag 类型着色（网络绿/函数蓝/规则橙/反检测紫/数据橙黄/环境粉/失败红/其它灰） */
+private fun logColor(line: String): Color {
+    return when {
+        line.startsWith("[TCP] FAIL") -> Color(0xFFEF5350)
+        line.startsWith("[Net") || line.startsWith("[DNS") || line.startsWith("[TCP") ||
+                line.startsWith("[SSL") || line.startsWith("[HUC") || line.startsWith("[OkHttp") ||
+                line.startsWith("[Cronet") -> Color(0xFF4CAF50)
+        line.startsWith("[Mth") || line.startsWith("[Cls") -> Color(0xFF42A5F5)
+        line.startsWith("[RULE") -> Color(0xFFFF7043)
+        line.startsWith("[anti") -> Color(0xFFAB47BC)
+        line.startsWith("[SQL") || line.startsWith("[JSON") || line.startsWith("[Gson") -> Color(0xFFFFA726)
+        line.startsWith("[VPN") || line.startsWith("[属性") || line.startsWith("[传感器") ||
+                line.startsWith("[防截屏") || line.startsWith("[IMEI") || line.startsWith("[设备") -> Color(0xFFEC407A)
+        line.startsWith("[") -> Color(0xFFBDBDBD)
+        else -> Color(0xFF9E9E9E)
     }
 }
 

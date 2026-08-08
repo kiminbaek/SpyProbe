@@ -49,22 +49,24 @@ public class JsonProbe {
             for (Method m : gson.getDeclaredMethods()) {
                 if (!m.getName().equals("toJson")) continue;
                 Class<?>[] pt = m.getParameterTypes();
-                if (pt.length == 1 && !pt[0].isPrimitive()) {
-                    final Method fM = m;
-                    module.hook(m).intercept(chain -> {
-                        Object r = chain.proceed();
-                        if (Config.get().jsonCapture) {
-                            try {
-                                Object arg = chain.getArg(0);
-                                String s = r == null ? "null" : r.toString();
-                                if (s.length() > 300) s = s.substring(0, 300) + "...(" + s.length() + ")";
-                                LogStore.get().log(TAG, "[Gson] " + (arg == null ? "?" : arg.getClass().getName()) + " -> " + s);
-                            } catch (Throwable t) { }
-                        }
-                        return r;
-                    });
-                    hooked++;
-                }
+                // v1.16 P2-8: 补 toJson(Object, Type) 2 参重载（此前只 hook 1 参，带 Type 的序列化漏记）
+                boolean target = (pt.length == 1 && !pt[0].isPrimitive())
+                        || (pt.length == 2 && pt[0] == Object.class && pt[1] == java.lang.reflect.Type.class);
+                if (!target) continue;
+                final Method fM = m;
+                module.hook(m).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (Config.get().jsonCapture) {
+                        try {
+                            Object arg = chain.getArg(0);
+                            String s = r == null ? "null" : r.toString();
+                            if (s.length() > 300) s = s.substring(0, 300) + "...(" + s.length() + ")";
+                            LogStore.get().log(TAG, "[Gson] " + (arg == null ? "?" : arg.getClass().getName()) + " -> " + s);
+                        } catch (Throwable t) { }
+                    }
+                    return r;
+                });
+                hooked++;
             }
         } catch (Throwable t) {
             LogStore.get().log(TAG, "[" + phase + "] Gson hook fail (app 可能不用 Gson): " + t);

@@ -34,9 +34,11 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
 
     val api = SpyApi(_port.value)
 
-    // 日志
-    private val _logLines = MutableStateFlow<List<String>>(emptyList())
-    val logLines: StateFlow<List<String>> = _logLines.asStateFlow()
+    // 日志（v1.16 P0-2: Pair<seq, 行文本>，seq 自增唯一，LazyColumn key 用它防重复行崩溃）
+    private val _logLines = MutableStateFlow<List<Pair<Long, String>>>(emptyList())
+    val logLines: StateFlow<List<Pair<Long, String>>> = _logLines.asStateFlow()
+
+    private var logSeq = 0L
 
     private val _filter = MutableStateFlow("")
     val filter: StateFlow<String> = _filter.asStateFlow()
@@ -81,7 +83,8 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
                     val (newLogs, next) = resp
                     since = next
                     if (newLogs.isNotEmpty()) {
-                        val newLines = newLogs.flatMap { it.display().split("\n") }
+                        // v1.16 P0-2: 每行分配唯一自增 seq
+                        val newLines = newLogs.flatMap { it.display().split("\n") }.map { Pair(++logSeq, it) }
                         val all = (_logLines.value + newLines)
                         _logLines.value = if (all.size > MAX_LOG_LINES) {
                             all.subList(all.size - MAX_LOG_LINES, all.size)

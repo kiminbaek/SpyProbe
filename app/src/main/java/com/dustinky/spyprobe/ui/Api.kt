@@ -95,7 +95,8 @@ class SpyApi(private var port: Int = 9901) {
             val r = BufferedReader(InputStreamReader(c.inputStream, StandardCharsets.UTF_8))
             val sb = StringBuilder()
             var line: String?
-            while (r.readLine().also { line = it } != null) sb.append(line)
+            // v1.16 P1-5: 补换行（此前 /api/export、/api/logs/all 文本被压成一行不可读）
+            while (r.readLine().also { line = it } != null) sb.append(line).append('\n')
             r.close()
             c.disconnect()
             sb.toString()
@@ -120,7 +121,8 @@ class SpyApi(private var port: Int = 9901) {
             val r = BufferedReader(InputStreamReader(c.inputStream, StandardCharsets.UTF_8))
             val sb = StringBuilder()
             var line: String?
-            while (r.readLine().also { line = it } != null) sb.append(line)
+            // v1.16 P1-5: 补换行（此前 /api/export、/api/logs/all 文本被压成一行不可读）
+            while (r.readLine().also { line = it } != null) sb.append(line).append('\n')
             r.close()
             c.disconnect()
             sb.toString()

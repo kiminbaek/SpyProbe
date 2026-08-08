@@ -64,7 +64,10 @@ public class NativeProbe {
             buf.get(data);
             LogStore.get().log(TAG, "[" + proto + " " + dir + " " + loc + "] " + toReadable(data));
             if (stack != null && !stack.isEmpty()) {
-                LogStore.get().log(TAG, stack);
+                // v1.16 P2-6: 只对小包记录调用栈（大块传输高频刷屏；短包=握手/协议帧，栈有诊断价值）
+                if (data.length <= 64) {
+                    LogStore.get().log(TAG, stack);
+                }
             }
         } catch (Throwable ignored) {
             // native 回调绝不能抛异常（会崩目标进程）

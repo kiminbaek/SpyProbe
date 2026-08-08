@@ -214,9 +214,19 @@ public class EnvProbe {
                             Object self = chain.getThisObject();
                             String nm = null;
                             try {
-                                nm = self instanceof java.net.NetworkInterface
-                                        ? ((java.net.NetworkInterface) self).getName() : null;
+                                // v1.16 P1-1: 修递归——此前 getName() hook 内再调 getName() 无限递归（栈溢出被吞→VPN 检测失效）
+                                if (m.getName().equals("getName")) {
+                                    // r 就是接口名（原始实现返回值），直接用
+                                    nm = r != null ? String.valueOf(r) : null;
+                                } else {
+                                    // isUp/isVirtual：反射读 NetworkInterface.name 字段，不再调用被 hook 的 getName()
+                                    java.lang.reflect.Field f = java.net.NetworkInterface.class.getDeclaredField("name");
+                                    f.setAccessible(true);
+                                    Object v = f.get(self);
+                                    nm = v != null ? String.valueOf(v) : null;
+                                }
                             } catch (Throwable t) { }
+
                             if (isVpnInterface(nm)) {
                                 LogStore.get().log(TAG, "[VPN检测] NetworkInterface." + m.getName()
                                         + "(" + nm + ") = " + r + " <- " + StackUtil.getCompact());

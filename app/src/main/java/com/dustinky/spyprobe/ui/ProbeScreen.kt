@@ -46,10 +46,8 @@ import kotlinx.coroutines.withContext
 
 @Composable
 fun ProbeScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
+    // v1.16 P2-16: 顶部标题由 TopAppBar 统一提供，此处不再重复
     Column(modifier = modifier.fillMaxSize().padding(horizontal = 12.dp)) {
-        Text("函数探测", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(top = 10.dp, bottom = 6.dp))
-
         FunctionScanCard(vm)
         HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
         ClassLoadCard(vm)
@@ -57,8 +55,9 @@ fun ProbeScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
 }
 
 // ---------- 函数扫描 ----------
+// v1.16 P2-15: ColumnScope 扩展 —— 扫描结果 LazyColumn 用 weight(1f) 撑满剩余空间（不再固定 260dp）
 @Composable
-private fun FunctionScanCard(vm: SpyViewModel) {
+private fun androidx.compose.foundation.layout.ColumnScope.FunctionScanCard(vm: SpyViewModel) {
     var className by remember { mutableStateOf("") }
     var scanning by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<ScanResult?>(null) }
@@ -106,7 +105,7 @@ private fun FunctionScanCard(vm: SpyViewModel) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 6.dp, bottom = 2.dp)
             )
-            LazyColumn(modifier = Modifier.height(260.dp)) {
+            LazyColumn(modifier = Modifier.weight(1f)) {
                 items(res.methods) { m ->
                     Surface(
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
@@ -149,7 +148,9 @@ private fun FunctionScanCard(vm: SpyViewModel) {
 private fun ClassLoadCard(vm: SpyViewModel) {
     var keyword by remember { mutableStateOf("") }
     var logAll by remember { mutableStateOf(false) }
-    var resultText by remember { mutableStateOf<String?>(null) }
+    // v1.16 P1-10: 结果从拼字符串 Text 一次性渲染 → LazyColumn 逐行（2000 行不再卡顿）
+    var resultList by remember { mutableStateOf<List<String>?>(null) }
+    var resultMeta by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
@@ -166,20 +167,21 @@ private fun ClassLoadCard(vm: SpyViewModel) {
         Button(
             onClick = {
                 loading = true
-                resultText = null
+                resultList = null
+                resultMeta = ""
                 val kw = keyword.trim()
                 val la = logAll
                 scope.launch {
                     val r = withContext(Dispatchers.IO) { vm.api.queryClasses(kw, la) }
                     loading = false
                     if (r == null) {
-                        resultText = "未连接"
+                        resultMeta = "未连接"
+                        resultList = emptyList()
                     } else {
                         val (count, total, classes) = r
-                        val sb = StringBuilder("共 $total 个类，匹配 $count 个：\n\n")
-                        classes.take(2000).forEach { sb.append(it).append('\n') }
-                        if (classes.size > 2000) sb.append("... 仅显示前 2000 个\n")
-                        resultText = sb.toString()
+                        resultMeta = "共 $total 个类，匹配 $count 个" +
+                                (if (classes.size > 2000) "（仅显示前 2000 个）" else "")
+                        resultList = classes.take(2000)
                     }
                 }
             },
@@ -190,16 +192,16 @@ private fun ClassLoadCard(vm: SpyViewModel) {
         Checkbox(checked = logAll, onCheckedChange = { logAll = it })
         Text("匹配的类刷屏到日志", style = MaterialTheme.typography.bodySmall)
     }
-    val rt = resultText
-    if (rt != null) {
-        Text(
-            rt,
-            style = MaterialTheme.typography.bodySmall,
-            fontFamily = FontFamily.Monospace,
-            fontSize = 10.sp,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(220.dp)
-        )
+    val rl = resultList
+    if (rl != null) {
+        Text(resultMeta, style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 2.dp))
+        LazyColumn(modifier = Modifier.fillMaxWidth().height(200.dp)) {
+            items(rl) { c ->
+                Text(c, style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace, fontSize = 10.sp,
+                    modifier = Modifier.padding(vertical = 1.dp))
+            }
+        }
     }
 }

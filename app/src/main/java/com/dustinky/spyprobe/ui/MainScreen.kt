@@ -6,11 +6,15 @@ import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -31,11 +35,22 @@ private val tabs = listOf(
     TabItem("设置", Icons.Filled.Settings)
 )
 
+// v1.16 P2-16: TopAppBar 标题栏统一（此前各页用普通 Text 标题，无一致性）
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(vm: SpyViewModel = viewModel()) {
     var selected by rememberSaveable { mutableIntStateOf(0) }
 
     Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(tabs[selected].title, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold) },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            )
+        },
         bottomBar = {
             NavigationBar {
                 tabs.forEachIndexed { i, tab ->

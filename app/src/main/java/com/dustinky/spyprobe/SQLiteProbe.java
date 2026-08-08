@@ -137,7 +137,7 @@ public class SQLiteProbe {
                 if (!m.getName().equals("query")) continue;
                 int argc = m.getParameterTypes().length;
                 if (argc < 4 || argc > 8) continue;
-                final int fArgc = argc;
+                // v1.16 P2-5: 删除死代码 fArgc（hook 体用 chain.getArgs().size() 动态判断，此处从未使用）
                 module.hook(m).intercept(chain -> {
                     Object r;
                     try {

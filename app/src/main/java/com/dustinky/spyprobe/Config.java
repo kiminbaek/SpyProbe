@@ -178,6 +178,12 @@ public class Config {
 
     public void clearHooks() {
         hooks.clear();
+        // v1.16 P0-1: 清 Config 记录同时真正 unhook（此前只清 map，hook 永久生效）
+        for (List<XposedInterface.HookHandle> list : handles.values()) {
+            for (XposedInterface.HookHandle h : list) {
+                try { h.unhook(); } catch (Throwable t) { }
+            }
+        }
         handles.clear();
     }
 
@@ -197,16 +203,8 @@ public class Config {
         boolean removed = hooks.removeIf(h -> h.className.equals(className)
                 && h.methodName.equals(methodName)
                 && (paramTypes == null || paramTypes.isEmpty() || h.paramTypes.equals(paramTypes)));
-        // 同时清理句柄（paramTypes 空 = 通配删除该 class#method 的所有具体签名句柄）
-        if (paramTypes == null || paramTypes.isEmpty()) {
-            String prefix = className + "#" + methodName + "(";
-            java.util.Iterator<Map.Entry<String, List<XposedInterface.HookHandle>>> it = handles.entrySet().iterator();
-            while (it.hasNext()) {
-                if (it.next().getKey().startsWith(prefix)) it.remove();
-            }
-        } else {
-            handles.remove(keyOf(className, methodName, paramTypes));
-        }
+        // v1.16 P0-1: 复用 unhookHandles 真正卸载句柄（此前只清 map 不 unhook，hook 永久生效）
+        unhookHandles(className, methodName, paramTypes);
         return removed;
     }
 

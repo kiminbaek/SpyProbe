@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -20,7 +21,9 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -73,9 +76,9 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     var dexkitOpen by remember { mutableStateOf(false) }
     var aboutOpen by remember { mutableStateOf(false) }
 
-    // v1.15 P0-3: 首次进入回读后端真实配置（防止把用户已改配置覆盖回默认）
-    LaunchedEffect(Unit) {
-        val cfg = withContext(Dispatchers.IO) { vm.api.fetchConfig() } ?: return@LaunchedEffect
+    // v1.16 P2-13: 回读逻辑提取（首次进入 + 手动"重新读取配置"按钮共用）
+    // 注意：局部函数必须先声明后使用，故放 LaunchedEffect 之前
+    fun applyConfig(cfg: Map<String, Any>) {
         cfg["bodyLimit"]?.toString()?.let { bodyLimit = it }
         cfg["logLimit"]?.toString()?.let { logLimit = it }
         (cfg["webView"] as? Boolean)?.let { webView = it }
@@ -94,6 +97,24 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
         (cfg["antiRoot"] as? Boolean)?.let { antiRoot = it }
         (cfg["antiXposed"] as? Boolean)?.let { antiXposed = it }
         (cfg["native"] as? Boolean)?.let { native = it }
+    }
+
+    // v1.15 P0-3: 首次进入回读后端真实配置（防止把用户已改配置覆盖回默认）
+    LaunchedEffect(Unit) {
+        val cfg = withContext(Dispatchers.IO) { vm.api.fetchConfig() } ?: return@LaunchedEffect
+        applyConfig(cfg)
+    }
+
+    fun reloadConfig() {
+        scope.launch {
+            val cfg = withContext(Dispatchers.IO) { vm.api.fetchConfig() }
+            if (cfg == null) {
+                android.widget.Toast.makeText(context, "未连接，无法读取", android.widget.Toast.LENGTH_SHORT).show()
+            } else {
+                applyConfig(cfg)
+                android.widget.Toast.makeText(context, "已重新读取后端配置", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     fun sendAll() {
@@ -129,8 +150,15 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp)
     ) {
-        Text("高级设置", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(top = 10.dp, bottom = 6.dp))
+        // v1.16 P2-13: 手动"重新读取后端配置"（目标 App 重启后设置页不回读）
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("高级设置", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f).padding(top = 10.dp, bottom = 6.dp))
+            OutlinedButton(onClick = { reloadConfig() },
+                modifier = Modifier.padding(top = 6.dp, bottom = 4.dp)) {
+                Text("重新读取配置", style = MaterialTheme.typography.labelSmall)
+            }
+        }
 
         OutlinedTextField(
             value = bodyLimit,
@@ -213,8 +241,9 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
 
 @Composable
 private fun SettingCheck(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    // v1.16 P1-8: Checkbox → M3 Switch（语义是开关）
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Checkbox(checked = checked, onCheckedChange = { onChange(it) })
+        Switch(checked = checked, onCheckedChange = { onChange(it) })
         Text(label, style = MaterialTheme.typography.bodySmall)
     }
 }
@@ -297,9 +326,14 @@ private fun DexKitDialog(vm: SpyViewModel, onDismiss: () -> Unit) {
                     Text("字符串反查")
                 }
 
+                // v1.16 P2-14: 反查结果 200 方法可能溢出 → 垂直滚动 + 限高
                 result?.let {
                     Text(it, style = MaterialTheme.typography.bodySmall,
-                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, fontSize = 10.sp)
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, fontSize = 10.sp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 240.dp)
+                            .verticalScroll(rememberScrollState()))
                 }
 
                 Button(onClick = {

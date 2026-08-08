@@ -51,7 +51,7 @@ public class AntiDetectProbe {
             "/cache/su", "/system/.supersu", "/system/etc/.has_su_daemon",
             "/system/bin/.ext/.su", "/vendor/bin/su", "/vendor/xbin/su",
             "/system/app/Magisk.apk", "/data/adb/magisk", "/sbin/magisk",
-            "/system/bin/fusermount", "/system/bin/app_process_xposed",
+            "/system/bin/app_process_xposed",
     };
 
     /** Xposed 特征类名（loadClass 拦截） */
@@ -122,11 +122,23 @@ public class AntiDetectProbe {
                 for (Method m : Runtime.class.getDeclaredMethods()) {
                     if (!m.getName().equals("exec")) continue;
                     Class<?>[] pts = m.getParameterTypes();
-                    if (pts.length >= 1 && pts[0] == String.class) {
+                    if (pts.length >= 1 && (pts[0] == String.class || pts[0] == String[].class)) {
                         module.hook(m).intercept((chain) -> {
                             if (!Config.get().antiRoot) return chain.proceed();
                             List<Object> args = chain.getArgs();
-                            String cmd = args.get(0) == null ? "" : args.get(0).toString().toLowerCase();
+                            // v1.16 P1-3: 兼容 exec(String) 与 exec(String[])（数组形式 join 后判断，此前数组漏拦）
+                            String cmd;
+                            Object a0 = args.get(0);
+                            if (a0 instanceof String[]) {
+                                StringBuilder sb = new StringBuilder();
+                                for (String s : (String[]) a0) {
+                                    if (sb.length() > 0) sb.append(' ');
+                                    sb.append(s);
+                                }
+                                cmd = sb.toString().toLowerCase();
+                            } else {
+                                cmd = a0 == null ? "" : a0.toString().toLowerCase();
+                            }
                             if (cmd.contains("su") || cmd.contains("magisk") || cmd.contains("busybox")
                                     || cmd.contains("which root") || cmd.contains("whoami")) {
                                 LogStore.get().log(TAG, "[anti-root] Runtime.exec(" + cmd + ") 已拦截");
@@ -138,13 +150,14 @@ public class AntiDetectProbe {
                 }
             } catch (Throwable t) { }
 
-            // SystemProperties.get(String) —— key 含 xposed/magisk/su 返回空
+            // SystemProperties.get(String) / get(String,String) —— key 含 xposed/magisk/su 返回空
+            // v1.16 P2-4: 补 get(String,String) 重载（此前只 hook get(String)，带默认值的调用漏拦）
             try {
                 Class<?> sysProp = Class.forName("android.os.SystemProperties", true, appCl);
                 for (Method m : sysProp.getDeclaredMethods()) {
                     if (!m.getName().equals("get")) continue;
                     Class<?>[] pts = m.getParameterTypes();
-                    if (pts.length >= 1 && pts[0] == String.class) {
+                    if (pts.length == 1 && pts[0] == String.class) {
                         module.hook(m).intercept((chain) -> {
                             if (!Config.get().antiRoot && !Config.get().antiXposed) return chain.proceed();
                             List<Object> args = chain.getArgs();
@@ -156,7 +169,18 @@ public class AntiDetectProbe {
                             }
                             return chain.proceed();
                         });
-                        break; // 只 hook 第一个 get(String) 重载
+                    } else if (pts.length == 2 && pts[0] == String.class && pts[1] == String.class) {
+                        module.hook(m).intercept((chain) -> {
+                            if (!Config.get().antiRoot && !Config.get().antiXposed) return chain.proceed();
+                            List<Object> args = chain.getArgs();
+                            String key = args.get(0) == null ? "" : args.get(0).toString().toLowerCase();
+                            if (key.contains("xposed") || key.contains("magisk") || key.contains("supersu")
+                                    || key.contains("frida") || key.contains("substrate")) {
+                                LogStore.get().log(TAG, "[anti] SystemProperties.get(" + key + ",def) -> \"\"");
+                                return "";
+                            }
+                            return chain.proceed();
+                        });
                     }
                 }
             } catch (Throwable t) { }

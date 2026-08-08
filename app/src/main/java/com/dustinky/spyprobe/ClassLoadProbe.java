@@ -2,17 +2,16 @@ package com.dustinky.spyprobe;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
+import java.util.Collections;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import io.github.libxposed.api.XposedModule;
 
 /**
  * 类加载探测（v1.2 新增）：
  * hook ClassLoader.loadClass(String) 记录目标 App 加载的类名。
- * 配合关键字过滤（Config.classFilter），可快速定位核心逻辑类。
- *
  * 用途：反编译时知道 app 加载了哪些类 = 核心逻辑在哪。
  */
 public class ClassLoadProbe {
@@ -20,7 +19,8 @@ public class ClassLoadProbe {
     static final String TAG = "SpyProbe.Cls";
 
     private static final int MAX_CLASSES = 5000;
-    private final Set<String> loaded = new LinkedHashSet<>(); // 有序去重
+    // v1.16 P1-2: LinkedHashSet + 全同步锁 → ConcurrentHashMap.newKeySet（loadClass 超高频，避免启动期全部串行化）
+    private final Set<String> loaded = ConcurrentHashMap.newKeySet();
 
     private final XposedModule module;
     private final ClassLoader appCl;
@@ -71,7 +71,9 @@ public class ClassLoadProbe {
     }
 
     /** 记录类名（匹配过滤器才记录；不匹配也做去重统计） */
-    public synchronized void record(String name) {
+    public void record(String name) {
+        // v1.16 P1-2: 去 synchronized（loadClass 超高频，避免目标 app 启动期类加载全部串行化）；
+        // filter/内部符号判断放锁外，无锁只做 ConcurrentHashMap 写
         if (name == null || name.isEmpty()) return;
         // v1.7: 只过滤真正的 JVM 内部符号，不再误杀 L 开头的正常类：
         //   "[Lxxx;" / "[I" —— 数组描述符
@@ -92,21 +94,24 @@ public class ClassLoadProbe {
             // 无过滤：只入库不刷屏（最多 MAX_CLASSES）
             loaded.add(name);
         }
-        // 防无限增长
+        // 防无限增长（无序集合，随机淘汰一半；类名仅日志/查询用途，顺序不敏感）
         if (loaded.size() > MAX_CLASSES) {
-            // 淘汰最早一半
-            List<String> all = new ArrayList<>(loaded);
-            loaded.clear();
-            for (int i = all.size() / 2; i < all.size(); i++) {
-                loaded.add(all.get(i));
+            int drop = loaded.size() / 2;
+            java.util.Iterator<String> it = loaded.iterator();
+            while (drop-- > 0 && it.hasNext()) {
+                it.next();
+                it.remove();
             }
         }
     }
 
     /** 当前记录的类名（可选关键字过滤，返回 JSON：count/total/classes 数组） */
-    public synchronized String list(String filter) {
+    public String list(String filter) {
+        // v1.16 P1-2: CHM 弱一致并发读，先快照再排序（输出稳定，替代 LinkedHashSet 顺序）
+        List<String> snapshot = new ArrayList<>(loaded);
+        Collections.sort(snapshot);
         org.json.JSONArray arr = new org.json.JSONArray();
-        for (String c : loaded) {
+        for (String c : snapshot) {
             if (filter != null && !filter.isEmpty() && !c.contains(filter)) continue;
             arr.put(c);
         }
@@ -120,7 +125,7 @@ public class ClassLoadProbe {
         return o.toString();
     }
 
-    public synchronized int size() {
+    public int size() {
         return loaded.size();
     }
 }
