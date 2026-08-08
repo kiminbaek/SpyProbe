@@ -530,3 +530,12 @@ Java_com_dustinky_spyprobe_NativeProbe_initNativeHook(JNIEnv *env, jobject thiz,
         }
     }
 }
+
+// v1.20 P0-1: 补 JNI_OnLoad —— 之前缺此函数，System.loadLibrary("native_hook") 时
+// dlsym 找不到本库的 JNI_OnLoad，fallback 到依赖库 libshadowhook.so 的 JNI_OnLoad，
+// 其返回 JNI_ERR 导致整个 native 层（libc/SSL/HTTP2 hook）加载失败。
+// 这里显式返回 JNI_VERSION_1_6，并顺手缓存 gJvm（initNativeHook 里 GetJavaVM 也保留，双保险）。
+extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
+    gJvm = vm;
+    return JNI_VERSION_1_6;
+}

@@ -46,6 +46,10 @@ public class DexKitProbe {
         if (bridge != null || creating) return;
         creating = true;
         try {
+            // v1.20 P0-2: 显式加载 dexkit native 库 —— 之前缺 System.loadLibrary，
+            // DexKitBridge.create 报 No implementation found for nativeInitDexKitByClassLoader，
+            // 导致 DexKit 完全不可用。loadLibrary 幂等，重复调用无害。
+            System.loadLibrary("dexkit");
             bridge = DexKitBridge.create(appCl, true);
             LogStore.get().log(TAG, "DexKitBridge created for " + pkg);
         } catch (Throwable t) {
