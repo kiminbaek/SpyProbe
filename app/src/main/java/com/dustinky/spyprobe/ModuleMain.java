@@ -49,9 +49,12 @@ public class ModuleMain extends XposedModule {
         LogCatProbe logcat = new LogCatProbe(this);
         ActivityProbe act = new ActivityProbe(this);
         JsonProbe json = new JsonProbe(this, cl);
+        // v1.9: 环境检测探测 + DexKit（导出 dex / 字符串反查）
+        EnvProbe env = new EnvProbe(this, cl);
+        DexKitProbe dexKit = new DexKitProbe(this, cl, pkg);
         // v1.6: 规则持久化偏好（模块远程偏好，不污染目标 app 数据）
         android.content.SharedPreferences rulesPrefs = getRemotePreferences("spyprobe_rules");
-        SpyServer server = new SpyServer(net, mth, clsProbe, pkg, rulesPrefs);
+        SpyServer server = new SpyServer(net, mth, clsProbe, pkg, rulesPrefs, dexKit);
 
         // 立即装网络 hook
         net.install("early");
@@ -81,13 +84,15 @@ public class ModuleMain extends XposedModule {
                 log(Log.ERROR, TAG, "class probe install error: " + t);
             }
 
-            // t=2000ms: 加密/Activity/JSON/SharedPreferences + server
+            // t=2000ms: 加密/Activity/JSON/SharedPreferences + 环境检测 + server
             try {
                 Thread.sleep(500);
                 crypto.install("late");
                 act.install("late");
                 json.install("late");
                 prefs.install("late");
+                // v1.9: 环境检测探测（延迟装，避免 hook File.exists 影响启动期）
+                env.install("late");
                 server.start();
             } catch (Throwable t) {
                 log(Log.ERROR, TAG, "deferred probe install error: " + t);
@@ -101,9 +106,10 @@ public class ModuleMain extends XposedModule {
                 log(Log.ERROR, TAG, "sqlite probe install error: " + t);
             }
 
-            // t=5000ms: 持久化 hook/hijack 规则重挂（热更新/重启后规则不丢）
+            // t=5000ms: DexKit 初始化（导出 dex / 字符串反查，等类加载稳定）+ 持久化 hook/hijack 规则重挂
             try {
                 Thread.sleep(2500);
+                dexKit.init();
                 android.content.SharedPreferences sp = getRemotePreferences("spyprobe_rules");
                 boolean loaded = Config.get().loadRules(sp);
                 if (loaded) log(Log.INFO, TAG, "loaded persisted hook rules, re-hooking...");

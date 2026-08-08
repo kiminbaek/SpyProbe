@@ -230,6 +230,11 @@ public class MainActivity extends Activity {
         btnSettings.setText("设置");
         btnSettings.setOnClickListener(v -> showSettingsDialog());
         row4.addView(btnSettings, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        // v1.9: DexKit 按钮（导出 dex / 字符串反查）
+        Button btnDex = new Button(this);
+        btnDex.setText("DexKit");
+        btnDex.setOnClickListener(v -> showDexKitDialog());
+        row4.addView(btnDex, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         root.addView(row4);
 
         // v1.2: 日志过滤行（关键字过滤显示 + 快捷 tag 筛选）
@@ -1228,6 +1233,31 @@ public class MainActivity extends Activity {
         cbDetail.setChecked(true);
         box.addView(cbDetail);
 
+        // v1.9: 环境检测 / TLS / 连接点 / Cronet 开关
+        CheckBox cbEnv = new CheckBox(this);
+        cbEnv.setText("记录环境检测（root/vpn/传感器/防截屏/设备指纹）");
+        cbEnv.setTextColor(Color.BLACK);
+        cbEnv.setChecked(true);
+        box.addView(cbEnv);
+
+        CheckBox cbTls = new CheckBox(this);
+        cbTls.setText("TLS 明文抓包（ConscryptEngine，HTTPS 明文头）");
+        cbTls.setTextColor(Color.BLACK);
+        cbTls.setChecked(true);
+        box.addView(cbTls);
+
+        CheckBox cbConnect = new CheckBox(this);
+        cbConnect.setText("万能连接点记录（BlockGuardOs.connect，QUIC/自建TCP）");
+        cbConnect.setTextColor(Color.BLACK);
+        cbConnect.setChecked(true);
+        box.addView(cbConnect);
+
+        CheckBox cbCronet = new CheckBox(this);
+        cbCronet.setText("Cronet 网络栈记录（字节系 app，默认关防重复）");
+        cbCronet.setTextColor(Color.BLACK);
+        cbCronet.setChecked(false);
+        box.addView(cbCronet);
+
         scroll.addView(box);
 
         new AlertDialog.Builder(this)
@@ -1255,11 +1285,123 @@ public class MainActivity extends Activity {
                             o.put("activity", cbAct.isChecked());
                             o.put("json", cbJson.isChecked());
                             o.put("detailMode", cbDetail.isChecked()); // v1.6
+                            o.put("env", cbEnv.isChecked());          // v1.9
+                            o.put("tls", cbTls.isChecked());
+                            o.put("connect", cbConnect.isChecked());
+                            o.put("cronet", cbCronet.isChecked());
                             httpPost("/api/config", o.toString());
                         } catch (Throwable t) { }
                     }).start();
                     Toast.makeText(this, "配置已下发", Toast.LENGTH_SHORT).show();
                 })
                 .show();
+    }
+
+    /** v1.9: DexKit 功能对话框（导出 dex / 字符串反查 / 释放） */
+    private void showDexKitDialog() {
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(16), dp(8), dp(16), dp(8));
+
+        TextView tip = new TextView(this);
+        tip.setText("DexKit：导出全部 dex（jadx 打开）+ 字符串反查方法（找校验/密钥/接口逻辑）");
+        tip.setTextColor(Color.BLACK);
+        box.addView(tip);
+
+        Button btnDump = new Button(this);
+        btnDump.setText("导出 dex 到 Download/SpyProbeDump/");
+        btnDump.setOnClickListener(v -> {
+            Toast.makeText(this, "导出中…", Toast.LENGTH_SHORT).show();
+            new Thread(() -> {
+                try {
+                    String r = httpGet("/api/dexdump");
+                    runOnUiThread(() -> Toast.makeText(this, "导出结果: " + r, Toast.LENGTH_LONG).show());
+                } catch (Throwable t) {
+                    runOnUiThread(() -> Toast.makeText(this, "导出失败: " + t, Toast.LENGTH_SHORT).show());
+                }
+            }).start();
+        });
+        box.addView(btnDump);
+
+        EditText input = new EditText(this);
+        input.setHint("输入字符串，反查引用它的方法");
+        box.addView(input);
+
+        Button btnFind = new Button(this);
+        btnFind.setText("字符串反查");
+        btnFind.setOnClickListener(v -> {
+            String s = input.getText().toString().trim();
+            if (s.isEmpty()) {
+                Toast.makeText(this, "请输入字符串", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            Toast.makeText(this, "反查中…", Toast.LENGTH_SHORT).show();
+            new Thread(() -> {
+                try {
+                    JSONObject body = new JSONObject();
+                    body.put("str", s);
+                    String r = httpPost("/api/stringfind", body.toString());
+                    runOnUiThread(() -> showStringFindResult(s, r));
+                } catch (Throwable t) {
+                    runOnUiThread(() -> Toast.makeText(this, "反查失败: " + t, Toast.LENGTH_SHORT).show());
+                }
+            }).start();
+        });
+        box.addView(btnFind);
+
+        Button btnClose = new Button(this);
+        btnClose.setText("释放 DexKit（省内存）");
+        btnClose.setOnClickListener(v -> {
+            new Thread(() -> {
+                try { httpGet("/api/dexclose"); } catch (Throwable t) { }
+            }).start();
+            Toast.makeText(this, "已释放", Toast.LENGTH_SHORT).show();
+        });
+        box.addView(btnClose);
+
+        scroll.addView(box);
+        new AlertDialog.Builder(this)
+                .setTitle("DexKit 反编译")
+                .setView(scroll)
+                .setPositiveButton("关闭", null)
+                .show();
+    }
+
+    /** v1.9: 字符串反查结果展示（列表 + 一键复制） */
+    private void showStringFindResult(String query, String json) {
+        try {
+            JSONObject o = new JSONObject(json);
+            if (!o.optBoolean("ok", false)) {
+                Toast.makeText(this, "反查失败: " + o.optString("error"), Toast.LENGTH_SHORT).show();
+                return;
+            }
+            int total = o.optInt("total", 0);
+            int shown = o.optInt("shown", 0);
+            JSONArray arr = o.optJSONArray("methods");
+            StringBuilder sb = new StringBuilder();
+            sb.append("共 ").append(total).append(" 个方法引用 \"").append(query).append("\"\n\n");
+            if (arr != null) {
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONObject m = arr.getJSONObject(i);
+                    sb.append(m.optString("class")).append(".").append(m.optString("method"))
+                      .append("(").append(m.optString("params")).append(")\n");
+                }
+            }
+            if (shown < total) sb.append("\n…仅显示前 ").append(shown).append(" 个");
+            final String text = sb.toString();
+            new AlertDialog.Builder(this)
+                    .setTitle("字符串反查结果")
+                    .setMessage(text)
+                    .setPositiveButton("复制", (d, w) -> {
+                        android.content.ClipboardManager cm = (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("spyprobe", text));
+                        Toast.makeText(this, "已复制", Toast.LENGTH_SHORT).show();
+                    })
+                    .setNegativeButton("关闭", null)
+                    .show();
+        } catch (Throwable t) {
+            Toast.makeText(this, "解析失败: " + t, Toast.LENGTH_SHORT).show();
+        }
     }
 }

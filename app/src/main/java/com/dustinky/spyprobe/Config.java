@@ -29,6 +29,11 @@ public class Config {
     public volatile boolean activityCapture = false; // Activity 生命周期 + Intent 跳转（v1.5，默认关）
     public volatile boolean jsonCapture = false;   // JSONObject/Gson 序列化记录（v1.5，默认关）
     public volatile boolean detailMode = true;     // v1.6: 函数探测详细模式（参数/字段/调用栈）；关=轻量只记参数摘要
+    // v1.9: 环境检测探测 + TLS 明文抓包 + 万能连接点 + Cronet
+    public volatile boolean envCapture = true;     // 环境检测探测（root/vpn/传感器/防截屏/设备指纹检测记录）
+    public volatile boolean tlsCapture = true;     // ConscryptEngine TLS 明文抓包（HTTPS 明文头）
+    public volatile boolean connectCapture = true; // BlockGuardOs.connect 万能连接记录（QUIC/自建 TCP）
+    public volatile boolean cronetCapture = false; // Cronet 网络栈记录（默认关：与 HttpURLConnection 记录重复度高）
     public volatile String classFilter = "";       // 类加载关键字过滤（空=全部入库不刷屏）
     public volatile boolean classLogAll = false;   // 匹配类是否刷屏输出到日志
     public volatile int bodyLimit = 2048;          // 记录响应体最大字节

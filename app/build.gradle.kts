@@ -10,8 +10,8 @@ android {
     defaultConfig {
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        versionName = "1.8"
+        versionCode = 10
+        versionName = "1.9"
     }
 
     buildTypes {
@@ -41,6 +41,8 @@ android {
 dependencies {
     compileOnly("io.github.libxposed:api:101.0.0")
     implementation("io.github.libxposed:service:101.0.0")
+    // v1.9: DexKit（导出 dex / 字符串反查）—— native 库会让 APK 变大
+    implementation("org.luckypray:dexkit:2.0.7")
 }
 
 // patch: debug 签名

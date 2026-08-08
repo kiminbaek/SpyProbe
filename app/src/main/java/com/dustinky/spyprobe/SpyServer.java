@@ -46,17 +46,19 @@ public class SpyServer {
     private final ClassLoadProbe clsProbe;
     private final String pkg;
     private final android.content.SharedPreferences rulesPrefs; // v1.6: 规则持久化
+    private final DexKitProbe dexKit; // v1.9: DexKit（导出 dex / 字符串反查）
     private volatile ServerSocket serverSocket;
     private volatile Thread acceptThread;
     private volatile int actualPort = PORT; // v1.3: 实际绑定端口（多进程 app 时可能偏移）
 
     public SpyServer(NetProbe net, MethodProbe mth, ClassLoadProbe clsProbe, String pkg,
-                     android.content.SharedPreferences rulesPrefs) {
+                     android.content.SharedPreferences rulesPrefs, DexKitProbe dexKit) {
         this.net = net;
         this.mth = mth;
         this.clsProbe = clsProbe;
         this.pkg = pkg;
         this.rulesPrefs = rulesPrefs;
+        this.dexKit = dexKit; // v1.9
     }
 
     public void start() {
@@ -240,6 +242,11 @@ public class SpyServer {
                         if (c.has("activity")) cfg.activityCapture = c.getBoolean("activity");
                         if (c.has("json")) cfg.jsonCapture = c.getBoolean("json");
                         if (c.has("detailMode")) cfg.detailMode = c.getBoolean("detailMode"); // v1.6
+                        // v1.9: 环境检测 / TLS / 连接点 / Cronet 开关
+                        if (c.has("env")) cfg.envCapture = c.getBoolean("env");
+                        if (c.has("tls")) cfg.tlsCapture = c.getBoolean("tls");
+                        if (c.has("connect")) cfg.connectCapture = c.getBoolean("connect");
+                        if (c.has("cronet")) cfg.cronetCapture = c.getBoolean("cronet");
                         LogStore.get().log(TAG, "config updated: " + body);
                     }
                     JSONObject o = new JSONObject();
@@ -262,6 +269,10 @@ public class SpyServer {
                     o.put("activity", Config.get().activityCapture);
                     o.put("json", Config.get().jsonCapture);
                     o.put("detailMode", Config.get().detailMode); // v1.6
+                    o.put("env", Config.get().envCapture);       // v1.9
+                    o.put("tls", Config.get().tlsCapture);
+                    o.put("connect", Config.get().connectCapture);
+                    o.put("cronet", Config.get().cronetCapture);
                     return o.toString();
                 }
                 case "/api/classes": {
@@ -383,6 +394,22 @@ public class SpyServer {
                     JSONObject o = new JSONObject();
                     o.put("ok", true);
                     o.put("hijacks", arr);
+                    return o.toString();
+                }
+                case "/api/dexdump": { // v1.9: 导出全部 dex
+                    String r = dexKit != null ? dexKit.dumpDex() : "{\"ok\":false,\"error\":\"dexkit null\"}";
+                    return r;
+                }
+                case "/api/stringfind": { // v1.9: 字符串反查方法
+                    JSONObject c = new JSONObject(body);
+                    String str = c.optString("str", "");
+                    String r = dexKit != null ? dexKit.findMethods(str) : "{\"ok\":false,\"error\":\"dexkit null\"}";
+                    return r;
+                }
+                case "/api/dexclose": { // v1.9: 释放 DexKit bridge
+                    if (dexKit != null) dexKit.close();
+                    JSONObject o = new JSONObject();
+                    o.put("ok", true);
                     return o.toString();
                 }
                 case "/api/clear": {

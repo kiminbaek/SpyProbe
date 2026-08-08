@@ -47,6 +47,10 @@ public class NetProbe {
         installDnsCapture(phase);
         installSocketCapture(phase);
         installWebViewCapture(phase);
+        // v1.9: TLS 明文抓包 + 万能连接点 + Cronet
+        installTlsCapture(phase);
+        installConnectCapture(phase);
+        installCronetCapture(phase);
     }
 
     // ================= WebView.loadUrl 记录（v1.3）=================
@@ -420,6 +424,140 @@ public class NetProbe {
             LogStore.get().log(TAG, "[" + phase + "] hooked HttpURLConnection.getResponseCode");
         } catch (Throwable t) {
             LogStore.get().log(TAG, "[" + phase + "] HUC hook fail: " + t);
+        }
+    }
+
+    // ================= TLS 明文抓包（v1.9，借鉴 AdClose）=================
+    // ConscryptEngine.wrap(明文->密文) / unwrap(密文->明文)
+    // wrap: src=明文请求（HTTP 头可见），dst=密文；unwrap: src=密文，dst=明文响应
+    private void installTlsCapture(String phase) {
+        try {
+            Class<?> engine = Class.forName("com.android.org.conscrypt.ConscryptEngine", false, appCl);
+            int hooked = 0;
+            for (Method m : engine.getDeclaredMethods()) {
+                if (!m.getName().equals("wrap") && !m.getName().equals("unwrap")) continue;
+                if (m.getParameterTypes().length != 2) continue;
+                module.hook(m).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (!Config.get().tlsCapture) return r;
+                    try {
+                        boolean isWrap = chain.getExecutable().getName().equals("wrap");
+                        Object buf = chain.getArg(isWrap ? 0 : 1); // wrap 看 src(明文)，unwrap 看 dst(明文)
+                        if (buf instanceof java.nio.ByteBuffer) {
+                            java.nio.ByteBuffer bb = (java.nio.ByteBuffer) buf;
+                            java.nio.ByteBuffer dup = bb.duplicate();
+                            dup.rewind();
+                            int n = dup.remaining();
+                            if (n > 64) n = 64;
+                            byte[] head = new byte[n];
+                            dup.get(head);
+                            String txt = new String(head, java.nio.charset.StandardCharsets.UTF_8);
+                            // 只记录含 HTTP 特征/可读英文的明文段（防 TLS 1.3 帧噪音）
+                            if (txt.contains("HTTP") || txt.matches("(?s)[A-Z]{3,8} /[^\r\n]*")) {
+                                String line = txt.split("\r?\n")[0];
+                                if (line.length() > 160) line = line.substring(0, 160) + "...";
+                                LogStore.get().log(TAG, "[TLS" + (isWrap ? ">]" : "<] ") + line);
+                            }
+                        }
+                    } catch (Throwable t) { }
+                    return r;
+                });
+                hooked++;
+            }
+            LogStore.get().log(TAG, "[" + phase + "] hooked ConscryptEngine.wrap/unwrap x" + hooked);
+        } catch (Throwable t) {
+            LogStore.get().log(TAG, "[" + phase + "] ConscryptEngine hook fail: " + t);
+        }
+    }
+
+    // ================= 万能连接点：BlockGuardOs.connect（v1.9，借鉴 AdClose）=================
+    // libcore.io.BlockGuardOs.connect(FileDescriptor, InetAddress, int)
+    // 覆盖所有 native socket 连接（含 QUIC/HTTP3、自建 TCP、DNS over TCP 等）
+    private void installConnectCapture(String phase) {
+        try {
+            Class<?> bgo = Class.forName("libcore.io.BlockGuardOs", false, appCl);
+            Method connect = null;
+            for (Method m : bgo.getDeclaredMethods()) {
+                if (m.getName().equals("connect") && m.getParameterTypes().length == 3) {
+                    connect = m;
+                    break;
+                }
+            }
+            if (connect == null) {
+                LogStore.get().log(TAG, "[" + phase + "] BlockGuardOs.connect not found");
+                return;
+            }
+            final Method fConnect = connect;
+            module.hook(connect).intercept(chain -> {
+                Object r;
+                try {
+                    r = chain.proceed();
+                } catch (Throwable t) {
+                    if (Config.get().connectCapture) logConnectArgs(chain, true);
+                    throw t;
+                }
+                if (Config.get().connectCapture) logConnectArgs(chain, false);
+                return r;
+            });
+            LogStore.get().log(TAG, "[" + phase + "] hooked BlockGuardOs.connect");
+        } catch (Throwable t) {
+            LogStore.get().log(TAG, "[" + phase + "] BlockGuardOs.connect hook fail: " + t);
+        }
+    }
+
+    private void logConnectArgs(io.github.libxposed.api.XposedInterface.Chain chain, boolean fail) {
+        try {
+            Object addr = chain.getArg(1);
+            Object port = chain.getArg(2);
+            if (addr instanceof java.net.InetAddress) {
+                java.net.InetAddress ia = (java.net.InetAddress) addr;
+                String ip = ia.getHostAddress();
+                // 跳过回环/本地（噪音）
+                if (ia.isLoopbackAddress() || ip.startsWith("10.") || ip.startsWith("192.168.")
+                        || ip.startsWith("172.") || ip.startsWith("127.") || ip.startsWith("0.")) return;
+                int p = port instanceof Integer ? (Integer) port : -1;
+                LogStore.get().log(TAG, (fail ? "[TCP] FAIL " : "[TCP] ") + ip + ":" + p
+                        + " <- " + StackUtil.getCompact());
+            }
+        } catch (Throwable t) { }
+    }
+
+    // ================= Cronet 网络栈记录（v1.9，借鉴 AdClose）=================
+    // 字节系 app（抖音系/头条系）用 Cronet，不走 OkHttp；
+    // getResponse() 是 CronetHttpURLConnection 收响应主入口。
+    private void installCronetCapture(String phase) {
+        try {
+            Class<?> cronet = Class.forName("com.ttnet.org.chromium.net.urlconnection.CronetHttpURLConnection", false, appCl);
+            Method getResponse = null;
+            for (Method m : cronet.getDeclaredMethods()) {
+                if (m.getName().equals("getResponse") && m.getParameterTypes().length == 0) {
+                    getResponse = m;
+                    break;
+                }
+            }
+            if (getResponse == null) {
+                LogStore.get().log(TAG, "[" + phase + "] CronetHttpURLConnection.getResponse not found");
+                return;
+            }
+            final Method fGetResponse = getResponse;
+            module.hook(getResponse).intercept(chain -> {
+                Object r = chain.proceed();
+                if (!Config.get().cronetCapture) return r;
+                try {
+                    Object self = chain.getThisObject();
+                    if (self instanceof java.net.HttpURLConnection) {
+                        java.net.HttpURLConnection c = (java.net.HttpURLConnection) self;
+                        int code = c.getResponseCode();
+                        String url = c.getURL() != null ? c.getURL().toString() : "?";
+                        if (url.length() > 200) url = url.substring(0, 200) + "...";
+                        LogStore.get().log(TAG, "[Cronet] " + c.getRequestMethod() + " " + url + " -> " + code);
+                    }
+                } catch (Throwable t) { }
+                return r;
+            });
+            LogStore.get().log(TAG, "[" + phase + "] hooked CronetHttpURLConnection.getResponse");
+        } catch (Throwable t) {
+            LogStore.get().log(TAG, "[" + phase + "] Cronet hook fail: " + t);
         }
     }
 }

@@ -5,6 +5,9 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- v1.7: 应用列表勾选需要（Android 11+ 查询其他已安装应用） -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <!-- v1.9: 导出 dex 到 Download 需要存储权限（Android 11+ 需用户授予"所有文件访问"；无权限自动 fallback 到 app 专属目录） -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
     <application
         android:label="@string/app_name"
