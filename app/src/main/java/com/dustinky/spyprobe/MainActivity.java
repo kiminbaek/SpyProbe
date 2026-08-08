@@ -30,6 +30,8 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.dustinky.spyprobe.BuildConfig;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -71,6 +73,10 @@ public class MainActivity extends Activity {
     EditText filterInput;
     List<String> allLogLines = new ArrayList<>();
     static final int MAX_LOG_LINES = 2000;
+    // v1.8: 日志增量渲染指针 —— 记录 logView 已渲染到 allLogLines 的哪一行，
+    // 无过滤时只 append 新行，避免每 800ms 全量 setText(2000 行) 卡 UI
+    int renderedLines = 0;
+    static final int MAX_DISPLAY = 1200; // logView 显示上限（超出重绘最近 N 行，防 TextView 无限膨胀）
 
     // 方法列表缓存（探测 Tab）
     List<String> methodSignatures = new ArrayList<>();
@@ -116,9 +122,9 @@ public class MainActivity extends Activity {
             return insets;
         });
 
-        // 标题
+        // 标题（v1.8: 版本号从 BuildConfig 动态取，杜绝硬编码不同步）
         TextView title = new TextView(this);
-        title.setText("SpyProbe 逆向探测控制台 v1.7");
+        title.setText("SpyProbe 逆向探测控制台 v" + BuildConfig.VERSION_NAME);
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
         title.setTextColor(Color.WHITE);
         title.setGravity(Gravity.CENTER);
@@ -517,7 +523,10 @@ public class MainActivity extends Activity {
                         if (allLogLines.size() > MAX_LOG_LINES) {
                             int drop = allLogLines.size() - MAX_LOG_LINES;
                             allLogLines = new ArrayList<>(allLogLines.subList(drop, allLogLines.size()));
+                            // v1.8: 截断后重置渲染指针并立即重绘，避免日志区短暂空白
                             logView.setText("");
+                            renderedLines = 0;
+                            appendFiltered();
                         }
                         if (sb.length() > 0) {
                             appendFiltered();
@@ -534,40 +543,57 @@ public class MainActivity extends Activity {
 
     /** v1.2: 按过滤关键字重绘日志区 */
     private void applyFilter() {
+        // v1.8: 重置渲染指针（过滤变化需要全量重绘，增量指针已失效）
         logView.setText("");
+        renderedLines = 0;
         appendFiltered();
     }
 
     private void appendFiltered() {
         String kw = filterInput.getText().toString().trim();
         if (kw.isEmpty()) {
-            StringBuilder all = new StringBuilder();
-            int n = Math.min(allLogLines.size(), MAX_LOG_LINES);
-            for (int i = allLogLines.size() - n; i < allLogLines.size(); i++) {
-                all.append(allLogLines.get(i)).append('\n');
+            // v1.8: 无过滤 → 增量 append（只追加新行，避免全量 setText 卡顿）
+            if (renderedLines > allLogLines.size()) {
+                // 截断已重置指针的情况兜底
+                logView.setText("");
+                renderedLines = 0;
             }
-            logView.setText(all.toString());
+            StringBuilder sb = new StringBuilder();
+            for (int i = renderedLines; i < allLogLines.size(); i++) {
+                sb.append(allLogLines.get(i)).append('\n');
+            }
+            if (sb.length() > 0) logView.append(sb.toString());
+            renderedLines = allLogLines.size();
+            // 显示超限：重绘最近 MAX_DISPLAY 行（防止 TextView 无限膨胀拖慢 UI）
+            if (renderedLines > MAX_DISPLAY) {
+                StringBuilder redraw = new StringBuilder();
+                for (int i = allLogLines.size() - MAX_DISPLAY; i < allLogLines.size(); i++) {
+                    redraw.append(allLogLines.get(i)).append('\n');
+                }
+                logView.setText(redraw.toString());
+                renderedLines = allLogLines.size();
+            }
             return;
         }
-        // 支持正则（如 (Net|DNS|TCP)），非法正则 fallback 到字面匹配
-        java.util.regex.Pattern pat = null;
-        try {
-            pat = java.util.regex.Pattern.compile(kw, java.util.regex.Pattern.CASE_INSENSITIVE);
-        } catch (Throwable t) { pat = null; }
-        String kwLower = kw.toLowerCase();
+        // 有过滤：全量重绘（过滤场景行数少，无性能问题）
         StringBuilder sb = new StringBuilder();
         int n = Math.min(allLogLines.size(), MAX_LOG_LINES);
         for (int i = allLogLines.size() - n; i < allLogLines.size(); i++) {
             String line = allLogLines.get(i);
-            boolean hit;
-            if (pat != null) {
-                hit = pat.matcher(line).find();
-            } else {
-                hit = line.toLowerCase().contains(kwLower);
-            }
-            if (hit) sb.append(line).append('\n');
+            if (matchesFilter(line, kw)) sb.append(line).append('\n');
         }
         logView.setText(sb.toString());
+    }
+
+    /** v1.8: 公共过滤匹配（正则优先，非法正则 fallback 字面匹配）—— 去重 exportLogs/appendFiltered 两处逻辑 */
+    private boolean matchesFilter(String line, String kw) {
+        if (kw == null || kw.isEmpty()) return true;
+        java.util.regex.Pattern pat = null;
+        try {
+            pat = java.util.regex.Pattern.compile(kw, java.util.regex.Pattern.CASE_INSENSITIVE);
+        } catch (Throwable t) { pat = null; }
+        if (pat != null) return pat.matcher(line).find();
+        return line.toLowerCase().contains(kw.toLowerCase());
     }
 
     private void refreshStatus() {
@@ -642,6 +668,7 @@ public class MainActivity extends Activity {
                 logView.setText("");
                 allLogLines.clear();
                 since = 0;
+                renderedLines = 0; // v1.8: 清空后重置增量指针
                 Toast.makeText(this, resp == null ? "未连接" : "已清空", Toast.LENGTH_SHORT).show();
             });
         }).start();
@@ -659,19 +686,12 @@ public class MainActivity extends Activity {
                 JSONObject o = new JSONObject(resp);
                 String text = o.optString("text", "");
                 // v1.3: 如果设置了过滤关键字，导出过滤后的结果（抓包分析更聚焦）
+                // v1.8: 复用公共 matchesFilter（去重两处过滤逻辑）
                 String kw = filterInput.getText().toString().trim();
                 if (!kw.isEmpty()) {
-                    java.util.regex.Pattern pat = null;
-                    try {
-                        pat = java.util.regex.Pattern.compile(kw, java.util.regex.Pattern.CASE_INSENSITIVE);
-                    } catch (Throwable t) { pat = null; }
-                    String kwLower = kw.toLowerCase();
                     StringBuilder sb = new StringBuilder();
                     for (String line : text.split("\n")) {
-                        boolean hit;
-                        if (pat != null) hit = pat.matcher(line).find();
-                        else hit = line.toLowerCase().contains(kwLower);
-                        if (hit) sb.append(line).append('\n');
+                        if (matchesFilter(line, kw)) sb.append(line).append('\n');
                     }
                     text = sb.toString();
                 }

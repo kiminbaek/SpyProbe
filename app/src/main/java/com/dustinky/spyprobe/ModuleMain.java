@@ -71,11 +71,12 @@ public class ModuleMain extends XposedModule {
         }
 
         // v1.6: 单个调度线程按时间点依次安装延迟探测 + 持久化规则重挂
+        // v1.8: 延迟安装的探测 phase 统一标 "late"（此前误标 "early" 误导日志）
         new Thread(() -> {
             // t=1500ms: 类加载探测（延迟确保类加载器稳定）
             try {
                 Thread.sleep(1500);
-                clsProbe.install("early");
+                clsProbe.install("late");
             } catch (Throwable t) {
                 log(Log.ERROR, TAG, "class probe install error: " + t);
             }
@@ -83,10 +84,10 @@ public class ModuleMain extends XposedModule {
             // t=2000ms: 加密/Activity/JSON/SharedPreferences + server
             try {
                 Thread.sleep(500);
-                crypto.install("early");
-                act.install("early");
-                json.install("early");
-                prefs.install("early");
+                crypto.install("late");
+                act.install("late");
+                json.install("late");
+                prefs.install("late");
                 server.start();
             } catch (Throwable t) {
                 log(Log.ERROR, TAG, "deferred probe install error: " + t);
@@ -95,7 +96,7 @@ public class ModuleMain extends XposedModule {
             // t=2500ms: SQLite 记录
             try {
                 Thread.sleep(500);
-                sqlite.install("early");
+                sqlite.install("late");
             } catch (Throwable t) {
                 log(Log.ERROR, TAG, "sqlite probe install error: " + t);
             }

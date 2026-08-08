@@ -10,14 +10,19 @@ android {
     defaultConfig {
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "1.7"
+        versionCode = 9
+        versionName = "1.8"
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
         }
+    }
+
+    // v1.8: 启用 BuildConfig（MainActivity 标题动态取 VERSION_NAME，杜绝硬编码不同步）
+    buildFeatures {
+        buildConfig = true
     }
 
     compileOptions {

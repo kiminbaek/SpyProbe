@@ -342,6 +342,7 @@ public class NetProbe {
                         Object msg = sRespMsg.invoke(resp);
                         Object respHeaders = sRespHeaders.invoke(resp);
                         Object bodyStr = body != null ? sRespBodyString.invoke(body) : "";
+                        // v1.8: toString() 只调一次（每次调用都重新 UTF-8 解码，大 body 重复解码浪费）
                         String b = bodyStr == null ? "" : bodyStr.toString();
                         if (b.length() > limit) b = b.substring(0, limit) + "...(" + b.length() + "B)";
                         StringBuilder sb = new StringBuilder();
@@ -350,7 +351,7 @@ public class NetProbe {
                             // v1.2: 响应头（Set-Cookie / Content-Type / 长度）
                             sb.append("\n    ").append(respHeaders.toString().replace("\n", "\n    "));
                         }
-                        sb.append("\n    body(").append(bodyStr == null ? 0 : bodyStr.toString().length()).append("B): ")
+                        sb.append("\n    body(").append(b.length()).append("B): ")
                           .append(b.replace("\n", "\n    "));
                         LogStore.get().log(TAG, sb.toString());
                     } catch (Throwable t) {

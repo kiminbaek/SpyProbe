@@ -123,7 +123,8 @@ public class SQLiteProbe {
     }
 
     /** query 重载拼可读 SELECT */
-    private int hookQuery(Class<?> db) {        int hooked = 0;
+    private int hookQuery(Class<?> db) {
+        int hooked = 0;
         try {
             for (Method m : db.getDeclaredMethods()) {
                 if (!m.getName().equals("query")) continue;
