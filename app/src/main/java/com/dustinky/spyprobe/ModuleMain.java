@@ -126,6 +126,8 @@ public class ModuleMain extends XposedModule {
                 Thread.sleep(2500);
                 dexKit.init();
                 android.content.SharedPreferences sp = getRemotePreferences("spyprobe_rules");
+                // v1.21: 恢复用户抓包开关（prefs/activity/crypto 等），进程重启不再回默认
+                Config.get().loadConfig(sp);
                 boolean loaded = Config.get().loadRules(sp);
                 if (loaded) log(Log.INFO, TAG, "loaded persisted hook rules, re-hooking...");
                 for (Config.HookSpec spec : Config.get().hooks) {

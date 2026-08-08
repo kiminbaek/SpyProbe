@@ -255,6 +255,9 @@ public class Config {
     private static final String KEY_HOOKS = "hooks";
     private static final String KEY_HIJACKS = "hijacks";
 
+    // ===== v1.21: 抓包开关持久化（进程重启后恢复用户开关，不再回默认）=====
+    private static final String KEY_CFG = "cfg_switches";
+
     /** 保存当前 hooks + hijacks 到模块远程偏好（不污染目标 app 数据） */
     public synchronized void saveRules(android.content.SharedPreferences prefs) {
         try {
@@ -313,5 +316,82 @@ public class Config {
             }
         } catch (Throwable t) { }
         return loaded;
+    }
+
+    // ===== v1.21: 抓包开关持久化 =====
+
+    /** 保存全部抓包开关到模块远程偏好（每次 UI 下发配置后调用） */
+    public synchronized void saveConfig(android.content.SharedPreferences prefs) {
+        if (prefs == null) return;
+        try {
+            org.json.JSONObject o = new org.json.JSONObject();
+            o.put("sslBypass", sslBypass);
+            o.put("okhttp", okhttpCapture);
+            o.put("url", urlCapture);
+            o.put("dns", dnsCapture);
+            o.put("tcp", tcpCapture);
+            o.put("classes", classCapture);
+            o.put("classFilter", classFilter == null ? "" : classFilter);
+            o.put("classLogAll", classLogAll);
+            o.put("bodyLimit", bodyLimit);
+            o.put("logLimit", logLimit);
+            o.put("webView", webViewCapture);
+            o.put("prefs", prefsCapture);
+            o.put("sqlite", sqliteCapture);
+            o.put("urlBuild", urlBuildCapture);
+            o.put("logcat", logcatCapture);
+            o.put("crypto", cryptoCapture);
+            o.put("activity", activityCapture);
+            o.put("json", jsonCapture);
+            o.put("detailMode", detailMode);
+            o.put("env", envCapture);
+            o.put("tls", tlsCapture);
+            o.put("connect", connectCapture);
+            o.put("cronet", cronetCapture);
+            o.put("antiRoot", antiRoot);
+            o.put("antiXposed", antiXposed);
+            o.put("native", nativeCapture);
+            o.put("autoProbe", autoProbe);
+            o.put("autoProbeFilter", autoProbeFilter == null ? "" : autoProbeFilter);
+            prefs.edit().putString(KEY_CFG, o.toString()).apply();
+        } catch (Throwable t) { }
+    }
+
+    /** 进程启动后恢复抓包开关（未保存过则保持默认值） */
+    public synchronized void loadConfig(android.content.SharedPreferences prefs) {
+        if (prefs == null) return;
+        try {
+            String s = prefs.getString(KEY_CFG, "");
+            if (s.isEmpty()) return;
+            org.json.JSONObject o = new org.json.JSONObject(s);
+            sslBypass = o.optBoolean("sslBypass", sslBypass);
+            okhttpCapture = o.optBoolean("okhttp", okhttpCapture);
+            urlCapture = o.optBoolean("url", urlCapture);
+            dnsCapture = o.optBoolean("dns", dnsCapture);
+            tcpCapture = o.optBoolean("tcp", tcpCapture);
+            classCapture = o.optBoolean("classes", classCapture);
+            classFilter = o.optString("classFilter", classFilter);
+            classLogAll = o.optBoolean("classLogAll", classLogAll);
+            bodyLimit = o.optInt("bodyLimit", bodyLimit);
+            logLimit = o.optInt("logLimit", logLimit);
+            webViewCapture = o.optBoolean("webView", webViewCapture);
+            prefsCapture = o.optBoolean("prefs", prefsCapture);
+            sqliteCapture = o.optBoolean("sqlite", sqliteCapture);
+            urlBuildCapture = o.optBoolean("urlBuild", urlBuildCapture);
+            logcatCapture = o.optBoolean("logcat", logcatCapture);
+            cryptoCapture = o.optBoolean("crypto", cryptoCapture);
+            activityCapture = o.optBoolean("activity", activityCapture);
+            jsonCapture = o.optBoolean("json", jsonCapture);
+            detailMode = o.optBoolean("detailMode", detailMode);
+            envCapture = o.optBoolean("env", envCapture);
+            tlsCapture = o.optBoolean("tls", tlsCapture);
+            connectCapture = o.optBoolean("connect", connectCapture);
+            cronetCapture = o.optBoolean("cronet", cronetCapture);
+            antiRoot = o.optBoolean("antiRoot", antiRoot);
+            antiXposed = o.optBoolean("antiXposed", antiXposed);
+            nativeCapture = o.optBoolean("native", nativeCapture);
+            autoProbe = o.optBoolean("autoProbe", autoProbe);
+            autoProbeFilter = o.optString("autoProbeFilter", autoProbeFilter);
+        } catch (Throwable t) { }
     }
 }

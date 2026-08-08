@@ -258,6 +258,8 @@ public class SpyServer {
                         if (c.has("autoProbe")) cfg.autoProbe = c.getBoolean("autoProbe");
                         if (c.has("autoProbeFilter")) cfg.autoProbeFilter = c.optString("autoProbeFilter", "");
                         LogStore.get().log(TAG, "config updated: " + body);
+                        // v1.21: 开关持久化——进程重启后恢复用户配置，不再回默认
+                        if (rulesPrefs != null) Config.get().saveConfig(rulesPrefs);
                     }
                     JSONObject o = new JSONObject();
                     o.put("ok", true);
