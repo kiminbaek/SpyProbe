@@ -16,12 +16,16 @@ SpyProbe 是一个运行在目标 App 进程内的全面探测工具，专为**�
 - ✅ **Activity/Intent 流程**：生命周期 + 跳转目标，理清页面流
 - ✅ **JSON/Gson 序列化**：直接看接口数据结构
 - ✅ **WebView.loadUrl 记录**
+- ✅ **DexKit 反编译**（v1.9）：一键导出全部 dex（jadx 打开）+ 字符串反查引用方法（找校验/密钥/接口逻辑入口）
+- ✅ **TLS 明文抓包**（v1.9）：ConscryptEngine wrap/unwrap，HTTPS 明文头直接可见
+- ✅ **万能连接点**（v1.9）：BlockGuardOs.connect 覆盖所有 socket（含 QUIC/HTTP3）
+- ✅ **环境检测探测**（v1.9）：记录 App 检测行为（root 路径/命令/属性/vpn/传感器/防截屏/剪贴板/设备指纹），反编译知道要绕过什么
 
 ## 架构
 
 ```
 目标 App 进程内（XposedModule）
-├─ NetProbe      —— SSL 绕过 / OkHttp / HttpURLConnection / DNS / Socket / WebView
+├─ NetProbe      —— SSL 绕过 / OkHttp / HttpURLConnection / DNS / Socket / WebView / TLS明文 / connect / Cronet
 ├─ UrlProbe      —— URL/Uri/URI/HttpUrl 构造捕捉（v1.5）
 ├─ CryptoProbe   —— Cipher 算法/密钥/IV 记录（v1.5）
 ├─ LogCatProbe   —— App 自身 Log 拦截（v1.5）
@@ -31,6 +35,9 @@ SpyProbe 是一个运行在目标 App 进程内的全面探测工具，专为**�
 ├─ PrefsProbe    —— SharedPreferences key 记录
 ├─ ActivityProbe —— Activity 生命周期 + Intent（v1.5）
 ├─ JsonProbe     —— JSONObject/Gson 序列化（v1.5）
+├─ DexKitProbe   —— DexKit 导出 dex + 字符串反查（v1.9）
+├─ EnvProbe      —— 环境检测探测：root/vpn/传感器/防截屏/设备指纹（v1.9）
+├─ StackUtil     —— 调用栈工具（v1.9）
 ├─ LogStore      —— 环形缓冲日志（4096 条）
 └─ SpyServer     —— 本地 HTTP server（127.0.0.1:9901-9910，多进程自动偏移）
 
@@ -40,7 +47,7 @@ SpyProbe 是一个运行在目标 App 进程内的全面探测工具，专为**�
 
 ## 使用
 
-1. 安装 `SpyProbe-v1.5.apk`
+1. 安装 `SpyProbe-v1.9.apk`
 2. 在 LSPosed 中勾选目标 App 作用域
 3. 重启目标 App
 4. 打开 SpyProbe 控制台，自动发现端口（9901-9910）并连接
@@ -62,11 +69,15 @@ SpyProbe 是一个运行在目标 App 进程内的全面探测工具，专为**�
 | `/api/hijack` | POST | 设置/取消返回值劫持 |
 | `/api/hijacks` | GET | 当前劫持规则 |
 | `/api/clear` | POST | 清空日志 |
+| `/api/dexdump` | GET | 导出全部 dex（v1.9） |
+| `/api/stringfind` | POST | 字符串反查引用方法（v1.9） |
+| `/api/dexclose` | GET | 释放 DexKit bridge（v1.9） |
 
 ## 版本历史
 
 | 版本 | 说明 |
 |:-----|:-----|
+| v1.9 | AdClose 借鉴全落地：DexKit（导出 dex + 字符串反查）/ 环境检测探测 / TLS 明文抓包 / 万能连接点 / Cronet |
 | v1.5 | 全面审核 + 反编译难点增强：URL 捕捉 / Crypto / Log 拦截 / Activity / JSON 5 大新 Probe + isNative 标记 |
 | v1.4 | 增强模式：返回值劫持 + SQLite 记录 |
 | v1.3 | 第三轮审核：重复 hook 防重、多进程端口自动发现 |
