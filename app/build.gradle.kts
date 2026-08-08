@@ -6,12 +6,31 @@ android {
     namespace = "com.dustinky.spyprobe"
     compileSdk = 36
     buildToolsVersion = "36.0.0"
+    ndkVersion = "27.1.12297006"
 
     defaultConfig {
         minSdk = 26
         targetSdk = 35
-        versionCode = 10
-        versionName = "1.9"
+        versionCode = 11
+        versionName = "1.10"
+
+        // v1.10: native 抓包（shadowhook inline hook）——只编真机常用 ABI，控制体积
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c++17"
+            }
+        }
+    }
+
+    // v1.10: CMake 构建 native_hook（shadowhook + nghttp2）
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     buildTypes {

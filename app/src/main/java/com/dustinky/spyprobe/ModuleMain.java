@@ -87,6 +87,12 @@ public class ModuleMain extends XposedModule {
             // t=2000ms: 加密/Activity/JSON/SharedPreferences + 环境检测 + server
             try {
                 Thread.sleep(500);
+                // v1.10: native 层抓包（libc + SSL_write/SSL_read + HTTP/2），越早装越好
+                try {
+                    NativeProbe.init();
+                } catch (Throwable t) {
+                    log(Log.ERROR, TAG, "native probe init error: " + t);
+                }
                 crypto.install("late");
                 act.install("late");
                 json.install("late");
