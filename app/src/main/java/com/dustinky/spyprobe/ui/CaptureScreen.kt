@@ -8,6 +8,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -30,6 +31,8 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -124,49 +127,83 @@ fun CaptureScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     Column(modifier = modifier.fillMaxSize().padding(horizontal = 12.dp)) {
         // v1.16 P2-16: 顶部大标题由 TopAppBar 统一提供，此处删除（控制台版本信息保留在设置页关于）
 
-        // 目标 + 端口行（v1.16 P2-12: 实心 Button → OutlinedButton 更轻量）
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            var showPicker by remember { mutableStateOf(false) }
-            OutlinedButton(
-                onClick = { showPicker = true },
-                modifier = Modifier.weight(1.6f)
-            ) {
-                Text(if (target.isEmpty()) "选择目标 App" else target, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-            var showPortDialog by remember { mutableStateOf(false) }
-            OutlinedButton(onClick = { showPortDialog = true }, modifier = Modifier.weight(1f)) {
-                Text("端口:$port")
-            }
-            if (showPicker) {
-                TargetPickerDialog(vm, onDismiss = { showPicker = false })
-            }
-            if (showPortDialog) {
-                PortDialog(vm, currentPort = port, onDismiss = { showPortDialog = false })
+        // ===== 状态卡片（v1.17: 连接状态 + 目标 + 端口 合一卡片） =====
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = if (connected)
+                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+                else
+                    MaterialTheme.colorScheme.surfaceContainerHigh
+            ),
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+        ) {
+            Column(Modifier.padding(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(
+                                if (connected) Color(0xFF4CAF50) else Color(0xFFEF5350),
+                                RoundedCornerShape(4.dp)
+                            )
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        status,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (connected) MaterialTheme.colorScheme.onSurface
+                        else MaterialTheme.colorScheme.tertiary,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    var showPicker by remember { mutableStateOf(false) }
+                    OutlinedButton(
+                        onClick = { showPicker = true },
+                        modifier = Modifier.weight(1.6f)
+                    ) {
+                        Icon(Icons.Filled.Search, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(if (target.isEmpty()) "选择目标 App" else target, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    var showPortDialog by remember { mutableStateOf(false) }
+                    OutlinedButton(onClick = { showPortDialog = true }, modifier = Modifier.weight(1f)) {
+                        Text("端口:$port")
+                    }
+                    if (showPicker) {
+                        TargetPickerDialog(vm, onDismiss = { showPicker = false })
+                    }
+                    if (showPortDialog) {
+                        PortDialog(vm, currentPort = port, onDismiss = { showPortDialog = false })
+                    }
+                }
             }
         }
 
-        // 状态
-        Text(
-            status,
-            style = MaterialTheme.typography.bodySmall,
-            color = if (connected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary,
-            modifier = Modifier.padding(vertical = 6.dp)
-        )
-
-        // 开关行 1（v1.15 P0-3: 从后端回读的 cfg 取初始值）
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            SwitchItem("SSL绕过", cfg["sslBypass"] as? Boolean ?: true) { vm.sendConfig(mapOf("sslBypass" to it)); cfg = cfg + ("sslBypass" to it) }
-            SwitchItem("OkHttp", cfg["okhttp"] as? Boolean ?: true) { vm.sendConfig(mapOf("okhttp" to it)); cfg = cfg + ("okhttp" to it) }
-            SwitchItem("URLConn", cfg["url"] as? Boolean ?: true) { vm.sendConfig(mapOf("url" to it)); cfg = cfg + ("url" to it) }
+        // ===== 记录开关卡片（v1.17: 分组卡片） =====
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+        ) {
+            Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                Text("记录开关", style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 2.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    SwitchItem("SSL绕过", cfg["sslBypass"] as? Boolean ?: true) { vm.sendConfig(mapOf("sslBypass" to it)); cfg = cfg + ("sslBypass" to it) }
+                    SwitchItem("OkHttp", cfg["okhttp"] as? Boolean ?: true) { vm.sendConfig(mapOf("okhttp" to it)); cfg = cfg + ("okhttp" to it) }
+                    SwitchItem("URLConn", cfg["url"] as? Boolean ?: true) { vm.sendConfig(mapOf("url" to it)); cfg = cfg + ("url" to it) }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    SwitchItem("DNS解析", cfg["dns"] as? Boolean ?: true) { vm.sendConfig(mapOf("dns" to it)); cfg = cfg + ("dns" to it) }
+                    SwitchItem("TCP连接", cfg["tcp"] as? Boolean ?: true) { vm.sendConfig(mapOf("tcp" to it)); cfg = cfg + ("tcp" to it) }
+                    SwitchItem("类加载", cfg["classes"] as? Boolean ?: true) { vm.sendConfig(mapOf("classes" to it)); cfg = cfg + ("classes" to it) }
+                }
+            }
         }
-        // 开关行 2
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            SwitchItem("DNS解析", cfg["dns"] as? Boolean ?: true) { vm.sendConfig(mapOf("dns" to it)); cfg = cfg + ("dns" to it) }
-            SwitchItem("TCP连接", cfg["tcp"] as? Boolean ?: true) { vm.sendConfig(mapOf("tcp" to it)); cfg = cfg + ("tcp" to it) }
-            SwitchItem("类加载", cfg["classes"] as? Boolean ?: true) { vm.sendConfig(mapOf("classes" to it)); cfg = cfg + ("classes" to it) }
-        }
 
-        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+        HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
 
         // 过滤行
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {

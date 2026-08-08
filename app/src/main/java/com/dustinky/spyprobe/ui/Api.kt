@@ -277,6 +277,18 @@ class SpyApi(private var port: Int = 9901) {
         } catch (t: Throwable) { null }
     }
 
+    /** v1.17: 直接按 class+method+params hook（UI 手动添加规则用，不解析 signature） */
+    fun hookMethod(cls: String, method: String, params: String, kind: String = "method"): String? {
+        val m = if (kind == "constructor") "<init>" else method
+        return try {
+            val o = JSONObject()
+            o.put("class", cls)
+            o.put("method", m)
+            o.put("params", params)
+            httpPost("/api/hook", o.toString())
+        } catch (t: Throwable) { null }
+    }
+
     fun unhook(cls: String, method: String, params: String) {
         try {
             val o = JSONObject()

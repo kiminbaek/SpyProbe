@@ -17,6 +17,8 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -160,73 +162,105 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             }
         }
 
-        OutlinedTextField(
-            value = bodyLimit,
-            onValueChange = { bodyLimit = it },
-            label = { Text("响应体记录上限(字节)，0=不记录body") },
-            singleLine = true,
+        // v1.17: 配置项分组卡片
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
             modifier = Modifier.fillMaxWidth()
-        )
-        OutlinedTextField(
-            value = logLimit,
-            onValueChange = { logLimit = it },
-            label = { Text("日志环形缓冲上限(条)，默认 4096") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth()
-        )
+        ) {
+            Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                OutlinedTextField(
+                    value = bodyLimit,
+                    onValueChange = { bodyLimit = it },
+                    label = { Text("响应体记录上限(字节)，0=不记录body") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = logLimit,
+                    onValueChange = { logLimit = it },
+                    label = { Text("日志环形缓冲上限(条)，默认 4096") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
 
-        SettingCheck("记录 WebView.loadUrl", webView) { webView = it }
-        SettingCheck("记录 SharedPreferences key（读取高频，建议按需开）", prefs) { prefs = it }
-        SettingCheck("记录 SQLite 增删改查", sqlite) { sqlite = it }
-        SettingCheck("记录 URL 构造（找接口地址/CDN 域名）", urlBuild) { urlBuild = it }
-        // v1.15 P2-7: 文案修正 —— logcat 是"记录"不是"拦截"
-        SettingCheck("记录 App 自身 Log 输出（信息量大）", logcat) { logcat = it }
-        SettingCheck("记录加密算法/密钥/IV（Cipher，默认关防刷屏）", crypto) { crypto = it }
-        SettingCheck("记录 Activity 生命周期 + Intent 跳转", activity) { activity = it }
-        SettingCheck("记录 JSON/Gson 序列化结构", json) { json = it }
-        SettingCheck("函数探测详细模式（参数/字段/调用栈）", detailMode) { detailMode = it }
-        SettingCheck("记录环境检测（root/vpn/传感器/防截屏/设备指纹）", env) { env = it }
-        SettingCheck("TLS 明文抓包（ConscryptEngine，HTTPS 明文头）", tls) { tls = it }
-        SettingCheck("万能连接点记录（BlockGuardOs.connect，QUIC/自建TCP）", connect) { connect = it }
-        SettingCheck("Cronet 网络栈记录（字节系 app，默认关防重复）", cronet) { cronet = it }
-        // v1.15 P0-4: native 层抓包开关（libc+SSL+HTTP2）
-        SettingCheck("native 层抓包（libc+SSL+HTTP2，高频刷屏可关）", native) { native = it }
-
-        HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
-        Text("反检测（v1.13，防目标 App 检测 hook 环境）",
-            style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-        SettingCheck("隐藏 root：File.exists(su)/Runtime.exec/SystemProperties 过滤", antiRoot) { antiRoot = it }
-        SettingCheck("隐藏 Xposed：loadClass/StackTrace/DexPathList/Modifier 净化", antiXposed) { antiXposed = it }
-        Text("与「探测」页的环境检测互为镜像：开反检测后可用 EnvProbe 验证目标 App 还检测到啥",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-
-        Button(onClick = { sendAll() }, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-            Text("下发配置")
+                Text("记录开关", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 6.dp))
+                SettingCheck("记录 WebView.loadUrl", webView) { webView = it }
+                SettingCheck("记录 SharedPreferences key（读取高频，建议按需开）", prefs) { prefs = it }
+                SettingCheck("记录 SQLite 增删改查", sqlite) { sqlite = it }
+                SettingCheck("记录 URL 构造（找接口地址/CDN 域名）", urlBuild) { urlBuild = it }
+                // v1.15 P2-7: 文案修正 —— logcat 是"记录"不是"拦截"
+                SettingCheck("记录 App 自身 Log 输出（信息量大）", logcat) { logcat = it }
+                SettingCheck("记录加密算法/密钥/IV（Cipher，默认关防刷屏）", crypto) { crypto = it }
+                SettingCheck("记录 Activity 生命周期 + Intent 跳转", activity) { activity = it }
+                SettingCheck("记录 JSON/Gson 序列化结构", json) { json = it }
+                SettingCheck("函数探测详细模式（参数/字段/调用栈）", detailMode) { detailMode = it }
+                SettingCheck("记录环境检测（root/vpn/传感器/防截屏/设备指纹）", env) { env = it }
+                SettingCheck("TLS 明文抓包（ConscryptEngine，HTTPS 明文头）", tls) { tls = it }
+                SettingCheck("万能连接点记录（BlockGuardOs.connect，QUIC/自建TCP）", connect) { connect = it }
+                SettingCheck("Cronet 网络栈记录（字节系 app，默认关防重复）", cronet) { cronet = it }
+                // v1.15 P0-4: native 层抓包开关（libc+SSL+HTTP2）
+                SettingCheck("native 层抓包（libc+SSL+HTTP2，高频刷屏可关）", native) { native = it }
+            }
         }
 
-        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+        Spacer(Modifier.height(10.dp))
 
-        Text("DexKit 反编译", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(bottom = 4.dp))
-        Text("导出全部 dex（jadx 打开）+ 字符串反查方法（找校验/密钥/接口逻辑）",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Button(onClick = { dexkitOpen = true }, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-            Text("打开 DexKit 工具")
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                Text("反检测（v1.13，防目标 App 检测 hook 环境）",
+                    style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                SettingCheck("隐藏 root：File.exists(su)/Runtime.exec/SystemProperties 过滤", antiRoot) { antiRoot = it }
+                SettingCheck("隐藏 Xposed：loadClass/StackTrace/DexPathList/Modifier 净化", antiXposed) { antiXposed = it }
+                Text("与「探测」页的环境检测互为镜像：开反检测后可用 EnvProbe 验证目标 App 还检测到啥",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+                Button(onClick = { sendAll() }, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                    Text("下发配置")
+                }
+            }
         }
 
-        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+        Spacer(Modifier.height(10.dp))
 
-        Text("关于", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        Text(
-            "SpyProbe v${BuildConfig.VERSION_NAME}（code ${BuildConfig.VERSION_CODE}）\n" +
-                "通用 Xposed 逆向探测模块：抓包 / 函数探测 / 返回值劫持 / DexKit 反编译 / native 层抓包\n" +
-                "GitHub: github.com/kiminbaek/SpyProbe\n" +
-                "许可证：不可商用，二次开发需注明原作者版权",
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.padding(vertical = 4.dp)
-        )
-        Button(onClick = { aboutOpen = true }, modifier = Modifier.fillMaxWidth()) {
-            Text("完整说明")
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                Text("DexKit 反编译", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(bottom = 4.dp))
+                Text("导出全部 dex（jadx 打开）+ 字符串反查方法（找校验/密钥/接口逻辑）",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Button(onClick = { dexkitOpen = true }, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                    Text("打开 DexKit 工具")
+                }
+            }
+        }
+
+        Spacer(Modifier.height(10.dp))
+
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                Text("关于", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    "SpyProbe v${BuildConfig.VERSION_NAME}（code ${BuildConfig.VERSION_CODE}）\n" +
+                        "通用 Xposed 逆向探测模块：抓包 / 函数探测 / 返回值劫持 / DexKit 反编译 / native 层抓包\n" +
+                        "GitHub: github.com/kiminbaek/SpyProbe\n" +
+                        "许可证：不可商用，二次开发需注明原作者版权",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(vertical = 4.dp)
+                )
+                Button(onClick = { aboutOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                    Text("完整说明")
+                }
+            }
         }
         Spacer(Modifier.height(24.dp))
     }
