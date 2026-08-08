@@ -1,0 +1,310 @@
+package com.dustinky.spyprobe.ui
+
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.io.OutputStream
+import java.net.HttpURLConnection
+import java.net.URL
+import java.nio.charset.StandardCharsets
+
+// v1.11: HTTP 封装（与 SpyServer API 契约对齐，原 MainActivity 逻辑 Kotlin 化）
+
+data class LogEntry(val time: String, val tag: String, val msg: String) {
+    fun display(): String = "$time [$tag] $msg"
+}
+
+data class StatusInfo(
+    val pkg: String = "?",
+    val versionName: String = "",
+    val logCount: Int = 0,
+    val classCount: Int = 0
+)
+
+data class MethodInfo(
+    val signature: String,
+    val params: String,
+    val kind: String,
+    val modifiers: String
+)
+
+data class ScanResult(
+    val ok: Boolean,
+    val className: String,
+    val methods: List<MethodInfo>,
+    val error: String = ""
+)
+
+data class HookEntry(val cls: String, val method: String, val params: String) {
+    fun display(): String = "$cls.$method($params)"
+}
+
+data class HijackEntry(val cls: String, val method: String, val params: String, val value: String) {
+    fun display(): String = "$cls.$method($params) -> $value"
+}
+
+class SpyApi(private var port: Int = 9901) {
+
+    fun setPort(p: Int) { port = p }
+    fun port(): Int = port
+
+    fun baseUrl(): String = "http://127.0.0.1:$port"
+
+    // ---------- HTTP ----------
+    fun httpGet(path: String): String? {
+        return try {
+            val u = URL(baseUrl() + path)
+            val c = u.openConnection() as HttpURLConnection
+            c.connectTimeout = 1500
+            c.readTimeout = 1500
+            val r = BufferedReader(InputStreamReader(c.inputStream, StandardCharsets.UTF_8))
+            val sb = StringBuilder()
+            var line: String?
+            while (r.readLine().also { line = it } != null) sb.append(line)
+            r.close()
+            c.disconnect()
+            sb.toString()
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    fun httpPost(path: String, json: String): String? {
+        return try {
+            val u = URL(baseUrl() + path)
+            val c = u.openConnection() as HttpURLConnection
+            c.requestMethod = "POST"
+            c.setRequestProperty("Content-Type", "application/json")
+            c.connectTimeout = 1500
+            c.readTimeout = 1500
+            c.doOutput = true
+            val os: OutputStream = c.outputStream
+            os.write(json.toByteArray(StandardCharsets.UTF_8))
+            os.flush()
+            os.close()
+            val r = BufferedReader(InputStreamReader(c.inputStream, StandardCharsets.UTF_8))
+            val sb = StringBuilder()
+            var line: String?
+            while (r.readLine().also { line = it } != null) sb.append(line)
+            r.close()
+            c.disconnect()
+            sb.toString()
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    // ---------- API ----------
+    fun ping(): StatusInfo? {
+        val resp = httpGet("/api/ping") ?: return null
+        return try {
+            val o = JSONObject(resp)
+            StatusInfo(
+                pkg = o.optString("pkg", "?"),
+                versionName = o.optString("versionName", ""),
+                logCount = o.optInt("logCount", 0),
+                classCount = o.optInt("classCount", 0)
+            )
+        } catch (t: Throwable) { null }
+    }
+
+    /** 扫描 9901-9910 找能 ping 通的 server 端口（多进程 app 可能偏移端口） */
+    fun scanPorts(): Int {
+        for (p in 9901..9910) {
+            if (p == port) continue
+            try {
+                val u = URL("http://127.0.0.1:$p/api/ping")
+                val c = u.openConnection() as HttpURLConnection
+                c.connectTimeout = 600
+                c.readTimeout = 600
+                val code = c.responseCode
+                c.disconnect()
+                if (code == 200) return p
+            } catch (t: Throwable) { }
+        }
+        return -1
+    }
+
+    /** 拉取增量日志；返回新行，null=未连接 */
+    fun fetchLogs(since: Long): Pair<List<LogEntry>, Long>? {
+        val resp = httpGet("/api/logs?since=$since") ?: return null
+        return try {
+            val o = JSONObject(resp)
+            val next = o.optLong("next", since)
+            val arr = o.optJSONArray("logs") ?: JSONArray()
+            val list = ArrayList<LogEntry>()
+            for (i in 0 until arr.length()) {
+                val e = arr.getJSONObject(i)
+                list.add(LogEntry(e.optString("time"), e.optString("tag"), e.optString("msg")))
+            }
+            Pair(list, next)
+        } catch (t: Throwable) { null }
+    }
+
+    fun sendConfig(map: Map<String, Any>) {
+        try {
+            val o = JSONObject()
+            for ((k, v) in map) {
+                when (v) {
+                    is Boolean -> o.put(k, v)
+                    is Int -> o.put(k, v)
+                    is Long -> o.put(k, v)
+                    is String -> o.put(k, v)
+                    else -> o.put(k, v.toString())
+                }
+            }
+            httpPost("/api/config", o.toString())
+        } catch (t: Throwable) { }
+    }
+
+    fun clear(): String? = httpPost("/api/clear", "{}")
+
+    fun export(): String? = httpGet("/api/export")
+
+    fun scanClass(cls: String): ScanResult {
+        val resp = try {
+            val o = JSONObject()
+            o.put("class", cls)
+            httpPost("/api/scan", o.toString())
+        } catch (t: Throwable) { null }
+        if (resp == null) return ScanResult(false, cls, emptyList(), "未连接")
+        return try {
+            val r = JSONObject(resp)
+            if (!r.optBoolean("ok", false)) {
+                ScanResult(false, cls, emptyList(), r.optString("error", "error"))
+            } else {
+                val arr = r.optJSONArray("methods") ?: JSONArray()
+                val methods = ArrayList<MethodInfo>()
+                for (i in 0 until arr.length()) {
+                    val m = arr.getJSONObject(i)
+                    methods.add(MethodInfo(
+                        signature = m.optString("signature", "?"),
+                        params = m.optString("params", ""),
+                        kind = m.optString("kind", "method"),
+                        modifiers = m.optString("modifiers", "")
+                    ))
+                }
+                ScanResult(true, r.optString("className", cls), methods)
+            }
+        } catch (t: Throwable) {
+            ScanResult(false, cls, emptyList(), "解析失败: $t")
+        }
+    }
+
+    /** signature 如 "foo(java.lang.String,int)" -> 拆出 method + params */
+    private fun splitSignature(signature: String): Pair<String, String> {
+        var method = signature
+        var params = ""
+        if (method.contains("(")) {
+            val pi = method.indexOf('(')
+            val end = method.lastIndexOf(')')
+            val inner = if (end > pi) method.substring(pi + 1, end).trim() else ""
+            method = method.substring(0, pi).trim()
+            if (inner.isNotEmpty()) {
+                val parts = inner.split(",")
+                params = parts.joinToString(",") { it.trim() }
+            } else {
+                params = ""
+            }
+        }
+        return Pair(method, params)
+    }
+
+    fun hook(cls: String, signature: String, fallbackParams: String): String? {
+        val (m, p) = splitSignature(signature)
+        val params = if (p.isEmpty()) fallbackParams else p
+        return try {
+            val o = JSONObject()
+            o.put("class", cls)
+            o.put("method", m)
+            o.put("params", params)
+            httpPost("/api/hook", o.toString())
+        } catch (t: Throwable) { null }
+    }
+
+    fun unhook(cls: String, method: String, params: String) {
+        try {
+            val o = JSONObject()
+            o.put("class", cls)
+            o.put("method", method)
+            o.put("params", params)
+            httpPost("/api/unhook", o.toString())
+        } catch (t: Throwable) { }
+    }
+
+    fun listHooks(): List<HookEntry> {
+        val resp = httpGet("/api/hooks") ?: return emptyList()
+        return try {
+            val o = JSONObject(resp)
+            val arr = o.optJSONArray("hooks") ?: return emptyList()
+            val list = ArrayList<HookEntry>()
+            for (i in 0 until arr.length()) {
+                val h = arr.getJSONObject(i)
+                list.add(HookEntry(
+                    cls = h.optString("class", "?"),
+                    method = h.optString("method", "?"),
+                    params = h.optString("params", "")
+                ))
+            }
+            list
+        } catch (t: Throwable) { emptyList() }
+    }
+
+    fun setHijack(cls: String, method: String, params: String, value: String?) {
+        try {
+            val o = JSONObject()
+            o.put("class", cls)
+            o.put("method", method)
+            o.put("params", params)
+            if (value == null) o.put("value", JSONObject.NULL) else o.put("value", value)
+            httpPost("/api/hijack", o.toString())
+        } catch (t: Throwable) { }
+    }
+
+    fun listHijacks(): List<HijackEntry> {
+        val resp = httpGet("/api/hijacks") ?: return emptyList()
+        return try {
+            val o = JSONObject(resp)
+            val arr = o.optJSONArray("hijacks") ?: return emptyList()
+            val list = ArrayList<HijackEntry>()
+            for (i in 0 until arr.length()) {
+                val h = arr.getJSONObject(i)
+                list.add(HijackEntry(
+                    cls = h.optString("class", "?"),
+                    method = h.optString("method", "?"),
+                    params = h.optString("params", ""),
+                    value = h.optString("value", "")
+                ))
+            }
+            list
+        } catch (t: Throwable) { emptyList() }
+    }
+
+    /** 类加载记录查询；返回 null=未连接 */
+    fun queryClasses(filter: String, logAll: Boolean): Triple<Int, Int, List<String>>? {
+        val resp = httpGet("/api/classes?filter=" + android.net.Uri.encode(filter) +
+                (if (logAll) "&logall=true" else "")) ?: return null
+        return try {
+            val r = JSONObject(resp)
+            val count = r.optInt("count", 0)
+            val total = r.optInt("total", 0)
+            val arr = r.optJSONArray("classes") ?: JSONArray()
+            val list = ArrayList<String>()
+            for (i in 0 until arr.length()) list.add(arr.getString(i))
+            Triple(count, total, list)
+        } catch (t: Throwable) { null }
+    }
+
+    fun dexdump(): String? = httpGet("/api/dexdump")
+    fun dexclose() { try { httpGet("/api/dexclose") } catch (t: Throwable) { } }
+
+    /** 字符串反查；返回 null=未连接/失败 */
+    fun stringFind(str: String): String? {
+        return try {
+            val o = JSONObject()
+            o.put("str", str)
+            httpPost("/api/stringfind", o.toString())
+        } catch (t: Throwable) { null }
+    }
+}
