@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.util.regex.Pattern
 
 // v1.11: 状态管理 + 轮询（原 MainActivity 逻辑 Kotlin 化，保留端口扫描/应用列表）
@@ -77,6 +78,84 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
         const val KEY_TARGET = "target"
         const val KEY_PORT = "port"
         const val MAX_LOG_LINES = 3000
+        // v1.23: 配置库 key（UI 本地为权威：全局默认 + 分应用覆盖）
+        const val KEY_GLOBAL_CFG = "global_cfg"
+        const val KEY_APP_CFG_PREFIX = "app_cfg_"
+    }
+
+    // ===== v1.23: 配置库（全局默认 + 分应用覆盖，UI 本地为权威）=====
+    // 架构：开关真相存 UI 本地 prefs；目标进程只是执行端（内存 Config + data 缓存镜像）。
+    //   全局默认: 全量项，适用于所有未覆盖的 App
+    //   分应用覆盖: 只存"不一样"的项（key = app_cfg_<pkg>），未覆盖的项继承全局
+    //   生效值 effective(pkg) = 全局 + 该 App 覆盖项
+    //   保存永远在本地（不依赖连接）；连接后自动推送 effective 到目标进程
+
+    /** 内置默认（与后端 Config 默认一致） */
+    fun defaultConfig(): Map<String, Any> = mapOf(
+        "webView" to true,
+        "prefs" to false,
+        "sqlite" to true,
+        "urlBuild" to true,
+        "logcat" to true,
+        "crypto" to false,
+        "activity" to false,
+        "json" to false,
+        "detailMode" to true,
+        "env" to true,
+        "tls" to true,
+        "connect" to true,
+        "cronet" to false,
+        "antiRoot" to false,
+        "antiXposed" to false,
+        "native" to true,
+        "autoProbe" to false,
+        "autoProbeFilter" to "",
+        "bodyLimit" to 2048,
+        "logLimit" to 4096,
+        "debug" to false
+    )
+
+    private fun parseCfgJson(s: String): Map<String, Any> {
+        if (s.isEmpty()) return emptyMap()
+        return try {
+            val o = JSONObject(s)
+            val m = HashMap<String, Any>()
+            val it = o.keys()
+            while (it.hasNext()) { val k = it.next(); o.opt(k)?.let { v -> m[k] = v } }
+            m
+        } catch (t: Throwable) { emptyMap() }
+    }
+
+    /** 全局默认配置（默认值 + 已保存覆盖） */
+    fun loadGlobalConfig(): Map<String, Any> =
+        defaultConfig() + parseCfgJson(prefs.getString(KEY_GLOBAL_CFG, "") ?: "")
+
+    /** 保存全局默认配置 */
+    fun saveGlobalConfig(map: Map<String, Any>) {
+        prefs.edit().putString(KEY_GLOBAL_CFG, JSONObject(map as Map<*, *>).toString()).apply()
+    }
+
+    /** 某 App 的覆盖项（只存"不一样"的） */
+    fun loadAppConfig(pkg: String): Map<String, Any> =
+        parseCfgJson(prefs.getString(KEY_APP_CFG_PREFIX + pkg, "") ?: "")
+
+    /** 保存某 App 覆盖项（空 map = 清空覆盖，完全跟随全局） */
+    fun saveAppConfig(pkg: String, map: Map<String, Any>) {
+        val e = prefs.edit()
+        if (map.isEmpty()) e.remove(KEY_APP_CFG_PREFIX + pkg)
+        else e.putString(KEY_APP_CFG_PREFIX + pkg, JSONObject(map as Map<*, *>).toString())
+        e.apply()
+    }
+
+    /** 某 App 生效配置 = 全局 + 该 App 覆盖 */
+    fun effectiveConfig(pkg: String): Map<String, Any> = loadGlobalConfig() + loadAppConfig(pkg)
+
+    /** 推送 effective 配置到目标进程（同步，返回是否成功下发） */
+    fun pushConfig(pkg: String): Boolean {
+        if (pkg.isEmpty()) return false
+        return try {
+            sendConfig(effectiveConfig(pkg))
+        } catch (t: Throwable) { false }
     }
 
     // ---------- 目标/端口 ----------
@@ -96,9 +175,20 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
     fun startPolling() {
         if (pollingJob != null && pollingJob!!.isActive) return
         pollingJob = viewModelScope.launch {
+            // v1.23: 连接状态跟踪（断开→恢复时自动补发当前目标配置）
+            var wasConnected = false
             while (isActive) {
                 val resp = withContext(Dispatchers.IO) { api.fetchLogs(since) }
                 if (resp != null) {
+                    if (!wasConnected) {
+                        wasConnected = true
+                        // v1.23: 目标进程连接恢复 → 自动补发该 App 生效配置（本地权威推送到执行端）
+                        val pkg = _targetPkg.value
+                        if (pkg.isNotEmpty()) {
+                            withContext(Dispatchers.IO) { api.sendConfig(effectiveConfig(pkg)) }
+                        }
+                        refreshStatus()
+                    }
                     val (newLogs, next) = resp
                     since = next
                     if (newLogs.isNotEmpty()) {
@@ -109,6 +199,8 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
                             all.subList(all.size - MAX_LOG_LINES, all.size)
                         } else all
                     }
+                } else {
+                    wasConnected = false
                 }
                 delay(800)
             }

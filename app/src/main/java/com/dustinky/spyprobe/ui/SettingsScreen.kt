@@ -19,8 +19,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -30,6 +29,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -37,6 +37,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -47,109 +48,143 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 // v1.11: 设置页 —— 高级配置（bodyLimit/webView/prefs/sqlite/urlBuild/logcat/crypto/activity/json/detailMode/env/tls/connect/cronet）+ DexKit + 关于
+// v1.23: 配置架构重构 —— 全局默认 + 分应用覆盖（UI 本地为权威）：
+//   - 模式切换：全局默认 / 当前App
+//   - 全局默认：全量项（含模块参数 bodyLimit/logLimit/detailMode/debug），适用于所有未覆盖 App
+//   - 当前App：只编辑该 App 覆盖项，未覆盖的继承全局（灰色小字显示继承值）；已覆盖标紫色
+//   - 拨开关 = 立即存本地 + 自动推送目标进程；未连接时提示"已保存，暂未生效"
+//   - 去掉「重新读取配置」按钮（本地即真相）
+
+// v1.23: 可分应用覆盖的开关项（模块参数 bodyLimit/logLimit/detailMode/debug 只放全局）
+private val OVERRIDABLE_SWITCHES = listOf(
+    "webView" to "记录 WebView.loadUrl",
+    "prefs" to "记录 SharedPreferences key（读取高频，建议按需开）",
+    "sqlite" to "记录 SQLite 增删改查",
+    "urlBuild" to "记录 URL 构造（找接口地址/CDN 域名）",
+    "logcat" to "记录 App 自身 Log 输出（信息量大）",
+    "crypto" to "记录加密算法/密钥/IV（Cipher，默认关防刷屏）",
+    "activity" to "记录 Activity 生命周期 + Intent 跳转",
+    "json" to "记录 JSON/Gson 序列化结构",
+    "env" to "记录环境检测（root/vpn/传感器/防截屏/设备指纹）",
+    "tls" to "TLS 明文抓包（ConscryptEngine，HTTPS 明文头）",
+    "connect" to "万能连接点记录（BlockGuardOs.connect，QUIC/自建TCP）",
+    "cronet" to "Cronet 网络栈记录（字节系 app，默认关防重复）",
+    "native" to "native 层抓包（libc+SSL+HTTP2，高频刷屏可关）",
+    "antiRoot" to "隐藏 root：File.exists(su)/Runtime.exec/SystemProperties 过滤",
+    "antiXposed" to "隐藏 Xposed：loadClass/StackTrace/DexPathList/Modifier 净化"
+)
 
 @Composable
 fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val target by vm.targetPkg.collectAsState()
 
-    // 配置状态（默认值 = 后端 Config 默认）
-    var bodyLimit by remember { mutableStateOf("2048") }
-    var logLimit by remember { mutableStateOf("4096") } // v1.12: 日志环形缓冲容量
-    var webView by remember { mutableStateOf(true) }
-    var prefs by remember { mutableStateOf(false) }
-    var sqlite by remember { mutableStateOf(true) }
-    var urlBuild by remember { mutableStateOf(true) }
-    var logcat by remember { mutableStateOf(true) }
-    var crypto by remember { mutableStateOf(false) }
-    var activity by remember { mutableStateOf(false) }
-    var json by remember { mutableStateOf(false) }
-    var detailMode by remember { mutableStateOf(true) }
-    var env by remember { mutableStateOf(true) }
-    var tls by remember { mutableStateOf(true) }
-    var connect by remember { mutableStateOf(true) }
-    var cronet by remember { mutableStateOf(false) }
-    // v1.13: 反检测开关（隐藏 root/Xposed，防目标 App 检测）
-    var antiRoot by remember { mutableStateOf(false) }
-    var antiXposed by remember { mutableStateOf(false) }
-    // v1.15 P0-4: native 层抓包开关（默认 true，高频刷屏可关）
-    var native by remember { mutableStateOf(true) }
-    // v1.22: 模块自身调试日志开关（默认关；开启后日志页输出 [DBG] 行，排查持久化/IPC 问题用）
-    var debug by remember { mutableStateOf(false) }
+    // v1.23: 模式 0=全局默认 1=当前App
+    var mode by remember { mutableStateOf(0) }
 
-    var dexkitOpen by remember { mutableStateOf(false) }
-    var aboutOpen by remember { mutableStateOf(false) }
+    // ---- 全局默认配置状态（UI 本地权威）----
+    var gSwitches by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
+    var gBodyLimit by remember { mutableStateOf("2048") }
+    var gLogLimit by remember { mutableStateOf("4096") }
+    var gDebug by remember { mutableStateOf(false) }
 
-    // v1.16 P2-13: 回读逻辑提取（首次进入 + 手动"重新读取配置"按钮共用）
-    // 注意：局部函数必须先声明后使用，故放 LaunchedEffect 之前
-    fun applyConfig(cfg: Map<String, Any>) {
-        cfg["bodyLimit"]?.toString()?.let { bodyLimit = it }
-        cfg["logLimit"]?.toString()?.let { logLimit = it }
-        (cfg["webView"] as? Boolean)?.let { webView = it }
-        (cfg["prefs"] as? Boolean)?.let { prefs = it }
-        (cfg["sqlite"] as? Boolean)?.let { sqlite = it }
-        (cfg["urlBuild"] as? Boolean)?.let { urlBuild = it }
-        (cfg["logcat"] as? Boolean)?.let { logcat = it }
-        (cfg["crypto"] as? Boolean)?.let { crypto = it }
-        (cfg["activity"] as? Boolean)?.let { activity = it }
-        (cfg["json"] as? Boolean)?.let { json = it }
-        (cfg["detailMode"] as? Boolean)?.let { detailMode = it }
-        (cfg["env"] as? Boolean)?.let { env = it }
-        (cfg["tls"] as? Boolean)?.let { tls = it }
-        (cfg["connect"] as? Boolean)?.let { connect = it }
-        (cfg["cronet"] as? Boolean)?.let { cronet = it }
-        (cfg["antiRoot"] as? Boolean)?.let { antiRoot = it }
-        (cfg["antiXposed"] as? Boolean)?.let { antiXposed = it }
-        (cfg["native"] as? Boolean)?.let { native = it }
-        (cfg["debug"] as? Boolean)?.let { debug = it } // v1.22
-    }
+    // ---- 当前 App 覆盖状态（只存"不一样"的项）----
+    var overrideMap by remember { mutableStateOf<Map<String, Any>>(emptyMap()) }
 
-    // v1.15 P0-3: 首次进入回读后端真实配置（防止把用户已改配置覆盖回默认）
+    // 初始化：加载全局默认（本地）
     LaunchedEffect(Unit) {
-        val cfg = withContext(Dispatchers.IO) { vm.api.fetchConfig() } ?: return@LaunchedEffect
-        applyConfig(cfg)
+        val g = vm.loadGlobalConfig()
+        gSwitches = g.filterValues { it is Boolean }.mapValues { it.value as Boolean }
+        g["bodyLimit"]?.toString()?.let { gBodyLimit = it }
+        g["logLimit"]?.toString()?.let { gLogLimit = it }
+        gDebug = g["debug"] as? Boolean ?: false
     }
 
-    fun reloadConfig() {
+    // 切换目标 → 加载该 App 的覆盖配置
+    LaunchedEffect(target) {
+        overrideMap = vm.loadAppConfig(target)
+    }
+
+    fun globalBool(key: String): Boolean = gSwitches[key] ?: false
+    fun effBool(key: String): Boolean = (overrideMap[key] as? Boolean) ?: globalBool(key)
+    fun isOverridden(key: String): Boolean = overrideMap.containsKey(key)
+
+    /** 收集全局配置并保存本地（成功）；随后推送当前目标生效配置 */
+    fun saveGlobalAndPush() {
+        vm.saveGlobalConfig(mapOf(
+            "bodyLimit" to (gBodyLimit.trim().toIntOrNull() ?: 2048),
+            "logLimit" to (gLogLimit.trim().toIntOrNull() ?: 4096),
+            "webView" to globalBool("webView"),
+            "prefs" to globalBool("prefs"),
+            "sqlite" to globalBool("sqlite"),
+            "urlBuild" to globalBool("urlBuild"),
+            "logcat" to globalBool("logcat"),
+            "crypto" to globalBool("crypto"),
+            "activity" to globalBool("activity"),
+            "json" to globalBool("json"),
+            "detailMode" to globalBool("detailMode"),
+            "env" to globalBool("env"),
+            "tls" to globalBool("tls"),
+            "connect" to globalBool("connect"),
+            "cronet" to globalBool("cronet"),
+            "antiRoot" to globalBool("antiRoot"),
+            "antiXposed" to globalBool("antiXposed"),
+            "native" to globalBool("native"),
+            "debug" to gDebug
+        ))
+        val ok = vm.pushConfig(target)
+        android.widget.Toast.makeText(context,
+            if (ok) "全局配置已保存并下发" else "已保存本地（未连接，暂未生效）",
+            android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    /** 推送当前目标生效配置（手动同步） */
+    fun pushNow() {
         scope.launch {
-            val cfg = withContext(Dispatchers.IO) { vm.api.fetchConfig() }
-            if (cfg == null) {
-                android.widget.Toast.makeText(context, "未连接，无法读取", android.widget.Toast.LENGTH_SHORT).show()
-            } else {
-                applyConfig(cfg)
-                android.widget.Toast.makeText(context, "已重新读取后端配置", android.widget.Toast.LENGTH_SHORT).show()
-            }
+            val ok = withContext(Dispatchers.IO) { vm.pushConfig(target) }
+            android.widget.Toast.makeText(context,
+                if (ok) "已同步到目标 App" else "未连接，无法下发（配置已存本地）",
+                android.widget.Toast.LENGTH_SHORT).show()
         }
     }
 
-    fun sendAll() {
-        val limit = bodyLimit.trim().toIntOrNull() ?: 2048
-        vm.sendConfig(mapOf(
-            "bodyLimit" to limit,
-            "logLimit" to (logLimit.trim().toIntOrNull() ?: 4096), // v1.12
-            "webView" to webView,
-            "prefs" to prefs,
-            "sqlite" to sqlite,
-            "urlBuild" to urlBuild,
-            "logcat" to logcat,
-            "crypto" to crypto,
-            "activity" to activity,
-            "json" to json,
-            "detailMode" to detailMode,
-            "env" to env,
-            "tls" to tls,
-            "connect" to connect,
-            "cronet" to cronet,
-            // v1.13: 反检测
-            "antiRoot" to antiRoot,
-            "antiXposed" to antiXposed,
-            // v1.15 P0-4: native 层抓包
-            "native" to native,
-            // v1.22: 模块调试日志
-            "debug" to debug
-        ))
-        android.widget.Toast.makeText(context, "配置已下发", android.widget.Toast.LENGTH_SHORT).show()
+    /** 当前App模式：拨开关 = 写入覆盖 + 存本地 + 推送 */
+    fun toggleOverride(key: String, v: Boolean) {
+        val m = HashMap(overrideMap)
+        m[key] = v
+        overrideMap = m
+        vm.saveAppConfig(target, m)
+        val ok = vm.pushConfig(target)
+        android.widget.Toast.makeText(context,
+            if (ok) "已生效（${target}）" else "已保存覆盖（未连接，重连后自动生效）",
+            android.widget.Toast.LENGTH_SHORT).show()
     }
+
+    /** 重置为全局：清空该 App 全部覆盖 */
+    fun resetApp() {
+        overrideMap = emptyMap()
+        vm.saveAppConfig(target, emptyMap())
+        val ok = vm.pushConfig(target)
+        android.widget.Toast.makeText(context,
+            if (ok) "已重置为全局默认" else "已重置（未连接，重连后自动生效）",
+            android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    /** 复制全局到本应用：把全局全量固化到该 App（以后改全局不影响它） */
+    fun copyGlobalToApp() {
+        val m = HashMap<String, Any>()
+        for ((k, _) in OVERRIDABLE_SWITCHES) m[k] = globalBool(k)
+        overrideMap = m
+        vm.saveAppConfig(target, m)
+        val ok = vm.pushConfig(target)
+        android.widget.Toast.makeText(context,
+            if (ok) "已复制全局到本应用" else "已复制（未连接，重连后自动生效）",
+            android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    var dexkitOpen by remember { mutableStateOf(false) }
+    var aboutOpen by remember { mutableStateOf(false) }
 
     Column(
         modifier = modifier
@@ -157,60 +192,117 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp)
     ) {
-        // v1.16 P2-13: 手动"重新读取后端配置"（目标 App 重启后设置页不回读）
+        // v1.23: 模式切换（全局默认 / 当前App）
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("高级设置", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold,
+            Text("配置", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f).padding(top = 10.dp, bottom = 6.dp))
-            OutlinedButton(onClick = { reloadConfig() },
-                modifier = Modifier.padding(top = 6.dp, bottom = 4.dp)) {
-                Text("重新读取配置", style = MaterialTheme.typography.labelSmall)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            FilterChip(
+                selected = mode == 0,
+                onClick = { mode = 0 },
+                label = { Text("全局默认") }
+            )
+            Spacer(Modifier.width(8.dp))
+            FilterChip(
+                selected = mode == 1,
+                onClick = { mode = 1 },
+                label = { Text(if (target.isEmpty()) "当前App（未选）" else "当前App：$target") }
+            )
+        }
+
+        if (mode == 1 && target.isEmpty()) {
+            Spacer(Modifier.height(6.dp))
+            Text("请先在抓包页选择目标 App", style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error)
+        }
+
+        if (mode == 1) {
+            // v1.23: 当前App覆盖概览 + 一键操作
+            val ovCount = overrideMap.count { (k, v) -> k != "bodyLimit" && k != "logLimit" && k != "debug" }
+            Spacer(Modifier.height(6.dp))
+            Text("继承全局: ${OVERRIDABLE_SWITCHES.size - ovCount} 项 · 已覆盖: $ovCount 项",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row {
+                OutlinedButton(onClick = { resetApp() }, modifier = Modifier.weight(1f)) {
+                    Text("重置为全局", style = MaterialTheme.typography.labelSmall)
+                }
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(onClick = { copyGlobalToApp() }, modifier = Modifier.weight(1f)) {
+                    Text("复制全局到本应用", style = MaterialTheme.typography.labelSmall)
+                }
             }
         }
 
-        // v1.17: 配置项分组卡片
+        Spacer(Modifier.height(8.dp))
+
+        // ===== 模块参数（只放全局）=====
+        if (mode == 0) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                    Text("模块参数（全局，不参与分应用覆盖）",
+                        style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    OutlinedTextField(
+                        value = gBodyLimit,
+                        onValueChange = { gBodyLimit = it },
+                        label = { Text("响应体记录上限(字节)，0=不记录body") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = gLogLimit,
+                        onValueChange = { gLogLimit = it },
+                        label = { Text("日志环形缓冲上限(条)，默认 4096") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    SettingCheck("函数探测详细模式（参数/字段/调用栈）", globalBool("detailMode")) {
+                        gSwitches = gSwitches + ("detailMode" to it)
+                    }
+                    SettingCheck("调试日志（日志页输出 [DBG] 模块运行状态，排查用）", gDebug) { gDebug = it }
+                    Text("修改后点「保存并下发」生效", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+        }
+
+        // ===== 记录开关 =====
         Card(
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                OutlinedTextField(
-                    value = bodyLimit,
-                    onValueChange = { bodyLimit = it },
-                    label = { Text("响应体记录上限(字节)，0=不记录body") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = logLimit,
-                    onValueChange = { logLimit = it },
-                    label = { Text("日志环形缓冲上限(条)，默认 4096") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
                 Text("记录开关", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold,
                     modifier = Modifier.padding(top = 6.dp))
-                SettingCheck("记录 WebView.loadUrl", webView) { webView = it }
-                SettingCheck("记录 SharedPreferences key（读取高频，建议按需开）", prefs) { prefs = it }
-                SettingCheck("记录 SQLite 增删改查", sqlite) { sqlite = it }
-                SettingCheck("记录 URL 构造（找接口地址/CDN 域名）", urlBuild) { urlBuild = it }
-                // v1.15 P2-7: 文案修正 —— logcat 是"记录"不是"拦截"
-                SettingCheck("记录 App 自身 Log 输出（信息量大）", logcat) { logcat = it }
-                SettingCheck("记录加密算法/密钥/IV（Cipher，默认关防刷屏）", crypto) { crypto = it }
-                SettingCheck("记录 Activity 生命周期 + Intent 跳转", activity) { activity = it }
-                SettingCheck("记录 JSON/Gson 序列化结构", json) { json = it }
-                SettingCheck("函数探测详细模式（参数/字段/调用栈）", detailMode) { detailMode = it }
-                SettingCheck("记录环境检测（root/vpn/传感器/防截屏/设备指纹）", env) { env = it }
-                SettingCheck("TLS 明文抓包（ConscryptEngine，HTTPS 明文头）", tls) { tls = it }
-                SettingCheck("万能连接点记录（BlockGuardOs.connect，QUIC/自建TCP）", connect) { connect = it }
-                SettingCheck("Cronet 网络栈记录（字节系 app，默认关防重复）", cronet) { cronet = it }
-                // v1.15 P0-4: native 层抓包开关（libc+SSL+HTTP2）
-                SettingCheck("native 层抓包（libc+SSL+HTTP2，高频刷屏可关）", native) { native = it }
+                if (mode == 0) {
+                    // 全局模式：直接编辑全局
+                    for ((k, label) in OVERRIDABLE_SWITCHES) {
+                        SettingCheck(label, globalBool(k)) {
+                            gSwitches = gSwitches + (k to it)
+                        }
+                    }
+                } else {
+                    // 当前App模式：继承/覆盖可视化
+                    for ((k, label) in OVERRIDABLE_SWITCHES) {
+                        SettingCheckInherit(
+                            label = label,
+                            checked = effBool(k),
+                            overridden = isOverridden(k),
+                            inherited = globalBool(k)
+                        ) { v -> toggleOverride(k, v) }
+                    }
+                }
             }
         }
 
         Spacer(Modifier.height(10.dp))
 
+        // ===== 反检测（v1.13，防目标 App 检测 hook 环境）=====
         Card(
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
             modifier = Modifier.fillMaxWidth()
@@ -218,16 +310,31 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                 Text("反检测（v1.13，防目标 App 检测 hook 环境）",
                     style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                SettingCheck("隐藏 root：File.exists(su)/Runtime.exec/SystemProperties 过滤", antiRoot) { antiRoot = it }
-                SettingCheck("隐藏 Xposed：loadClass/StackTrace/DexPathList/Modifier 净化", antiXposed) { antiXposed = it }
+                if (mode == 0) {
+                    SettingCheck("隐藏 root：File.exists(su)/Runtime.exec/SystemProperties 过滤", globalBool("antiRoot")) {
+                        gSwitches = gSwitches + ("antiRoot" to it)
+                    }
+                    SettingCheck("隐藏 Xposed：loadClass/StackTrace/DexPathList/Modifier 净化", globalBool("antiXposed")) {
+                        gSwitches = gSwitches + ("antiXposed" to it)
+                    }
+                } else {
+                    SettingCheckInherit("隐藏 root：File.exists(su)/Runtime.exec/SystemProperties 过滤",
+                        effBool("antiRoot"), isOverridden("antiRoot"), globalBool("antiRoot")) { v -> toggleOverride("antiRoot", v) }
+                    SettingCheckInherit("隐藏 Xposed：loadClass/StackTrace/DexPathList/Modifier 净化",
+                        effBool("antiXposed"), isOverridden("antiXposed"), globalBool("antiXposed")) { v -> toggleOverride("antiXposed", v) }
+                }
                 Text("与「探测」页的环境检测互为镜像：开反检测后可用 EnvProbe 验证目标 App 还检测到啥",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
-                // v1.22: 模块调试日志开关（用户建议：方便查找模块自身问题）
-                SettingCheck("调试日志（日志页输出 [DBG] 模块运行状态，排查用）", debug) { debug = it }
-
-                Button(onClick = { sendAll() }, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-                    Text("下发配置")
+                // v1.23: 保存/同步按钮（全局模式保存全局；当前App模式手动同步）
+                if (mode == 0) {
+                    Button(onClick = { saveGlobalAndPush() }, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                        Text("保存并下发")
+                    }
+                } else {
+                    Button(onClick = { pushNow() }, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                        Text("同步到目标 App")
+                    }
                 }
             }
         }
@@ -287,6 +394,28 @@ private fun SettingCheck(label: String, checked: Boolean, onChange: (Boolean) ->
     Row(verticalAlignment = Alignment.CenterVertically) {
         Switch(checked = checked, onCheckedChange = { onChange(it) })
         Text(label, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+/** v1.23: 当前App覆盖模式开关行（紫色=已覆盖本App，灰色小字=继承全局值） */
+@Composable
+private fun SettingCheckInherit(
+    label: String,
+    checked: Boolean,
+    overridden: Boolean,
+    inherited: Boolean,
+    onChange: (Boolean) -> Unit
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Switch(checked = checked, onCheckedChange = { onChange(it) })
+        Column {
+            Text(label, style = MaterialTheme.typography.bodySmall,
+                color = if (overridden) Color(0xFFCE93D8) else MaterialTheme.colorScheme.onSurface)
+            Text(if (overridden) "已覆盖（独立于全局）" else "继承全局: ${if (inherited) "开" else "关"}",
+                style = MaterialTheme.typography.bodySmall,
+                fontSize = 10.sp,
+                color = if (overridden) Color(0xFFCE93D8) else MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 

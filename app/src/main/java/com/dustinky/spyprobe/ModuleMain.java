@@ -101,21 +101,26 @@ public class ModuleMain extends XposedModule {
                 } catch (Throwable t) {
                     log(Log.ERROR, TAG, "native probe init error: " + t);
                 }
-                crypto.install("late");
-                act.install("late");
-                json.install("late");
-                prefs.install("late");
-                // v1.9: 环境检测探测（延迟装，避免 hook File.exists 影响启动期）
-                env.install("late");
+                // v1.23: 每个延迟探测单独 try-catch——任何一个装失败不能拖垮 server 启动
+                try { crypto.install("late"); } catch (Throwable t) { log(Log.ERROR, TAG, "crypto probe install error: " + t); }
+                try { act.install("late"); } catch (Throwable t) { log(Log.ERROR, TAG, "activity probe install error: " + t); }
+                try { json.install("late"); } catch (Throwable t) { log(Log.ERROR, TAG, "json probe install error: " + t); }
+                try { prefs.install("late"); } catch (Throwable t) { log(Log.ERROR, TAG, "prefs probe install error: " + t); }
+                try { env.install("late"); } catch (Throwable t) { log(Log.ERROR, TAG, "env probe install error: " + t); }
                 // v1.13: 反检测 hook 集（延迟装；hook File/Runtime 等高频类，避开启动风暴）
                 try {
                     anti.install();
                 } catch (Throwable t) {
                     log(Log.ERROR, TAG, "anti-detect install error: " + t);
                 }
-                server.start();
             } catch (Throwable t) {
                 log(Log.ERROR, TAG, "deferred probe install error: " + t);
+            }
+            // v1.23: server 启动独立 try-catch——无论探测装没装上，server 必须起来（UI 才能连）
+            try {
+                server.start();
+            } catch (Throwable t) {
+                log(Log.ERROR, TAG, "server start error: " + t);
             }
 
             // t=2500ms: SQLite 记录
