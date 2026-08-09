@@ -58,17 +58,14 @@ public class ModuleMain extends XposedModule {
         // v1.22: 抓包开关持久化文件——目标 App 自身 data 目录（零 IPC，重启必恢复）
         // v1.25 P2-9: hook/hijack 规则持久化同目录文件（spyprobe_rules.json），弃用远程偏好
         final java.io.File cfgFile = resolveCfgFile();
-        // v1.27: 日志异步落盘初始化（目标 App 私有目录 files/spyprobe_logs/）
-        try {
-            Class<?> at = Class.forName("android.app.ActivityThread");
-            Object app = at.getMethod("currentApplication").invoke(null);
-            if (app != null) {
-                java.io.File filesDir = (java.io.File) app.getClass().getMethod("getFilesDir").invoke(app);
-                if (filesDir != null) LogPersister.get().init(filesDir);
-            }
-        } catch (Throwable t) {
-            log(Log.ERROR, TAG, "log persister init error: " + t);
-        }
+        // v1.29: 日志持久化初始化（DebugLog 三保险：内存环形 + 落盘 + logcat）
+        // v1.29 修复：原实现 currentApplication() 返回 null 时静默跳过 → dir=null 一行不写盘且无痕迹。
+        // 现在：立即尝试 + 延迟重试（1s/3s/10s），任何失败写 DebugLog。
+        DebugLog.get().init(appFilesDirOrNull());
+        initLogPersister("early", 0);
+        scheduleLogPersisterRetry(1000);
+        scheduleLogPersisterRetry(3000);
+        scheduleLogPersisterRetry(10000);
         SpyServer server = new SpyServer(net, mth, clsProbe, pkg, dexKit, cfgFile);
 
         // 立即装网络 hook
@@ -179,5 +176,60 @@ public class ModuleMain extends XposedModule {
             }
         } catch (Throwable t) { }
         return null;
+    }
+
+    /** v1.29: 反射拿目标 App filesDir；失败返回 null（不静默，写 DebugLog） */
+    private static java.io.File appFilesDirOrNull() {
+        try {
+            Class<?> at = Class.forName("android.app.ActivityThread");
+            Object app = at.getMethod("currentApplication").invoke(null);
+            if (app == null) {
+                DebugLog.get().log("ModuleMain", "currentApplication()=null（onPackageReady 早期）");
+                return null;
+            }
+            java.io.File filesDir = (java.io.File) app.getClass().getMethod("getFilesDir").invoke(app);
+            if (filesDir == null) {
+                DebugLog.get().log("ModuleMain", "getFilesDir()=null");
+                return null;
+            }
+            return filesDir;
+        } catch (Throwable t) {
+            DebugLog.get().log("ModuleMain", "appFilesDirOrNull error: " + t);
+            return null;
+        }
+    }
+
+    /** v1.29: 初始化 LogPersister（幂等：dir 已设则跳过）；成功/失败都留痕 */
+    private static void initLogPersister(String phase, int attempt) {
+        try {
+            java.io.File filesDir = appFilesDirOrNull();
+            if (filesDir != null) {
+                if (LogPersister.get().isInitialized()) {
+                    DebugLog.get().log("Persist", phase + " attempt#" + attempt + " 已初始化，跳过");
+                } else {
+                    LogPersister.get().init(filesDir);
+                    DebugLog.get().log("Persist", phase + " attempt#" + attempt + " init 完成 dir="
+                            + LogPersister.get().dirPath());
+                }
+            } else {
+                DebugLog.get().log("Persist", phase + " attempt#" + attempt + " filesDir=null，无法初始化");
+            }
+        } catch (Throwable t) {
+            DebugLog.get().log("Persist", phase + " attempt#" + attempt + " init error: " + t);
+        }
+    }
+
+    /** v1.29: 延迟重试 LogPersister 初始化（currentApplication 早期可能为 null） */
+    private static void scheduleLogPersisterRetry(long delayMs) {
+        new Thread(() -> {
+            try {
+                Thread.sleep(delayMs);
+                if (!LogPersister.get().isInitialized()) {
+                    initLogPersister("retry", (int) delayMs);
+                }
+            } catch (Throwable t) {
+                DebugLog.get().log("Persist", "retry@" + delayMs + " error: " + t);
+            }
+        }, "SpyProbe-PersistRetry").start();
     }
 }

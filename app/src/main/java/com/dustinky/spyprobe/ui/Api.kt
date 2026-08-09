@@ -274,6 +274,26 @@ class SpyApi(private var port: Int = 9901) {
         return try { JSONObject(resp).optBoolean("ok", false) } catch (t: Throwable) { false }
     }
 
+    // v1.29: 独立调试日志（排查"历史无记录/导出失败/重启丢日志"）
+    data class DebugLogInfo(
+        val init: Boolean,
+        val dir: String,
+        val text: String,
+    )
+
+    fun debugLog(): DebugLogInfo? {
+        val resp = httpGet("/api/debuglog", 8000) ?: return null
+        return try {
+            val o = JSONObject(resp)
+            if (!o.optBoolean("ok", false)) null
+            else DebugLogInfo(
+                o.optBoolean("init", false),
+                o.optString("dir", ""),
+                o.optString("text", ""),
+            )
+        } catch (t: Throwable) { null }
+    }
+
     fun scanClass(cls: String): ScanResult {
         val resp = try {
             val o = JSONObject()

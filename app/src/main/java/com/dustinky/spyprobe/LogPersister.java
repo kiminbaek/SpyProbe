@@ -67,12 +67,18 @@ public class LogPersister {
         dir = new File(appFilesDir, "spyprobe_logs");
         if (!dir.mkdirs() && !dir.isDirectory()) {
             LogStore.get().log("SpyProbe.Persist", "mkdir fail: " + dir.getAbsolutePath());
+            DebugLog.get().log("Persist", "mkdir FAIL: " + dir.getAbsolutePath());
+        } else {
+            DebugLog.get().log("Persist", "mkdir OK: " + dir.getAbsolutePath());
         }
         Thread w = new Thread(this::run, "SpyProbe-Persist");
         w.setDaemon(true);
         w.start();
         cleanupOld();
     }
+
+    public boolean isInitialized() { return dir != null; }
+    public String dirPath() { return dir != null ? dir.getAbsolutePath() : "(null)"; }
 
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean e) { enabled = e; }
@@ -134,6 +140,7 @@ public class LogPersister {
                 break;
             } catch (Throwable t) {
                 // 写盘失败绝不阻塞主流程：关掉当前 writer，下次重开
+                DebugLog.get().log("Persist", "write thread error: " + t);
                 try { if (bw != null) bw.close(); } catch (Throwable t2) { }
                 bw = null;
                 day = null;

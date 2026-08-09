@@ -238,6 +238,15 @@ public class SpyServer {
                     o.put("text", sb.toString());
                     return o.toString();
                 }
+                // v1.29: 独立调试日志（排查"历史无记录/导出失败/重启丢日志"）
+                case "/api/debuglog": {
+                    JSONObject o = new JSONObject();
+                    o.put("ok", true);
+                    o.put("init", LogPersister.get().isInitialized());
+                    o.put("dir", LogPersister.get().dirPath());
+                    o.put("text", DebugLog.get().dump());
+                    return o.toString();
+                }
                 // v1.27: 历史日志（落盘文件）
                 case "/api/history/days": {
                     JSONObject o = new JSONObject();

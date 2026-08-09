@@ -1,5 +1,6 @@
 package com.dustinky.spyprobe.ui
 
+import android.content.Intent
 import com.dustinky.spyprobe.BuildConfig
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -409,6 +410,36 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             AboutRow("作者", "SpyProbe Team")
             Divider()
             AboutRow("许可证", "自定义 (非商用)")
+            Divider()
+            // v1.29: 独立调试日志 —— 排查"历史无记录/导出失败/重启丢日志"一键分享
+            var debugMsg by remember { mutableStateOf("") }
+            Button(
+                onClick = {
+                    scope.launch {
+                        debugMsg = withContext(Dispatchers.IO) {
+                            val info = vm.api.debugLog()
+                            if (info == null) "未连接目标进程，无法获取调试日志"
+                            else buildString {
+                                append("SpyProbe v${BuildConfig.VERSION_NAME} 调试日志\n")
+                                append("persist init: ${info.init}\n")
+                                append("dir: ${info.dir}\n")
+                                append("====================\n")
+                                append(info.text)
+                            }
+                        }
+                        // 直接拉起系统分享（QQ/微信/文件），用户一键发回
+                        val send = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_SUBJECT, "SpyProbe 调试日志 v${BuildConfig.VERSION_NAME}")
+                            putExtra(Intent.EXTRA_TEXT, debugMsg)
+                        }
+                        context.startActivity(Intent.createChooser(send, "发送调试日志"))
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+            ) {
+                Text("发送调试日志（排查保存问题）")
+            }
         }
 
         Spacer(Modifier.height(16.dp))
