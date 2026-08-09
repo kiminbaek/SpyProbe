@@ -4,8 +4,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Build
-import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -35,10 +37,10 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 private data class TabItem(val title: String, val icon: ImageVector)
 
 private val tabs = listOf(
-    TabItem("抓包", Icons.Filled.Build),   // 用 Build 代表"分析/抓包工具"
-    TabItem("探测", Icons.Filled.Lock),    // 用 Lock 代表"探测/反编译"
-    TabItem("Hook", Icons.Filled.Lock),    // 锁 = Hook/劫持
-    TabItem("日志", Icons.Filled.Build),   // Build = 日志/工具列表
+    TabItem("抓包", Icons.Filled.Share),   // 分享/网络 → 抓包语义
+    TabItem("探测", Icons.Filled.Search),      // 放大镜 → 扫描探测
+    TabItem("Hook", Icons.Filled.Build),        // 代码标签 → hook/代码劫持
+    TabItem("日志", Icons.Filled.List),        // 列表 → 日志记录
     TabItem("设置", Icons.Filled.Settings)
 )
 
@@ -53,7 +55,7 @@ fun MainScreen(vm: SpyViewModel = viewModel()) {
             TopAppBar(
                 title = {
                     Text(
-                        "SpyProbe · ${tabs[selected].title}",
+                        tabs[selected].title,
                         fontWeight = FontWeight.Bold,
                         fontSize = 18.sp,
                         color = MaterialTheme.colorScheme.primary

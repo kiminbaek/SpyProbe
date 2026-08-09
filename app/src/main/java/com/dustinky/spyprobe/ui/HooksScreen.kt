@@ -18,6 +18,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -104,10 +106,14 @@ fun HooksScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                     text = {
                         Text(
                             title,
-                            fontWeight = if (tab == i) FontWeight.Bold else FontWeight.Normal,
-                            fontSize = 13.sp
+                            fontWeight = if (tab == i) FontWeight.Bold else FontWeight.Medium,
+                            fontSize = 13.sp,
+                            color = if (tab == i) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurface
                         )
-                    }
+                    },
+                    selectedContentColor = MaterialTheme.colorScheme.primary,
+                    unselectedContentColor = MaterialTheme.colorScheme.onSurface
                 )
             }
         }
@@ -144,7 +150,7 @@ private fun HooksList(vm: SpyViewModel, hooks: List<HookEntry>, onRefresh: () ->
     val context = LocalContext.current
 
     if (hooks.isEmpty()) {
-        EmptyState("🪝", "暂无 hook", "在「探测」页点击方法即可 hook")
+        EmptyState(Icons.Filled.Search, "暂无 hook", "在「探测」页点击方法即可 hook")
     } else {
         LazyColumn(modifier = modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
             items(hooks) { h ->
@@ -216,7 +222,7 @@ private fun HooksList(vm: SpyViewModel, hooks: List<HookEntry>, onRefresh: () ->
 private fun RulesList(vm: SpyViewModel, rules: List<HijackEntry>, onRefresh: () -> Unit,
                       modifier: Modifier = Modifier) {
     if (rules.isEmpty()) {
-        EmptyState("📋", "暂无 Hook 规则", "点击右下角 + 添加自定义规则")
+        EmptyState(Icons.Filled.Build, "暂无 Hook 规则", "点击右下角 + 添加自定义规则")
     } else {
         LazyColumn(modifier = modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
             items(rules) { r ->
@@ -292,12 +298,16 @@ private fun RulesList(vm: SpyViewModel, rules: List<HijackEntry>, onRefresh: () 
 
 // ===== 空状态 =====
 @Composable
-private fun EmptyState(emoji: String, title: String, subtitle: String) {
+private fun EmptyState(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, subtitle: String) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier.fillMaxSize().padding(top = 100.dp)
     ) {
-        Text(emoji, fontSize = 48.sp)
+        Icon(
+            icon, contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(56.dp)
+        )
         Spacer(Modifier.height(12.dp))
         Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(4.dp))

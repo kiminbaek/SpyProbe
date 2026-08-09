@@ -1,6 +1,7 @@
 package com.dustinky.spyprobe.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -27,11 +28,17 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.material3.TabRowDefaults
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -48,6 +55,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+// v1.24.1: 设置页两级配置架构（全局默认 / 当前App覆盖）+ 未连接 banner + 卡片边框
 // v1.24: 设置页重做 —— 可折叠分组卡片，按类别组织，信息密度提升
 // v1.12: 日志容量可配置
 // v1.13: 反检测 13 项开关
@@ -59,26 +67,66 @@ import kotlinx.coroutines.withContext
 fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val targetPkg by vm.targetPkg.collectAsState()
 
-    // 配置值
-    var cfg by remember { mutableStateOf<Map<String, Any>?>(null) }
+    // 0 = 全局默认, 1 = 当前 App 覆盖
+    var cfgLevel by remember { mutableIntStateOf(0) }
+    val levelLabels = listOf("全局默认", "当前 App")
+
+    // 当前级别的配置（全局=default+global覆盖；当前App=该App覆盖项）
+    var displayCfg by remember { mutableStateOf<Map<String, Any>>(emptyMap()) }
+    // 全局配置（用于"当前 App" Tab 对比哪些是覆盖项）
+    var globalCfg by remember { mutableStateOf<Map<String, Any>>(emptyMap()) }
+    // 是否从目标 App 拉取了实时配置
+    var remoteCfg by remember { mutableStateOf<Map<String, Any>?>(null) }
     var loading by remember { mutableStateOf(true) }
 
-    fun load() {
+    fun reload() {
         loading = true
         scope.launch {
-            val c = withContext(Dispatchers.IO) { vm.api.fetchConfig() }
-            cfg = c
+            val g = withContext(Dispatchers.IO) { vm.loadGlobalConfig() }
+            globalCfg = g
+            val r = withContext(Dispatchers.IO) { vm.api.fetchConfig() }
+            remoteCfg = r
+            displayCfg = if (cfgLevel == 0) g
+            else withContext(Dispatchers.IO) { vm.loadAppConfig(targetPkg) }
             loading = false
         }
     }
 
-    LaunchedEffect(Unit) { load() }
+    LaunchedEffect(Unit) { reload() }
+
+    // 切换级别时重新加载 displayCfg
+    LaunchedEffect(cfgLevel, targetPkg) {
+        if (loading) return@LaunchedEffect
+        displayCfg = if (cfgLevel == 0) globalCfg
+        else withContext(Dispatchers.IO) { vm.loadAppConfig(targetPkg) }
+    }
 
     fun setCfg(key: String, value: Any) {
-        val c = cfg ?: return
-        cfg = c + (key to value)
-        vm.sendConfig(mapOf(key to value))
+        displayCfg = displayCfg + (key to value)
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                if (cfgLevel == 0) {
+                    // 全局：保存 + 推送到当前连接的 App（如果有）
+                    vm.saveGlobalConfig(displayCfg)
+                    if (targetPkg.isNotEmpty()) vm.pushConfig(targetPkg)
+                } else {
+                    // 当前 App 覆盖：保存覆盖项 + 推送
+                    vm.saveAppConfig(targetPkg, displayCfg)
+                    if (targetPkg.isNotEmpty()) vm.pushConfig(targetPkg)
+                }
+            }
+        }
+    }
+
+    // 重置当前 App 覆盖（仅在"当前 App" Tab 有意义）
+    fun resetAppOverrides() {
+        scope.launch {
+            withContext(Dispatchers.IO) { vm.saveAppConfig(targetPkg, emptyMap()) }
+            displayCfg = emptyMap()
+            android.widget.Toast.makeText(context, "已重置为全局默认", android.widget.Toast.LENGTH_SHORT).show()
+        }
     }
 
     // 分组折叠状态
@@ -91,43 +139,123 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             expanded + key
     }
 
-    val c = cfg
+    // 显示用：当前 Tab 的配置值（全局用 displayCfg，当前 App 用 effectiveConfig）
+    val effective: Map<String, Any> = if (cfgLevel == 0) displayCfg
+    else globalCfg + displayCfg
+
     Column(
         modifier = modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 8.dp)
     ) {
 
-        // 顶部操作：重新读取
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    "模块配置",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
+        // ===== 顶部：两级切换 Tab =====
+        TabRow(
+            selectedTabIndex = cfgLevel,
+            containerColor = MaterialTheme.colorScheme.surface,
+            contentColor = MaterialTheme.colorScheme.primary,
+            indicator = { tabPositions ->
+                TabRowDefaults.Indicator(
+                    modifier = Modifier.tabIndicatorOffset(tabPositions[cfgLevel]),
+                    color = MaterialTheme.colorScheme.primary,
+                    height = 2.dp
                 )
-                Text(
-                    if (loading) "加载中…" else "对当前已连接 App 生效",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 11.sp
+            },
+            divider = { HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant) }
+        ) {
+            levelLabels.forEachIndexed { i, label ->
+                Tab(
+                    selected = cfgLevel == i,
+                    onClick = { cfgLevel = i },
+                    text = {
+                        Text(
+                            label,
+                            fontWeight = if (cfgLevel == i) FontWeight.Bold else FontWeight.Medium,
+                            fontSize = 13.sp,
+                            color = if (cfgLevel == i) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurface
+                        )
+                    },
+                    selectedContentColor = MaterialTheme.colorScheme.primary,
+                    unselectedContentColor = MaterialTheme.colorScheme.onSurface
                 )
-            }
-            TextButton(onClick = { load() }) {
-                Text("↻ 重新读取", fontSize = 12.sp)
             }
         }
 
-        Spacer(Modifier.height(8.dp))
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
 
-        if (c == null) {
-            Text(
-                "未连接到目标 App",
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodySmall
-            )
-        }
+            // 当前级说明
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        if (cfgLevel == 0) "全局默认配置" else "${targetPkg.ifEmpty { "未选择目标" }}",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
+                    )
+                    Text(
+                        when {
+                            cfgLevel == 0 -> "所有 App 的默认值，未单独覆盖的 App 继承此配置"
+                            targetPkg.isEmpty() -> "请先在抓包页选择目标 App"
+                            displayCfg.isEmpty() -> "当前 App 完全继承全局默认"
+                            else -> "已覆盖 ${displayCfg.size} 项，其余继承全局"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.sp
+                    )
+                }
+                TextButton(onClick = { reload() }, enabled = !loading) {
+                    Text("↻ 重新读取", fontSize = 12.sp)
+                }
+                if (cfgLevel == 1 && targetPkg.isNotEmpty() && displayCfg.isNotEmpty()) {
+                    TextButton(onClick = { resetAppOverrides() }) {
+                        Text("重置", fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(6.dp))
+
+            // 未连接 banner
+            if (remoteCfg == null) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f)
+                    ),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                        .border(
+                            1.dp,
+                            MaterialTheme.colorScheme.error.copy(alpha = 0.4f),
+                            RoundedCornerShape(10.dp)
+                        )
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                    ) {
+                        Text("🔒", fontSize = 18.sp)
+                        Spacer(Modifier.width(8.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "未连接到目标 App",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                            Text(
+                                "修改保存在本地，连接后自动生效",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                }
+            }
 
         // ===== 通用设置 =====
         SettingsGroup(
@@ -136,13 +264,13 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             expanded = expanded.contains("basic"),
             onToggle = { toggle("basic") }
         ) {
-            IntSetting(c, "logLimit", "日志上限(条)", 4096, 100..20000,
+            IntSetting(effective, "logLimit", "日志上限(条)", 4096, 100..20000,
                 onSet = { setCfg("logLimit", it) })
             Divider()
-            IntSetting(c, "bodyLimit", "Body 限制(KB)", 32, 1..1024,
+            IntSetting(effective, "bodyLimit", "Body 限制(KB)", 32, 1..1024,
                 onSet = { setCfg("bodyLimit", it) })
             Divider()
-            BoolSetting(c, "verboseDetail", "详细模式", false,
+            BoolSetting(effective, "verboseDetail", "详细模式", false,
                 onSet = { setCfg("verboseDetail", it) })
         }
 
@@ -155,37 +283,37 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             expanded = expanded.contains("anti"),
             onToggle = { toggle("anti") }
         ) {
-            BoolSetting(c, "antiDetect", "反检测总开关", true,
+            BoolSetting(effective, "antiDetect", "反检测总开关", true,
                 onSet = { setCfg("antiDetect", it) })
             Divider()
-            BoolSetting(c, "antiRoot", "隐藏 Root", true,
+            BoolSetting(effective, "antiRoot", "隐藏 Root", true,
                 onSet = { setCfg("antiRoot", it) })
             Divider()
-            BoolSetting(c, "antiXposed", "隐藏 Xposed", true,
+            BoolSetting(effective, "antiXposed", "隐藏 Xposed", true,
                 onSet = { setCfg("antiXposed", it) })
             Divider()
-            BoolSetting(c, "antiEmulator", "隐藏模拟器", true,
+            BoolSetting(effective, "antiEmulator", "隐藏模拟器", true,
                 onSet = { setCfg("antiEmulator", it) })
             Divider()
-            BoolSetting(c, "antiFrida", "隐藏 Frida", false,
+            BoolSetting(effective, "antiFrida", "隐藏 Frida", false,
                 onSet = { setCfg("antiFrida", it) })
             Divider()
-            BoolSetting(c, "antiDebug", "隐藏调试", true,
+            BoolSetting(effective, "antiDebug", "隐藏调试", true,
                 onSet = { setCfg("antiDebug", it) })
             Divider()
-            BoolSetting(c, "fakeDevice", "设备伪装", false,
+            BoolSetting(effective, "fakeDevice", "设备伪装", false,
                 onSet = { setCfg("fakeDevice", it) })
             Divider()
-            BoolSetting(c, "fakeLocation", "伪定位", false,
+            BoolSetting(effective, "fakeLocation", "伪定位", false,
                 onSet = { setCfg("fakeLocation", it) })
             Divider()
-            BoolSetting(c, "sslBypass", "SSL 绕过", true,
+            BoolSetting(effective, "sslBypass", "SSL 绕过", true,
                 onSet = { setCfg("sslBypass", it) })
             Divider()
-            BoolSetting(c, "pinBypass", "证书锁定绕过", true,
+            BoolSetting(effective, "pinBypass", "证书锁定绕过", true,
                 onSet = { setCfg("pinBypass", it) })
             Divider()
-            BoolSetting(c, "rootCloak", "Root 隐藏(增强)", false,
+            BoolSetting(effective, "rootCloak", "Root 隐藏(增强)", false,
                 onSet = { setCfg("rootCloak", it) })
         }
 
@@ -198,22 +326,22 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             expanded = expanded.contains("hook"),
             onToggle = { toggle("hook") }
         ) {
-            BoolSetting(c, "wildcardHook", "通配符 Hook", true,
+            BoolSetting(effective, "wildcardHook", "通配符 Hook", true,
                 onSet = { setCfg("wildcardHook", it) })
             Divider()
-            BoolSetting(c, "randomReturn", "随机返回值", false,
+            BoolSetting(effective, "randomReturn", "随机返回值", false,
                 onSet = { setCfg("randomReturn", it) })
             Divider()
-            IntSetting(c, "randomRefreshMs", "随机刷新(ms)", 5000, 100..60000,
+            IntSetting(effective, "randomRefreshMs", "随机刷新(ms)", 5000, 100..60000,
                 onSet = { setCfg("randomRefreshMs", it) })
             Divider()
-            BoolSetting(c, "recordParams", "默认记录参数", false,
+            BoolSetting(effective, "recordParams", "默认记录参数", false,
                 onSet = { setCfg("recordParams", it) })
             Divider()
-            BoolSetting(c, "recordReturn", "默认记录返回", false,
+            BoolSetting(effective, "recordReturn", "默认记录返回", false,
                 onSet = { setCfg("recordReturn", it) })
             Divider()
-            BoolSetting(c, "autoProbe", "全自动探测", false,
+            BoolSetting(effective, "autoProbe", "全自动探测", false,
                 onSet = { setCfg("autoProbe", it) })
         }
 
@@ -292,7 +420,7 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             expanded = expanded.contains("about"),
             onToggle = { toggle("about") }
         ) {
-            AboutRow("版本", "v1.24")
+            AboutRow("版本", "v1.24.1")
             Divider()
             AboutRow("作者", "SpyProbe Team")
             Divider()
@@ -300,6 +428,7 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
         }
 
         Spacer(Modifier.height(16.dp))
+        }
     }
 }
 
@@ -317,7 +446,9 @@ private fun SettingsGroup(
             containerColor = MaterialTheme.colorScheme.surfaceContainer
         ),
         shape = RoundedCornerShape(12.dp),
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
     ) {
         Column(Modifier.fillMaxWidth()) {
             Row(
@@ -359,23 +490,33 @@ private fun SettingsGroup(
 // ===== 开关行 =====
 @Composable
 private fun BoolSetting(cfg: Map<String, Any>?, key: String, label: String, default: Boolean,
+                        inherited: Boolean = false,
                         onSet: (Boolean) -> Unit) {
     val value = cfg?.get(key) as? Boolean ?: default
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
     ) {
-        Text(label, style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.weight(1f), fontSize = 12.sp)
-        Switch(checked = value, onCheckedChange = { onSet(it) },
-            enabled = cfg != null)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(label, style = MaterialTheme.typography.bodySmall, fontSize = 12.sp)
+            if (inherited) {
+                Text(
+                    "继承全局默认",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 10.sp
+                )
+            }
+        }
+        Switch(checked = value, onCheckedChange = { onSet(it) })
     }
 }
 
 // ===== 数值设置行 =====
 @Composable
 private fun IntSetting(cfg: Map<String, Any>?, key: String, label: String, default: Int,
-                       range: IntRange, onSet: (Int) -> Unit) {
+                       range: IntRange, inherited: Boolean = false,
+                       onSet: (Int) -> Unit) {
     val value = cfg?.get(key) as? Int ?: default
     var text by remember(key) { mutableStateOf(value.toString()) }
 
@@ -383,8 +524,17 @@ private fun IntSetting(cfg: Map<String, Any>?, key: String, label: String, defau
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
     ) {
-        Text(label, style = MaterialTheme.typography.bodySmall,
-            fontSize = 12.sp, modifier = Modifier.weight(1f))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(label, style = MaterialTheme.typography.bodySmall, fontSize = 12.sp)
+            if (inherited) {
+                Text(
+                    "继承全局默认",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 10.sp
+                )
+            }
+        }
         OutlinedTextField(
             value = text,
             onValueChange = {
@@ -393,7 +543,6 @@ private fun IntSetting(cfg: Map<String, Any>?, key: String, label: String, defau
                 if (v != null && v in range) onSet(v)
             },
             singleLine = true,
-            enabled = cfg != null,
             modifier = Modifier.width(80.dp)
         )
     }

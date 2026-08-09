@@ -3,6 +3,7 @@ package com.dustinky.spyprobe.ui
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,6 +21,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -95,7 +98,7 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
 
     Column(modifier = modifier.fillMaxSize()) {
 
-        // ===== 统计卡（v1.24）=====
+        // ===== 统计卡（顶部工具栏角色，0dp 圆角与顶栏衔接）=====
         Card(
             colors = CardDefaults.cardColors(
                 containerColor = MaterialTheme.colorScheme.surfaceContainer
@@ -217,7 +220,8 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.size(44.dp)
                 ) {
-                    Text("↑", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "顶部",
+                        modifier = Modifier.size(22.dp))
                 }
                 // 跳到底部
                 FloatingActionButton(
@@ -231,7 +235,8 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.size(44.dp)
                 ) {
-                    Text("↓", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "底部",
+                        modifier = Modifier.size(22.dp))
                 }
             }
         }

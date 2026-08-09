@@ -3,6 +3,7 @@ package com.dustinky.spyprobe.ui
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -106,7 +108,15 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
                     MaterialTheme.colorScheme.surfaceContainerHigh
             ),
             shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp)
+                .border(
+                    1.dp,
+                    if (connected) MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
+                    else MaterialTheme.colorScheme.outline,
+                    RoundedCornerShape(16.dp)
+                )
         ) {
             Column(Modifier.padding(16.dp)) {
                 // 状态灯 + 状态文本
@@ -184,15 +194,6 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
                 if (showPicker) {
                     TargetPickerDialog(vm, onDismiss = { showPicker = false })
                 }
-
-                // 状态详情
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    status,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 11.sp
-                )
             }
         }
 
@@ -272,7 +273,9 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
                 containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
             ),
             shape = RoundedCornerShape(12.dp),
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
         ) {
             Column(Modifier.fillMaxWidth()) {
                 Row(
@@ -319,10 +322,10 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(90.dp)
-                        .background(MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.5f))
+                        .heightIn(min = 48.dp)
+                        .background(MaterialTheme.colorScheme.surfaceContainerLowest)
                         .clickable(onClick = onOpenLogs)
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
                 ) {
                     if (previewLines.isEmpty()) {
                         Text(
@@ -365,7 +368,9 @@ private fun SwitchGroupCard(
             containerColor = MaterialTheme.colorScheme.surfaceContainer
         ),
         shape = RoundedCornerShape(12.dp),
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
     ) {
         Column(Modifier.fillMaxWidth()) {
             Row(
@@ -409,13 +414,13 @@ private fun SwitchGroupCard(
 @Composable
 private fun androidx.compose.foundation.layout.RowScope.SwitchItem(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-        Switch(checked = checked, onCheckedChange = { onChange(it) })
         Text(
             label,
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.padding(start = 6.dp),
-            fontSize = 12.sp
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.weight(1f),
+            fontSize = 13.sp
         )
+        Switch(checked = checked, onCheckedChange = { onChange(it) })
     }
 }
 

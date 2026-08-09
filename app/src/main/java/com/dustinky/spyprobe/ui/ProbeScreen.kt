@@ -1,6 +1,7 @@
 package com.dustinky.spyprobe.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -83,10 +84,14 @@ fun ProbeScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                     text = {
                         Text(
                             title,
-                            fontWeight = if (tab == i) FontWeight.Bold else FontWeight.Normal,
-                            fontSize = 13.sp
+                            fontWeight = if (tab == i) FontWeight.Bold else FontWeight.Medium,
+                            fontSize = 13.sp,
+                            color = if (tab == i) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurface
                         )
-                    }
+                    },
+                    selectedContentColor = MaterialTheme.colorScheme.primary,
+                    unselectedContentColor = MaterialTheme.colorScheme.onSurface
                 )
             }
         }
@@ -114,7 +119,9 @@ private fun FunctionScanTab(vm: SpyViewModel, modifier: Modifier = Modifier) {
                 containerColor = MaterialTheme.colorScheme.surfaceContainer
             ),
             shape = RoundedCornerShape(12.dp),
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
         ) {
             Column(Modifier.padding(14.dp)) {
                 Text(
@@ -225,7 +232,11 @@ private fun FunctionScanTab(vm: SpyViewModel, modifier: Modifier = Modifier) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier.fillMaxWidth().padding(top = 80.dp)
             ) {
-                Text("🔍", fontSize = 44.sp)
+                Icon(
+                    Icons.Filled.Search, contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(48.dp)
+                )
                 Spacer(Modifier.height(12.dp))
                 Text(
                     "输入类名开始扫描",
@@ -260,7 +271,9 @@ private fun ClassLoadTab(vm: SpyViewModel, modifier: Modifier = Modifier) {
                 containerColor = MaterialTheme.colorScheme.surfaceContainer
             ),
             shape = RoundedCornerShape(12.dp),
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
         ) {
             Column(Modifier.padding(14.dp)) {
                 Text(
@@ -331,7 +344,11 @@ private fun ClassLoadTab(vm: SpyViewModel, modifier: Modifier = Modifier) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier.fillMaxWidth().padding(top = 80.dp)
             ) {
-                Text("📚", fontSize = 44.sp)
+                Icon(
+                    Icons.Filled.Search, contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(48.dp)
+                )
                 Spacer(Modifier.height(12.dp))
                 Text(
                     "查询已加载的类",
@@ -372,7 +389,9 @@ private fun AutoProbeTab(vm: SpyViewModel, modifier: Modifier = Modifier) {
                 containerColor = MaterialTheme.colorScheme.surfaceContainer
             ),
             shape = RoundedCornerShape(12.dp),
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
         ) {
             Column(Modifier.padding(14.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -421,6 +440,39 @@ private fun AutoProbeTab(vm: SpyViewModel, modifier: Modifier = Modifier) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.tertiary,
                     fontSize = 11.sp
+                )
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        // 使用提示卡
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+            ),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
+        ) {
+            Column(Modifier.padding(14.dp)) {
+                Text(
+                    "💡 使用提示",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.secondary
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "• 过滤关键字建议用包名特征（如 network/api/request）\n" +
+                    "• 每次冷启动目标 App 后重新加载类会生效\n" +
+                    "• 建议先在「类加载」Tab 搜索确认类名再开全自动\n" +
+                    "• 日志量过大时关掉总开关或收紧过滤条件",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp
                 )
             }
         }
