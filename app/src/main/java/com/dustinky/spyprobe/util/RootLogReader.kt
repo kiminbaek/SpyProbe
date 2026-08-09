@@ -13,7 +13,8 @@ import java.util.concurrent.TimeUnit
 /**
  * v1.31: Root 模式历史日志读取 —— 直读目标 App 沙箱内 LogPersister 落盘文件。
  *
- * 背景：日志落盘在目标进程 filesDir（/data/data/<pkg>/files/spyprobe_logs/），
+ * 背景：日志落盘在目标进程 filesDir（getFilesDir → /data/user/0/<pkg>/files/spyprobe_logs/，
+ * /data/data/<pkg> 是软链，部分 ROM（OPPO/Android16）root 下访问报 No such file → v1.31.4 候选路径自动回退），
  * 普通模式只能等目标 App 在线走 HTTP 拉；root 模式下用 `su -c cat` 直接读文件，
  * 目标 App 不在线也能看历史（这正是"历史日志必须随时可查"的核心诉求）。
  *
@@ -47,9 +48,25 @@ object RootLogReader {
         }
     }
 
+    /** 目标 App 落盘目录候选（Android 11+ 真实路径 /data/user/0/ 优先；/data/data/ 是软链，部分 ROM 访问不到） */
+    private fun logDirs(pkg: String): List<String> {
+        return listOf(
+            "/data/user/0/$pkg/files/spyprobe_logs",
+            "/data/data/$pkg/files/spyprobe_logs"
+        )
+    }
+
     /** 列出目标 App 落盘日志文件（su ls 目录，解析日期分片） */
     fun listLogFiles(pkg: String): List<FileRef> {
-        val out = suExec("ls -1 /data/data/$pkg/files/spyprobe_logs/") ?: return emptyList()
+        // 候选路径依次尝试：/data/user/0（真实路径）→ /data/data（软链，部分 ROM 访问不到）
+        val dirs = logDirs(pkg)
+        var out: String? = null
+        var base: String? = null
+        for (d in dirs) {
+            val r = suExec("ls -1 $d/")
+            if (r != null) { out = r; base = d; break }
+        }
+        if (out == null || base == null) return emptyList()
         val files = ArrayList<FileRef>()
         val dayFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
         for (line in out.lineSequence()) {
@@ -61,7 +78,7 @@ object RootLogReader {
             if (u < 10) continue
             val day = name.substring(0, u)
             val part = name.substring(u + 1).toIntOrNull() ?: continue
-            files.add(FileRef(day, part, "/data/data/$pkg/files/spyprobe_logs/$n"))
+            files.add(FileRef(day, part, "$base/$n"))
         }
         files.sortWith(compareBy<FileRef> { dayFmt.parse(it.day)?.time ?: 0L }.thenBy { it.part })
         return files
@@ -93,12 +110,15 @@ object RootLogReader {
         return out
     }
 
-    /** 删除某天（day=null 全清） */
+    /** 删除某天（day=null 全清）——两个候选路径都删，确保清干净 */
     fun clear(pkg: String, day: String?): Boolean {
-        val base = "/data/data/$pkg/files/spyprobe_logs/"
-        val cmd = if (day == null) "rm -f ${base}${LOG_PREFIX}*.log"
-        else "rm -f ${base}${LOG_PREFIX}${day}_*.log"
-        return suExec(cmd) != null
+        var any = false
+        for (base in logDirs(pkg)) {
+            val cmd = if (day == null) "rm -f $base/${LOG_PREFIX}*.log"
+            else "rm -f $base/${LOG_PREFIX}${day}_*.log"
+            if (suExec(cmd) != null) any = true
+        }
+        return any
     }
 
     /** v1.31.2: root 抓系统 logcat 中 shadowhook_tag（shadowhook 内部日志）——

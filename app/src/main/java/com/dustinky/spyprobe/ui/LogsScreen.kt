@@ -396,6 +396,7 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                 }
 
                 // v1.25 P1-3: 暂停/自动滚动（仅实时模式；历史静态数据无此语义）
+                // v1.31.4 P0: 实时模式加回「清空」按钮（v1.31 重构历史导航时丢失——用户反馈无法清空重抓）
                 if (!modeHistory) {
                     Spacer(Modifier.height(6.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -408,6 +409,12 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                             selected = autoScroll,
                             onClick = { autoScroll = !autoScroll },
                             label = { Text("自动滚动", fontSize = 11.sp) }
+                        )
+                        // v1.31.4 P0: 清空实时日志（目标进程内存 + UI 列表 + 增量游标重置），重抓前先清
+                        FilterChip(
+                            selected = false,
+                            onClick = { vm.clearLogs() },
+                            label = { Text("🗑 清空", fontSize = 11.sp, color = MaterialTheme.colorScheme.error) }
                         )
                     }
                 }

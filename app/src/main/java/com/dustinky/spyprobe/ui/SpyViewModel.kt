@@ -245,7 +245,7 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
                 if (resp != null) {
                     if (!wasConnected) {
                         wasConnected = true
-                        com.dustinky.spyprobe.util.UiLog.log("轮询: 连接恢复 target=$_targetPkg.value port=${api.baseUrl()}")
+                        com.dustinky.spyprobe.util.UiLog.log("轮询: 连接恢复 target=${_targetPkg.value} port=${api.baseUrl()}")
                         // v1.23: 目标进程连接恢复 → 自动补发该 App 生效配置（本地权威推送到执行端）
                         val pkg = _targetPkg.value
                         if (pkg.isNotEmpty()) {
