@@ -20,12 +20,12 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -46,20 +46,24 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.dustinky.spyprobe.ui.theme.codeStyle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.regex.Pattern
 
+// v1.24: 抓包页重做 —— 大状态卡 + 分组开关 + 日志预览 + 终端风格
 // v1.18: 抓包页 —— 目标/端口/状态/记录开关 + 日志入口（日志流已移到独立 LogsScreen）
-// v1.11: 原抓包页含过滤 + LazyColumn 日志流
 
 @Composable
 fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier = Modifier) {
@@ -68,12 +72,12 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
     val status by vm.status.collectAsState()
     val connected by vm.connected.collectAsState()
     val logCount by vm.logCount.collectAsState()
+    val logLines by vm.logLines.collectAsState()
     val context = LocalContext.current
 
-    // v1.15 P0-3: 后端配置快照（开关从后端真实值初始化，不再硬编码默认）
     var cfg by remember { mutableStateOf<Map<String, Any>>(emptyMap()) }
+    var expanded by remember { mutableStateOf("basic") } // basic/advanced/app
 
-    // v1.19 P2-1: 开关下发成功才更新本地快照（未连接时不显示"已改"假象）
     fun setSwitch(key: String, value: Boolean) {
         if (vm.sendConfig(mapOf(key to value))) {
             cfg = cfg + (key to value)
@@ -82,150 +86,360 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
         }
     }
 
-    // v1.18.1: 轮询已移到 ViewModel init 常驻，页面不再 start/stop（否则切页会停掉日志更新）
     LaunchedEffect(Unit) {
         vm.refreshStatus()
         val c = withContext(Dispatchers.IO) { vm.api.fetchConfig() }
         if (c != null) cfg = c
     }
 
-    Column(modifier = modifier.fillMaxSize().padding(horizontal = 12.dp)) {
-        // v1.16 P2-16: 顶部大标题由 TopAppBar 统一提供，此处删除（控制台版本信息保留在设置页关于）
+    // 日志预览（最后 3 条）
+    val previewLines = logLines.takeLast(3)
 
-        // ===== 状态卡片（v1.17: 连接状态 + 目标 + 端口 合一卡片） =====
+    Column(modifier = modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+
+        // ===== 状态大卡（v1.24 核心：App 图标 + 状态 + 端口 + 目标切换）=====
         Card(
             colors = CardDefaults.cardColors(
                 containerColor = if (connected)
-                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+                    MaterialTheme.colorScheme.primaryContainer
                 else
                     MaterialTheme.colorScheme.surfaceContainerHigh
             ),
+            shape = RoundedCornerShape(16.dp),
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
         ) {
-            Column(Modifier.padding(12.dp)) {
+            Column(Modifier.padding(16.dp)) {
+                // 状态灯 + 状态文本
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    // v1.24: 脉冲状态灯
                     Box(
                         modifier = Modifier
-                            .size(8.dp)
+                            .size(10.dp)
                             .background(
-                                if (connected) Color(0xFF4CAF50) else Color(0xFFEF5350),
-                                RoundedCornerShape(4.dp)
+                                if (connected) Color(0xFF00E676) else Color(0xFFFF5252),
+                                RoundedCornerShape(50)
                             )
                     )
-                    Spacer(Modifier.width(6.dp))
+                    Spacer(Modifier.width(8.dp))
                     Text(
-                        status,
+                        if (connected) "● 已连接" else "○ 未连接",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = if (connected) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.error
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        "端口 $port",
                         style = MaterialTheme.typography.bodySmall,
-                        color = if (connected) MaterialTheme.colorScheme.onSurface
-                        else MaterialTheme.colorScheme.tertiary,
-                        modifier = Modifier.weight(1f)
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+
+                Spacer(Modifier.height(10.dp))
+
+                // 目标 App 行：图标 + 包名 + 切换
+                var showPicker by remember { mutableStateOf(false) }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.surface)
+                        .clickable { showPicker = true }
+                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                ) {
+                    if (target.isNotEmpty()) {
+                        AppIcon(pkg = target, modifier = Modifier.size(36.dp))
+                        Spacer(Modifier.width(10.dp))
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .background(
+                                    MaterialTheme.colorScheme.surfaceVariant,
+                                    RoundedCornerShape(8.dp)
+                                )
+                        )
+                        Spacer(Modifier.width(10.dp))
+                    }
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            if (target.isEmpty()) "选择目标 App" else target,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            if (target.isEmpty()) "点击选择" else "点击切换",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 11.sp
+                        )
+                    }
+                    Text("›", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                if (showPicker) {
+                    TargetPickerDialog(vm, onDismiss = { showPicker = false })
+                }
+
+                // 状态详情
                 Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    var showPicker by remember { mutableStateOf(false) }
-                    OutlinedButton(
-                        onClick = { showPicker = true },
-                        modifier = Modifier.weight(1.6f)
-                    ) {
-                        Icon(Icons.Filled.Search, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text(if (target.isEmpty()) "选择目标 App" else target, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                    var showPortDialog by remember { mutableStateOf(false) }
-                    OutlinedButton(onClick = { showPortDialog = true }, modifier = Modifier.weight(1f)) {
-                        Text("端口:$port")
-                    }
-                    if (showPicker) {
-                        TargetPickerDialog(vm, onDismiss = { showPicker = false })
-                    }
-                    if (showPortDialog) {
-                        PortDialog(vm, currentPort = port, onDismiss = { showPortDialog = false })
-                    }
-                }
-            }
-        }
-
-        // ===== 记录开关卡片（v1.17: 分组卡片） =====
-        Card(
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
-            modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
-        ) {
-            Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
-                Text("记录开关", style = MaterialTheme.typography.labelMedium,
+                Text(
+                    status,
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(bottom = 2.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    SwitchItem("SSL绕过", cfg["sslBypass"] as? Boolean ?: true) { setSwitch("sslBypass", it) }
-                    SwitchItem("OkHttp", cfg["okhttp"] as? Boolean ?: true) { setSwitch("okhttp", it) }
-                    SwitchItem("URLConn", cfg["url"] as? Boolean ?: true) { setSwitch("url", it) }
+                    fontSize = 11.sp
+                )
+            }
+        }
+
+        // ===== 开关分组（v1.24：可折叠卡片，分三组）=====
+        Spacer(Modifier.height(10.dp))
+
+        // 基础抓包
+        SwitchGroupCard(
+            title = "基础抓包",
+            subtitle = "SSL / OkHttp / URL / DNS / TCP",
+            expanded = expanded == "basic",
+            onToggle = { expanded = if (expanded == "basic") "" else "basic" }
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SwitchItem("SSL 绕过", cfg["sslBypass"] as? Boolean ?: true) { setSwitch("sslBypass", it) }
+                SwitchItem("OkHttp", cfg["okhttp"] as? Boolean ?: true) { setSwitch("okhttp", it) }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SwitchItem("URLConn", cfg["url"] as? Boolean ?: true) { setSwitch("url", it) }
+                SwitchItem("DNS 解析", cfg["dns"] as? Boolean ?: true) { setSwitch("dns", it) }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SwitchItem("TCP 连接", cfg["tcp"] as? Boolean ?: true) { setSwitch("tcp", it) }
+                SwitchItem("类加载", cfg["classes"] as? Boolean ?: true) { setSwitch("classes", it) }
+            }
+        }
+
+        // 高级抓包
+        Spacer(Modifier.height(8.dp))
+        SwitchGroupCard(
+            title = "高级抓包",
+            subtitle = "TLS 明文 / 连接点 / Cronet / native",
+            expanded = expanded == "advanced",
+            onToggle = { expanded = if (expanded == "advanced") "" else "advanced" }
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SwitchItem("TLS 明文", cfg["tls"] as? Boolean ?: true) { setSwitch("tls", it) }
+                SwitchItem("万能连接", cfg["connect"] as? Boolean ?: true) { setSwitch("connect", it) }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SwitchItem("Cronet", cfg["cronet"] as? Boolean ?: false) { setSwitch("cronet", it) }
+                SwitchItem("native 层", cfg["native"] as? Boolean ?: true) { setSwitch("native", it) }
+            }
+        }
+
+        // 应用层记录
+        Spacer(Modifier.height(8.dp))
+        SwitchGroupCard(
+            title = "应用层记录",
+            subtitle = "WebView / Log / SQLite / URL构造 / Crypto",
+            expanded = expanded == "app",
+            onToggle = { expanded = if (expanded == "app") "" else "app" }
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SwitchItem("WebView", cfg["webView"] as? Boolean ?: true) { setSwitch("webView", it) }
+                SwitchItem("App Log", cfg["logcat"] as? Boolean ?: true) { setSwitch("logcat", it) }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SwitchItem("SQLite", cfg["sqlite"] as? Boolean ?: true) { setSwitch("sqlite", it) }
+                SwitchItem("URL 构造", cfg["urlBuild"] as? Boolean ?: true) { setSwitch("urlBuild", it) }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SwitchItem("加密", cfg["crypto"] as? Boolean ?: false) { setSwitch("crypto", it) }
+                SwitchItem("Activity", cfg["activity"] as? Boolean ?: false) { setSwitch("activity", it) }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SwitchItem("JSON", cfg["json"] as? Boolean ?: false) { setSwitch("json", it) }
+                SwitchItem("环境检测", cfg["env"] as? Boolean ?: true) { setSwitch("env", it) }
+            }
+        }
+
+        Spacer(Modifier.height(10.dp))
+
+        // ===== 日志预览卡（v1.24 新增：抓包页直接看最近几条）=====
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+            ),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(Modifier.fillMaxWidth()) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onOpenLogs)
+                        .padding(horizontal = 14.dp, vertical = 10.dp)
+                ) {
+                    Text(
+                        "实时日志",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    // v1.24: 日志条数徽章
+                    Box(
+                        modifier = Modifier
+                            .background(
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+                                RoundedCornerShape(8.dp)
+                            )
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            "$logCount 条",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        "查看全部 ›",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Medium
+                    )
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    SwitchItem("DNS解析", cfg["dns"] as? Boolean ?: true) { setSwitch("dns", it) }
-                    SwitchItem("TCP连接", cfg["tcp"] as? Boolean ?: true) { setSwitch("tcp", it) }
-                    SwitchItem("类加载", cfg["classes"] as? Boolean ?: true) { setSwitch("classes", it) }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                // 预览区（最后 3 条）
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(90.dp)
+                        .background(MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.5f))
+                        .clickable(onClick = onOpenLogs)
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    if (previewLines.isEmpty()) {
+                        Text(
+                            "暂无日志，启动目标 App 后自动开始记录…",
+                            style = codeStyle,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        Column {
+                            previewLines.forEach { p ->
+                                Text(
+                                    p.second.take(120),
+                                    style = codeStyle,
+                                    color = logColor(p.second),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
+        Spacer(Modifier.height(16.dp))
+    }
+}
 
-        // ===== 日志入口卡片（v1.18: 日志流已独立成第 5 Tab，抓包页只留入口） =====
-        Card(
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
-            modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
-        ) {
+// ---------- 可折叠开关分组卡片（v1.24 新增）----------
+@Composable
+private fun SwitchGroupCard(
+    title: String,
+    subtitle: String,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer
+        ),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.fillMaxWidth()) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth().clickable(onClick = onOpenLogs).padding(horizontal = 12.dp, vertical = 12.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onToggle)
+                    .padding(horizontal = 14.dp, vertical = 10.dp)
             ) {
-                Icon(Icons.Filled.List, contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(20.dp))
-                Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("查看日志", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
-                    Text("已记录 $logCount 条", style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.sp
+                    )
                 }
-                Text("›", style = MaterialTheme.typography.titleLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    if (expanded) "˄" else "˅",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 16.sp
+                )
+            }
+            if (expanded) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Column(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    content()
+                }
             }
         }
     }
 }
 
-// v1.15 P0-3: SwitchItem 改为受控组件（checked 由外部传入，onChange 同时更新下发+本地快照）
-// v1.16 P1-8: Checkbox → M3 Switch（语义是开关，观感统一）
 @Composable
 private fun androidx.compose.foundation.layout.RowScope.SwitchItem(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
         Switch(checked = checked, onCheckedChange = { onChange(it) })
-        Text(label, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(start = 4.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(start = 6.dp),
+            fontSize = 12.sp
+        )
     }
 }
 
-// 过滤快捷短语（v1.16 P2-11: FilterChip 选中态判断用；v1.18 internal 供 LogsScreen 引用）
+// 过滤快捷短语（v1.16 P2-11）
 internal const val NET_FILTER = "(Net|DNS|TCP|HUC|OkHttp|SSL)"
 internal const val MTH_FILTER = "(Mth)"
 
-/** v1.16 P2-9: 日志按 tag 类型着色（网络绿/函数蓝/规则橙/反检测紫/数据橙黄/环境粉/失败红/其它灰）
- *  v1.22: 模块调试日志 [DBG] 用青绿色（区别于抓包日志） */
+/** v1.16 P2-9: 日志按 tag 类型着色
+ *  v1.24: 调色适配新主题（荧光绿/青蓝/橙/紫/粉/红）*/
 internal fun logColor(line: String): Color {
     return when {
-        line.contains("[DBG]") -> Color(0xFF26C6DA)
-        line.startsWith("[TCP] FAIL") -> Color(0xFFEF5350)
+        line.contains("[DBG]") -> Color(0xFF00E5FF)          // 青蓝 - 调试
+        line.startsWith("[TCP] FAIL") -> Color(0xFFFF5252)    // 红 - 失败
         line.startsWith("[Net") || line.startsWith("[DNS") || line.startsWith("[TCP") ||
                 line.startsWith("[SSL") || line.startsWith("[HUC") || line.startsWith("[OkHttp") ||
-                line.startsWith("[Cronet") -> Color(0xFF4CAF50)
-        line.startsWith("[Mth") || line.startsWith("[Cls") -> Color(0xFF42A5F5)
-        line.startsWith("[RULE") -> Color(0xFFFF7043)
-        line.startsWith("[anti") -> Color(0xFFAB47BC)
-        line.startsWith("[SQL") || line.startsWith("[JSON") || line.startsWith("[Gson") -> Color(0xFFFFA726)
+                line.startsWith("[Cronet") -> Color(0xFF00E676) // 荧光绿 - 网络
+        line.startsWith("[Mth") || line.startsWith("[Cls") -> Color(0xFF42A5F5)  // 蓝 - 方法
+        line.startsWith("[RULE") -> Color(0xFFFF9100)         // 橙 - 规则
+        line.startsWith("[anti") -> Color(0xFFCE93D8)         // 紫 - 反检测
+        line.startsWith("[SQL") || line.startsWith("[JSON") || line.startsWith("[Gson") -> Color(0xFFFFB300) // 琥珀 - 数据
         line.startsWith("[VPN") || line.startsWith("[属性") || line.startsWith("[传感器") ||
-                line.startsWith("[防截屏") || line.startsWith("[IMEI") || line.startsWith("[设备") -> Color(0xFFEC407A)
-        line.startsWith("[") -> Color(0xFFBDBDBD)
-        else -> Color(0xFF9E9E9E)
+                line.startsWith("[防截屏") || line.startsWith("[IMEI") || line.startsWith("[设备") -> Color(0xFFF06292) // 粉 - 环境
+        line.startsWith("[") -> Color(0xFF78909C)             // 灰蓝 - 其他
+        else -> Color(0xFF90A4AE)
     }
 }
 
@@ -261,17 +475,21 @@ private fun TargetPickerDialog(vm: SpyViewModel, onDismiss: () -> Unit) {
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("选择目标 App（${apps.size} 个）") },
+        title = { Text("选择目标 App（${apps.size} 个）", fontWeight = FontWeight.Bold) },
         text = {
             Column {
-                Text("需先在 LSPosed 模块作用域中勾选该 App", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "需先在 LSPosed 模块作用域中勾选该 App",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 OutlinedTextField(
                     value = query,
                     onValueChange = { query = it },
                     placeholder = { Text("搜索应用名 / 包名") },
                     singleLine = true,
                     leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
                 )
                 LazyColumn(modifier = Modifier.height(320.dp)) {
                     itemsIndexed(filtered) { _, app ->
@@ -284,7 +502,6 @@ private fun TargetPickerDialog(vm: SpyViewModel, onDismiss: () -> Unit) {
                                     onDismiss()
                                 }
                         ) {
-                            // v1.12: 应用图标（懒加载 + 8MiB LRU）
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp)
@@ -295,12 +512,16 @@ private fun TargetPickerDialog(vm: SpyViewModel, onDismiss: () -> Unit) {
                                 )
                                 Column {
                                     Text(app.label, style = MaterialTheme.typography.bodyMedium)
-                                    Text(app.pkg, style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(
+                                        app.pkg,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontSize = 11.sp
+                                    )
                                 }
                             }
                         }
-                        HorizontalDivider()
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     }
                 }
             }
@@ -314,7 +535,7 @@ private fun TargetPickerDialog(vm: SpyViewModel, onDismiss: () -> Unit) {
     )
 }
 
-/** v1.12: 应用图标（懒加载 + 8MiB LRU）；未加载完成显示占位块，加载失败也显示占位块 */
+/** v1.12: 应用图标（懒加载 + 8MiB LRU） */
 @Composable
 private fun AppIcon(pkg: String, modifier: Modifier = Modifier) {
     val context = LocalContext.current
@@ -325,8 +546,11 @@ private fun AppIcon(pkg: String, modifier: Modifier = Modifier) {
     if (b != null) {
         Image(bitmap = b.asImageBitmap(), contentDescription = null, modifier = modifier)
     } else {
-        androidx.compose.foundation.layout.Box(
-            modifier = modifier.background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(6.dp))
+        Box(
+            modifier = modifier.background(
+                MaterialTheme.colorScheme.surfaceVariant,
+                RoundedCornerShape(6.dp)
+            )
         )
     }
 }
@@ -336,11 +560,13 @@ private fun ManualPkgDialog(vm: SpyViewModel, onDismiss: () -> Unit) {
     var pkg by remember { mutableStateOf(vm.targetPkg.value) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("手输包名") },
+        title = { Text("手输包名", fontWeight = FontWeight.Bold) },
         text = {
             Column {
-                Text("请输入目标 App 包名（需先在 LSPosed 中为本模块勾选该包作用域）：",
-                    style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "请输入目标 App 包名（需先在 LSPosed 中为本模块勾选该包作用域）：",
+                    style = MaterialTheme.typography.bodySmall
+                )
                 OutlinedTextField(
                     value = pkg,
                     onValueChange = { pkg = it },
@@ -365,7 +591,7 @@ private fun PortDialog(vm: SpyViewModel, currentPort: Int, onDismiss: () -> Unit
     val context = LocalContext.current
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Server 端口（默认 9901）") },
+        title = { Text("Server 端口（默认 9901）", fontWeight = FontWeight.Bold) },
         text = {
             OutlinedTextField(
                 value = portText,
