@@ -88,12 +88,20 @@ object ShareLogUtil {
     }
 
     /**
-     * 分享 txt 文件（EXTRA_STREAM 文件流，非纯文本）。
+     * v1.30.3: 拆成两步 —— 写文件（IO 线程调用） + shareUri（主线程调用，startActivity 必须在主线程）。
+     * 此前 shareTxtFile 一步完成：UI 协程里直接 httpGet（主线程网络 → NetworkOnMainThreadException 导出必失败）。
+     *
+     * 第一步：写日志 txt 文件（IO 线程调用，MediaStore/FileProvider 写盘）。
+     * @return 文件 Uri；null=失败（详情见 UiLog）
+     */
+    fun writeLogTxtFile(context: Context, prefix: String, content: String): Uri? =
+        writeLogTxt(context, prefix, content)
+
+    /**
+     * 第二步：拉起系统分享（主线程调用）。
      * @return null=成功；非 null=失败原因（供 UI Toast 显示）
      */
-    fun shareTxtFile(context: Context, title: String, prefix: String, content: String): String? {
-        val uri = writeLogTxt(context, prefix, content)
-        if (uri == null) return "无法写入 txt 文件（详见 UiLog）"
+    fun shareUri(context: Context, title: String, uri: Uri): String? {
         return try {
             val send = Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"
@@ -102,10 +110,10 @@ object ShareLogUtil {
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             context.startActivity(Intent.createChooser(send, title).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            UiLog.log("shareTxtFile OK: $prefix uri=$uri")
+            UiLog.log("shareUri OK: $title uri=$uri")
             null
         } catch (e: Exception) {
-            UiLog.log("shareTxtFile startActivity fail: ${e.javaClass.simpleName}: ${e.message}")
+            UiLog.log("shareUri startActivity fail: ${e.javaClass.simpleName}: ${e.message}")
             "系统分享拉起失败：${e.javaClass.simpleName}"
         }
     }

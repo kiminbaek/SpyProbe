@@ -54,7 +54,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.dustinky.spyprobe.ui.theme.codeStyle
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 // v1.27: 日志页重构 —— 实时/历史双模式 + 分类筛选 + 历史落盘查看/清空（日志持久化核心）
 // v1.24: 日志页视觉优化 —— 统计行卡化 + 浮动按钮 + 终端风格
@@ -298,14 +300,17 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                 horizontalAlignment = Alignment.End
             ) {
                 // 导出（实时=内存日志；历史=选中日期落盘日志）
+                // v1.30.3 P0: 修复 NetworkOnMainThreadException —— httpGet 是同步阻塞网络，
+                // 必须跑 Dispatchers.IO；写文件也是 IO；startActivity/Toast 回主线程。
                 FloatingActionButton(
                     onClick = {
                         scope.launch {
-                            val text = if (modeHistory) {
-                                if (selectedDay == null) { android.widget.Toast.makeText(context, "请先选择日期", android.widget.Toast.LENGTH_SHORT).show(); return@launch }
-                                vm.api.exportDay(selectedDay!!)
-                            } else {
-                                vm.api.export()
+                            if (modeHistory && selectedDay == null) {
+                                android.widget.Toast.makeText(context, "请先选择日期", android.widget.Toast.LENGTH_SHORT).show()
+                                return@launch
+                            }
+                            val text = withContext(Dispatchers.IO) {
+                                if (modeHistory) vm.api.exportDay(selectedDay!!) else vm.api.export()
                             }
                             if (text == null || text.isEmpty()) {
                                 // v1.30.1: 失败原因显示出来（HTTP 错误 / JSON 解析失败 / 空内容）
@@ -315,14 +320,20 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                 return@launch
                             }
                             // v1.30: 写 txt 文件分享（不再截断 10 万字符，长日志完整导出）
-                            val err = com.dustinky.spyprobe.util.ShareLogUtil.shareTxtFile(
-                                context,
-                                "SpyProbe 日志导出",
-                                if (modeHistory) "spyprobe_logs_${selectedDay}" else "spyprobe_logs",
-                                text
-                            )
+                            // v1.30.3: 写文件在 IO 线程
+                            val prefix = if (modeHistory) "spyprobe_logs_${selectedDay}" else "spyprobe_logs"
+                            val uri = withContext(Dispatchers.IO) {
+                                com.dustinky.spyprobe.util.ShareLogUtil.writeLogTxtFile(context, prefix, text)
+                            }
+                            if (uri == null) {
+                                com.dustinky.spyprobe.util.UiLog.log("LogsScreen 写文件失败: $prefix len=${text.length}")
+                                android.widget.Toast.makeText(context, "导出失败：无法写入 txt 文件（详见 UiLog）", android.widget.Toast.LENGTH_LONG).show()
+                                return@launch
+                            }
+                            // startActivity 必须主线程
+                            val err = com.dustinky.spyprobe.util.ShareLogUtil.shareUri(context, "SpyProbe 日志导出", uri)
                             if (err != null) {
-                                com.dustinky.spyprobe.util.UiLog.log("LogsScreen 写文件/分享失败: $err")
+                                com.dustinky.spyprobe.util.UiLog.log("LogsScreen 分享失败: $err")
                                 android.widget.Toast.makeText(context, "导出失败：$err", android.widget.Toast.LENGTH_LONG).show()
                             }
                         }

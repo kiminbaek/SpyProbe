@@ -435,17 +435,29 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                             }
                         }
                         // v1.30: 写 txt 文件分享（替代 ACTION_SEND 纯文本，长日志不截断、可保存）
-                        val err = com.dustinky.spyprobe.util.ShareLogUtil.shareTxtFile(
-                            context,
-                            "SpyProbe 调试日志 v${BuildConfig.VERSION_NAME}",
-                            "spyprobe_debuglog",
-                            debugMsg
-                        )
-                        if (err != null) {
-                            com.dustinky.spyprobe.util.UiLog.log("Settings: 调试日志导出失败 $err")
-                            android.widget.Toast.makeText(context, "导出失败：$err", android.widget.Toast.LENGTH_LONG).show()
+                        // v1.30.3: 写文件在 IO 线程，startActivity 主线程
+                        val uri = withContext(Dispatchers.IO) {
+                            com.dustinky.spyprobe.util.ShareLogUtil.writeLogTxtFile(
+                                context,
+                                "spyprobe_debuglog",
+                                debugMsg
+                            )
+                        }
+                        if (uri == null) {
+                            com.dustinky.spyprobe.util.UiLog.log("Settings: 调试日志写文件失败 len=${debugMsg.length}")
+                            android.widget.Toast.makeText(context, "导出失败：无法写入 txt 文件（详见 UiLog）", android.widget.Toast.LENGTH_LONG).show()
                         } else {
-                            com.dustinky.spyprobe.util.UiLog.log("Settings: 调试日志导出成功 len=${debugMsg.length}")
+                            val err = com.dustinky.spyprobe.util.ShareLogUtil.shareUri(
+                                context,
+                                "SpyProbe 调试日志 v${BuildConfig.VERSION_NAME}",
+                                uri
+                            )
+                            if (err != null) {
+                                com.dustinky.spyprobe.util.UiLog.log("Settings: 调试日志分享失败 $err")
+                                android.widget.Toast.makeText(context, "导出失败：$err", android.widget.Toast.LENGTH_LONG).show()
+                            } else {
+                                com.dustinky.spyprobe.util.UiLog.log("Settings: 调试日志导出成功 len=${debugMsg.length}")
+                            }
                         }
                     }
                 },
