@@ -1,5 +1,6 @@
 #include <jni.h>
 #include <string>
+#include <cstring>
 #include <android/log.h>
 #include <dlfcn.h>
 #include <sys/socket.h>
@@ -27,6 +28,11 @@
 #define MAX_STACK_DEPTH 12
 #define JNI_MAX_BUFFER_MAPPING (2 * 1024 * 1024)
 
+// v1.31.5 P0-3: Flutter 内部网络栈（dart:io 自带 BoringSSL，符号在 libflutter.so）inline hook 风险高，
+//   91暗网 正是 Flutter App——默认不 hook libflutter.so，只 hook 系统 SSL 库（libssl/libconscrypt/libttboringssl）。
+//   需要时置 1 重新启用（对 Flutter 网络栈做 native 抓包）。
+#define ENABLE_FLUTTER_SSL_HOOK 0
+
 static JavaVM *gJvm = nullptr;
 static jclass gNativeRequestHookClass = nullptr;
 static jmethodID gOnNativeDataMethod    = nullptr;
@@ -49,8 +55,8 @@ typedef ssize_t (*type_send)(int, const void *, size_t, int);
 typedef ssize_t (*type_recv)(int, void *, size_t, int);
 typedef ssize_t (*type_sendto)(int, const void *, size_t, int, const struct sockaddr *, socklen_t);
 typedef ssize_t (*type_recvfrom)(int, void *, size_t, int, struct sockaddr *, socklen_t *);
-typedef ssize_t (*type_write)(int, const void *, size_t);
-typedef ssize_t (*type_read)(int, void *, size_t);
+// v1.31.5 P0-2: 去掉 libc write/read hook——write/read 是所有文件/管道/eventfd IO 的入口，
+//   Flutter 引擎（91暗网）高频调用，inline hook 风险最大；网络 socket 数据走 send/recv/sendto/recvfrom 已覆盖。
 typedef int (*type_close)(int);
 typedef int (*type_SSL_write)(void *ssl, const void *buf, int num);
 typedef int (*type_SSL_read)(void *ssl, void *buf, int num);
@@ -60,8 +66,6 @@ static type_send orig_send;
 static type_recv orig_recv;
 static type_sendto orig_sendto;
 static type_recvfrom orig_recvfrom;
-static type_write orig_write;
-static type_read orig_read;
 static type_close orig_close;
 
 // v1.25 P0-3: SSL_write/SSL_read/SSL_free 与 NativeCrypto_* 变体各自独立 orig 指针。
@@ -376,21 +380,8 @@ ssize_t hook_recvfrom(int s, void *buf, size_t len, int flags, struct sockaddr *
     if (ret > 0) callback_kotlin((jlong)s, false, buf, ret, false);
     return ret;
 }
-ssize_t hook_write(int fd, const void *buf, size_t count) {
-    if (g_is_in_hook || fd <= 2) return orig_write(fd, buf, count);
-    ScopedHookGuard guard;
-    if (fd < 65536 && g_fd_cache[fd].load(std::memory_order_relaxed) == 1) return orig_write(fd, buf, count);
-    if (callback_kotlin((jlong)fd, true, buf, count, false)) { errno = ECONNRESET; return -1; }
-    return orig_write(fd, buf, count);
-}
-ssize_t hook_read(int fd, void *buf, size_t count) {
-    if (g_is_in_hook || fd <= 2) return orig_read(fd, buf, count);
-    ScopedHookGuard guard;
-    if (fd < 65536 && g_fd_cache[fd].load(std::memory_order_relaxed) == 1) return orig_read(fd, buf, count);
-    ssize_t ret = orig_read(fd, buf, count);
-    if (ret > 0) callback_kotlin((jlong)fd, false, buf, ret, false);
-    return ret;
-}
+// v1.31.5 P0-2: hook_write/hook_read 已移除（见文件头注释）——write/read 覆盖文件/管道/eventfd，
+//   对 Flutter 引擎高频调用，inline hook 崩溃风险最大；网络数据已由 send/recv/sendto/recvfrom 覆盖。
 int hook_close(int fd) {
     if (g_is_in_hook) return orig_close(fd);
     ScopedHookGuard guard;
@@ -591,8 +582,13 @@ Java_com_dustinky_spyprobe_NativeProbe_initNativeHook(JNIEnv *env, jobject thiz,
         }
         // v1.30.4 P0: dlopen 强制加载 SSL 库——若宿主进程尚未加载某 so，
         // shadowhook_hook_sym_name 找不到符号会失败；先 dlopen 确保符号可解析
+        // v1.31.5 P0-3: 跳过 libflutter.so（Flutter 内部网络栈，默认不 hook）
         for (int i = 0; i < SSL_HOOK_COUNT; i++) {
             const char* lib = g_ssl_hooks[i].lib_name;
+            if (strcmp(lib, "libflutter.so") == 0 && !ENABLE_FLUTTER_SSL_HOOK) {
+                native_log("SH skip dlopen libflutter.so (Flutter SSL hook disabled)");
+                continue;
+            }
             void* h = dlopen(lib, RTLD_NOW);
             snprintf(buf, sizeof(buf), "dlopen %s -> %s", lib, h != nullptr ? "OK" : (dlerror() ? dlerror() : "unknown error"));
             native_log(buf);
@@ -602,11 +598,15 @@ Java_com_dustinky_spyprobe_NativeProbe_initNativeHook(JNIEnv *env, jobject thiz,
         hook_func("libc.so", "recv", (void*)hook_recv, (void**)&orig_recv);
         hook_func("libc.so", "sendto", (void*)hook_sendto, (void**)&orig_sendto);
         hook_func("libc.so", "recvfrom", (void*)hook_recvfrom, (void**)&orig_recvfrom);
-        hook_func("libc.so", "write", (void*)hook_write, (void**)&orig_write);
-        hook_func("libc.so", "read", (void*)hook_read, (void**)&orig_read);
+        // v1.31.5 P0-2: libc write/read 不再 hook（文件/管道/eventfd IO 入口，Flutter 高频，风险最大）
         hook_func("libc.so", "close", (void*)hook_close, (void**)&orig_close);
+        // v1.31.5 P0-3: 跳过 libflutter.so 的 SSL hook（Flutter 内部网络栈风险高）
         for (int i = 0; i < SSL_HOOK_COUNT; i++) {
             const char* lib = g_ssl_hooks[i].lib_name;
+            if (strcmp(lib, "libflutter.so") == 0 && !ENABLE_FLUTTER_SSL_HOOK) {
+                native_log("SH skip hook libflutter.so (Flutter SSL hook disabled)");
+                continue;
+            }
             // v1.25 P0-3: SSL_* 与 NativeCrypto_* 变体各自独立 orig 指针，不再互相覆盖
             hook_func(lib, "SSL_write", (void*)ssl_write_hooks[i], (void**)&g_ssl_hooks[i].orig_ssl_write);
             hook_func(lib, "SSL_read", (void*)ssl_read_hooks[i], (void**)&g_ssl_hooks[i].orig_ssl_read);

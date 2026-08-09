@@ -30,6 +30,15 @@ public class NativeProbe {
     /** 由 ModuleMain 调用：加载 native 库并启用 hook */
     public static synchronized void init() {
         if (inited) return;
+        // v1.31.5 P0-1: native 开关语义修正——native=false 时不装任何 native hook。
+        // 背景：inline hook 直接改写 libc 函数机器码，只要装着就在影响目标 App（性能+崩溃风险）。
+        //   此前 init() 无条件执行、开关只控制"是否记录"，用户关 native 后 shadowhook 照样
+        //   inline hook libc 高频函数 → 91暗网(Flutter) 进主界面闪退、且关了 native 也闪退。
+        // 现在：native=false 时跳过整个 native 层（不 loadLibrary 不 hook），Java 层抓包不受影响。
+        if (!Config.get().nativeCapture) {
+            LogStore.get().log(TAG, "native hook skipped: nativeCapture=false (native 层不装 hook；Java 层 SSL 绕过/OkHttp 等照常，重启目标 App 后生效)");
+            return;
+        }
         try {
             System.loadLibrary("native_hook");
             // v1.31.2 P0-1: initNativeHook 改为返回 boolean——v1.31.1 及以前无脑置 inited=true，
