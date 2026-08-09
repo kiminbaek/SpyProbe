@@ -19,6 +19,7 @@ import java.util.Locale
  * 现在：
  *  - Android 10+（API 29+）：写公共 Download/SpyProbe/ 目录（MediaStore 免权限），用户文件管理器直接可见、可拷出
  *  - Android 9-（API 26-28）：写 app 专属外部目录 logs/，经 FileProvider 分享出去（QQ/微信保存为 txt）
+ * v1.30.1: 失败时返回具体错误信息（string）+ UiLog 记录，UI 能显示根因。
  */
 object ShareLogUtil {
 
@@ -39,44 +40,73 @@ object ShareLogUtil {
                 writeAppExternal(context, filename, content)
             }
         } catch (e: Exception) {
-            android.util.Log.e("ShareLogUtil", "writeLogTxt failed", e)
+            UiLog.log("writeLogTxt failed: ${e.javaClass.simpleName}: ${e.message}")
             null
         }
     }
 
     /** 公共 Download/SpyProbe/ 目录（Android 10+ 免权限，文件管理器可见） */
     private fun writePublicDownload(context: Context, filename: String, content: String): Uri? {
-        val values = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, filename)
-            put(MediaStore.Downloads.MIME_TYPE, "text/plain")
-            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/SpyProbe")
+        return try {
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, filename)
+                put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/SpyProbe")
+            }
+            val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            if (uri == null) {
+                UiLog.log("writePublicDownload: MediaStore insert null")
+                return null
+            }
+            context.contentResolver.openOutputStream(uri)?.use { out ->
+                out.write(content.toByteArray(Charsets.UTF_8))
+            } ?: run {
+                UiLog.log("writePublicDownload: openOutputStream null")
+                return null
+            }
+            UiLog.log("writePublicDownload OK: $filename len=${content.length}")
+            uri
+        } catch (e: Exception) {
+            UiLog.log("writePublicDownload fail: ${e.javaClass.simpleName}: ${e.message}")
+            null
         }
-        val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return null
-        context.contentResolver.openOutputStream(uri)?.use { out ->
-            out.write(content.toByteArray(Charsets.UTF_8))
-        } ?: return null
-        return uri
     }
 
     /** app 专属外部目录（老系统 / 公共目录失败兜底，经 FileProvider 分享） */
     private fun writeAppExternal(context: Context, filename: String, content: String): Uri? {
-        val dir = File(context.getExternalFilesDir(null), "logs")
-        if (!dir.exists()) dir.mkdirs()
-        val file = File(dir, filename)
-        file.writeText(content, Charsets.UTF_8)
-        return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        return try {
+            val dir = File(context.getExternalFilesDir(null), "logs")
+            if (!dir.exists()) dir.mkdirs()
+            val file = File(dir, filename)
+            file.writeText(content, Charsets.UTF_8)
+            UiLog.log("writeAppExternal OK: $filename len=${content.length}")
+            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        } catch (e: Exception) {
+            UiLog.log("writeAppExternal fail: ${e.javaClass.simpleName}: ${e.message}")
+            null
+        }
     }
 
-    /** 分享 txt 文件（EXTRA_STREAM 文件流，非纯文本）。成功拉起返回 true。 */
-    fun shareTxtFile(context: Context, title: String, prefix: String, content: String): Boolean {
-        val uri = writeLogTxt(context, prefix, content) ?: return false
-        val send = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_SUBJECT, title)
-            putExtra(Intent.EXTRA_STREAM, uri)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    /**
+     * 分享 txt 文件（EXTRA_STREAM 文件流，非纯文本）。
+     * @return null=成功；非 null=失败原因（供 UI Toast 显示）
+     */
+    fun shareTxtFile(context: Context, title: String, prefix: String, content: String): String? {
+        val uri = writeLogTxt(context, prefix, content)
+        if (uri == null) return "无法写入 txt 文件（详见 UiLog）"
+        return try {
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, title)
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(send, title).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            UiLog.log("shareTxtFile OK: $prefix uri=$uri")
+            null
+        } catch (e: Exception) {
+            UiLog.log("shareTxtFile startActivity fail: ${e.javaClass.simpleName}: ${e.message}")
+            "系统分享拉起失败：${e.javaClass.simpleName}"
         }
-        context.startActivity(Intent.createChooser(send, title).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        return true
     }
 }

@@ -80,6 +80,10 @@ data class HijackEntry(val cls: String, val method: String, val params: String, 
 
 class SpyApi(private var port: Int = 9901) {
 
+    // v1.30.1: 最近一次 HTTP 失败原因（UI 导出失败时 Toast/日志可显示具体错误）
+    var lastHttpError: String = ""
+        private set
+
     fun setPort(p: Int) { port = p }
     fun port(): Int = port
 
@@ -99,8 +103,11 @@ class SpyApi(private var port: Int = 9901) {
             while (r.readLine().also { line = it } != null) sb.append(line).append('\n')
             r.close()
             c.disconnect()
+            lastHttpError = ""
             sb.toString()
         } catch (t: Throwable) {
+            lastHttpError = "GET $path: ${t.javaClass.simpleName}: ${t.message}"
+            com.dustinky.spyprobe.util.UiLog.log("httpGet fail: $lastHttpError")
             null
         }
     }
@@ -125,8 +132,11 @@ class SpyApi(private var port: Int = 9901) {
             while (r.readLine().also { line = it } != null) sb.append(line).append('\n')
             r.close()
             c.disconnect()
+            lastHttpError = ""
             sb.toString()
         } catch (t: Throwable) {
+            lastHttpError = "POST $path: ${t.javaClass.simpleName}: ${t.message}"
+            com.dustinky.spyprobe.util.UiLog.log("httpPost fail: $lastHttpError")
             null
         }
     }
@@ -217,11 +227,25 @@ class SpyApi(private var port: Int = 9901) {
     fun export(): String? {
         // v1.26 P0-1: 解析 /api/export JSON 的 text 字段（此前直接返回整个 JSON 字符串 → 分享出去是 JSON 乱码）
         // v1.26 P0-2: 导出单独 20s 长超时（日志量大时 1500ms 必超时 → Toast "导出失败"）
-        val resp = httpGet("/api/export", 20000) ?: return null
+        val resp = httpGet("/api/export", 20000)
+        if (resp == null) {
+            com.dustinky.spyprobe.util.UiLog.log("export(): httpGet null ($lastHttpError)")
+            return null
+        }
         return try {
             val o = JSONObject(resp)
-            if (!o.optBoolean("ok", false)) null else o.optString("text")
-        } catch (t: Throwable) { null }
+            if (!o.optBoolean("ok", false)) {
+                com.dustinky.spyprobe.util.UiLog.log("export(): ok=false, resp=${resp.take(200)}")
+                null
+            } else {
+                val text = o.optString("text")
+                com.dustinky.spyprobe.util.UiLog.log("export(): ok, text len=${text.length}")
+                text
+            }
+        } catch (t: Throwable) {
+            com.dustinky.spyprobe.util.UiLog.log("export(): JSON parse fail: ${t.javaClass.simpleName}: ${t.message}, resp=${resp.take(200)}")
+            null
+        }
     }
 
     // ---------- v1.27: 历史日志（落盘文件） ----------
@@ -260,11 +284,25 @@ class SpyApi(private var port: Int = 9901) {
 
     /** 导出某天历史日志为纯文本 */
     fun exportDay(day: String): String? {
-        val resp = httpGet("/api/export?day=$day", 30000) ?: return null
+        val resp = httpGet("/api/export?day=$day", 30000)
+        if (resp == null) {
+            com.dustinky.spyprobe.util.UiLog.log("exportDay($day): httpGet null ($lastHttpError)")
+            return null
+        }
         return try {
             val o = JSONObject(resp)
-            if (!o.optBoolean("ok", false)) null else o.optString("text")
-        } catch (t: Throwable) { null }
+            if (!o.optBoolean("ok", false)) {
+                com.dustinky.spyprobe.util.UiLog.log("exportDay($day): ok=false, resp=${resp.take(200)}")
+                null
+            } else {
+                val text = o.optString("text")
+                com.dustinky.spyprobe.util.UiLog.log("exportDay($day): ok, text len=${text.length}")
+                text
+            }
+        } catch (t: Throwable) {
+            com.dustinky.spyprobe.util.UiLog.log("exportDay($day): JSON parse fail: ${t.javaClass.simpleName}: ${t.message}, resp=${resp.take(200)}")
+            null
+        }
     }
 
     /** 清空历史：day=null 清全部，否则清某天 */

@@ -411,36 +411,42 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             AboutRow("许可证", "自定义 (非商用)")
             Divider()
             // v1.29: 独立调试日志 —— 排查"历史无记录/导出失败/重启丢日志"一键分享
+            // v1.30.1: 合并目标进程 DebugLog + UI 进程 UiLog（导出失败原因在 UiLog 里）
             var debugMsg by remember { mutableStateOf("") }
             Button(
                 onClick = {
                     scope.launch {
                         debugMsg = withContext(Dispatchers.IO) {
                             val info = vm.api.debugLog()
-                            if (info == null) "未连接目标进程，无法获取调试日志"
-                            else buildString {
+                            val target = if (info == null) {
+                                "未连接目标进程（${vm.api.lastHttpError.ifEmpty { "HTTP 无响应" }}）"
+                            } else {
+                                "persist init: ${info.init}\ndir: ${info.dir}\n====================\n${info.text}"
+                            }
+                            buildString {
                                 append("SpyProbe v${BuildConfig.VERSION_NAME} 调试日志\n")
-                                append("persist init: ${info.init}\n")
-                                append("dir: ${info.dir}\n")
-                                append("====================\n")
-                                append(info.text)
+                                append("===== 目标进程 DebugLog =====\n")
+                                append(target)
+                                append("\n\n===== UI 进程 UiLog =====\n")
+                                val ui = com.dustinky.spyprobe.util.UiLog.dump()
+                                append(if (ui.isEmpty()) "（无记录）" else ui)
                             }
                         }
                         // v1.30: 写 txt 文件分享（替代 ACTION_SEND 纯文本，长日志不截断、可保存）
-                        val ok = com.dustinky.spyprobe.util.ShareLogUtil.shareTxtFile(
+                        val err = com.dustinky.spyprobe.util.ShareLogUtil.shareTxtFile(
                             context,
                             "SpyProbe 调试日志 v${BuildConfig.VERSION_NAME}",
                             "spyprobe_debuglog",
                             debugMsg
                         )
-                        if (!ok) {
-                            android.widget.Toast.makeText(context, "导出失败：无法写入文件", android.widget.Toast.LENGTH_SHORT).show()
+                        if (err != null) {
+                            android.widget.Toast.makeText(context, "导出失败：$err", android.widget.Toast.LENGTH_LONG).show()
                         }
                     }
                 },
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
             ) {
-                Text("发送调试日志（排查保存问题）")
+                Text("发送调试日志（含 UI 侧，排查导出失败）")
             }
         }
 

@@ -308,18 +308,22 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                 vm.api.export()
                             }
                             if (text == null || text.isEmpty()) {
-                                android.widget.Toast.makeText(context, "导出失败", android.widget.Toast.LENGTH_SHORT).show()
+                                // v1.30.1: 失败原因显示出来（HTTP 错误 / JSON 解析失败 / 空内容）
+                                val why = if (text == null) vm.api.lastHttpError.ifEmpty { "HTTP 无响应" } else "日志内容为空"
+                                com.dustinky.spyprobe.util.UiLog.log("LogsScreen 导出失败: $why")
+                                android.widget.Toast.makeText(context, "导出失败：$why", android.widget.Toast.LENGTH_LONG).show()
                                 return@launch
                             }
                             // v1.30: 写 txt 文件分享（不再截断 10 万字符，长日志完整导出）
-                            val ok = com.dustinky.spyprobe.util.ShareLogUtil.shareTxtFile(
+                            val err = com.dustinky.spyprobe.util.ShareLogUtil.shareTxtFile(
                                 context,
                                 "SpyProbe 日志导出",
                                 if (modeHistory) "spyprobe_logs_${selectedDay}" else "spyprobe_logs",
                                 text
                             )
-                            if (!ok) {
-                                android.widget.Toast.makeText(context, "导出失败：无法写入文件", android.widget.Toast.LENGTH_SHORT).show()
+                            if (err != null) {
+                                com.dustinky.spyprobe.util.UiLog.log("LogsScreen 写文件/分享失败: $err")
+                                android.widget.Toast.makeText(context, "导出失败：$err", android.widget.Toast.LENGTH_LONG).show()
                             }
                         }
                     },

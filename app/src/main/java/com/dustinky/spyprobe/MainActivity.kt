@@ -12,6 +12,9 @@ import com.dustinky.spyprobe.ui.theme.SpyProbeTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // v1.30.1: UI 进程自己的调试日志（导出失败原因定位）
+        com.dustinky.spyprobe.util.UiLog.init(applicationContext)
+        com.dustinky.spyprobe.util.UiLog.log("MainActivity onCreate, v=${BuildConfig.VERSION_NAME}")
         enableEdgeToEdge()
         setContent {
             SpyProbeTheme {
