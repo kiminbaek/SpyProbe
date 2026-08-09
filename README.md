@@ -4,99 +4,141 @@
 
 SpyProbe 是一个运行在目标 App 进程内的全面探测工具，专为**逆向分析、反编译辅助、安全研究**设计。在 LSPosed 中勾选作用域后，即可对目标 App 进行：
 
-- ✅ **全量网络抓包**：SSL 证书锁定绕过 + OkHttp（同步/异步）/ HttpURLConnection 请求响应记录 + DNS 解析 + Socket 连接
+## 核心能力
+
+### 网络抓包
+- ✅ **SSL 证书锁定绕过（全量覆盖）**：网络配置 pinning（NetworkSecurityTrustManager）、Conscrypt 底层校验（TrustManagerImpl）、OkHttp 主机名校验、WebView SSL 错误自动放行、Cronet pinning、老版 okhttp / xutils / httpclient / Platform
+- ✅ **BoringSSL 底层校验绕过（Native）**：`SSL_CTX_set_custom_verify` / `set_verify` / `SSL_set_verify` / `cert_verify_callback` / `get_verify_result` 五接口全部放行，任何自定义证书校验一律通过
+- ✅ **SSL KeyLog 抓取**：记录每次 TLS 握手的 `CLIENT_RANDOM` + master secret，配合 Wireshark 直接还原 HTTPS 明文
+- ✅ **OkHttp（同步/异步）/ HttpURLConnection 请求响应记录** + DNS 解析 + Socket 连接 + QUIC/HTTP3（万能 connect 连接点）
+- ✅ **TLS 明文抓包**：ConscryptEngine wrap/unwrap，HTTPS 明文头直接可见
+- ✅ **Native 层抓包**：xhook PLT/GOT hook——libc 五函数（send/recv/read/write/connect）+ 4 个 SSL 库（libssl/conscrypt/ttboringssl/libflutter）TLS 解密明文 + HTTP/2 帧解析，专治 Flutter/Unity 纯 native 网络栈（Java hook 盲区）
 - ✅ **URL 构造捕捉**：hook URL 构造 / `Uri.parse` / `URI.create` / `HttpUrl.parse`，运行期拼的所有地址一目了然（找接口/CDN 域名）
-- ✅ **App 自身日志拦截**：`Log.d/i/e/w/v` 全量截获，多数 App 上线未删日志，直接泄露逻辑
-- ✅ **加密算法记录**：hook `Cipher.getInstance/init/doFinal`，记录算法、密钥、IV、明文/密文
+- ✅ **WebView 调试**：自动开启 WebContentsDebugging，Chrome DevTools 可调试 H5 页面
+
+### 加密与证书
+- ✅ **加密算法记录**：hook `Cipher.getInstance/init/doFinal`，记录算法、密钥、IV、明文/密文（按实例跟踪完整上下文）
+- ✅ **密钥材料追踪**：SecretKeySpec / DESKeySpec / Mac（HMAC）/ SecureRandom 种子记录
+- ✅ **双向认证证书导出（mTLS）**：记录目标 App 使用 KeyStore 客户端证书的 alias、算法、主题、有效期、SHA-256 指纹（不导出私钥）
+
+### 函数与逻辑
 - ✅ **函数探测**：反射枚举类方法/字段（含**静态字段当前值**、**native 方法标记**），动态 hook/unhook 任意方法，打印参数/返回值/调用栈/实例字段快照
 - ✅ **返回值劫持**：对已 hook 方法下发强制返回值（`true`/`false`/数字/文本/`null`），不执行原方法——去检测、去付费的万能钥匙
-- ✅ **SQLite 记录**：hook `SQLiteDatabase` 增删改查，拼可读 SQL（`INSERT/UPDATE/DELETE/SELECT`）
+- ✅ **通用 Hook 规则引擎 7 模式**：记录参数 / 记录返回 / 记录两者（纯观测）+ 返回值（isVip()→true）/ 参数值（vipLevel→3）/ 拦截执行（绕过支付校验）/ 静态变量（UserInfo.IS_VIP=true）——规则按类名.方法名配置并持久化
+- ✅ **DexKit 反编译**：一键导出全部 dex（jadx 打开）+ 字符串反查引用方法 + **类名模糊搜索自动生成 hook 清单**（一键复制到手动 Hook 规则）
+
+### 应用行为
+- ✅ **App 自身日志拦截**：`Log.d/i/e/w/v` 全量截获，多数 App 上线未删日志，直接泄露逻辑
+- ✅ **SQLite 记录**：hook `SQLiteDatabase` 增删改查，拼可读 SQL
 - ✅ **类加载记录**：hook `ClassLoader.loadClass`，关键字过滤定位核心逻辑类
 - ✅ **SharedPreferences key 记录**：看 App 本地存了什么状态
 - ✅ **Activity/Intent 流程**：生命周期 + 跳转目标，理清页面流
 - ✅ **JSON/Gson 序列化**：直接看接口数据结构
-- ✅ **WebView.loadUrl 记录**
-- ✅ **DexKit 反编译**（v1.9）：一键导出全部 dex（jadx 打开）+ 字符串反查引用方法（找校验/密钥/接口逻辑入口）
-- ✅ **TLS 明文抓包**（v1.9）：ConscryptEngine wrap/unwrap，HTTPS 明文头直接可见
-- ✅ **万能连接点**（v1.9）：BlockGuardOs.connect 覆盖所有 socket（含 QUIC/HTTP3）
-- ✅ **环境检测探测**（v1.9）：记录 App 检测行为（root 路径/命令/属性/vpn/传感器/防截屏/剪贴板/设备指纹），反编译知道要绕过什么
-- ✅ **Native 层抓包**（v1.10）：shadowhook inline hook——libc 七函数（send/recv/read/write）+ 4 个 SSL 库（libssl/conscrypt/ttboringssl/**libflutter**）TLS 解密明文 + HTTP/2 帧解析，专治 Flutter/Unity 纯 native 网络栈（Java hook 盲区）
-- ✅ **Hook 失败隔离**（v1.12）：动态 hook 回调最外层兜底，任何探测逻辑异常都不拖垮目标方法
-- ✅ **应用图标懒加载 + 8MiB LRU**（v1.12）：目标选择列表图标按需加载（LazyColumn 懒组合），内存超限自动淘汰最久未用
-- ✅ **日志容量可配置**（v1.12）：日志环形缓冲上限 100-20000 条可调（默认 4096），防日志无限增长
-- ✅ **通用 Hook 规则引擎 7 模式**（v1.14）：记录参数/记录返回/记录两者（纯观测）+ 返回值（isVip()→true）/ 参数值（vipLevel→3）/ 拦截执行（绕过支付校验）/ 静态变量（UserInfo.IS_VIP=true）——规则按类名.方法名配置并持久化
-- ✅ **反检测 hook 集**（v1.13）：隐藏 root（File.exists/Runtime.exec/SystemProperties）与 Xposed（loadClass/StackTrace/DexPathList/Modifier），与 EnvProbe 探测互为镜像
+- ✅ **环境检测探测**：记录 App 检测行为（root 路径/命令/属性/vpn/传感器/防截屏/剪贴板/设备指纹），反编译知道要绕过什么
+
+### 反检测
+- ✅ **反检测 hook 集**：隐藏 root（File.exists/Runtime.exec/SystemProperties）与 Xposed（loadClass/StackTrace/DexPathList/Modifier），与 EnvProbe 探测互为镜像
+- ✅ **反检测增强**：File.listFiles / canRead / canExecute 过滤 root 特征文件、`Debug.isDebuggerConnected` 返回 false、magisk / KernelSU / SuperSU 检测路径全集过滤
+
+### 工程健壮性
+- ✅ **Hook 失败隔离**：所有探测 hook 统一包裹，单个 hook 异常不拖垮目标进程，失败留痕
+- ✅ **惰性 Hook**：关闭的探测项目标进程零 hook，按配置按需加载
+- ✅ **日志架构（自 1.32 起）**：日志/配置全部存 SpyProbe 自己家（`files/spyprobe_logs/` + `spyprobe_cfg.json`），目标进程日志实时推回主进程落盘，历史日志本地读取，免 root、免目标 App 在线
+- ✅ **历史日志按会话记录**：目标进程每次启动 = 独立会话文件，卡片式浏览 + 勾选批量分享
+- ✅ **日志容量可配置**：环形缓冲上限 100-20000 条可调（默认 4096）
+- ✅ **内置更新系统**：GitHub API 多镜像回退 + SHA-256/versionCode 校验 + root 静默安装（回退系统安装器）
+- ✅ **Token 鉴权**：目标进程日志推送带 48 位随机 token，主进程校验，防止其他 App 伪造推送
 
 ## 架构
 
 ```
-目标 App 进程内（XposedModule）
-├─ NetProbe      —— SSL 绕过 / OkHttp / HttpURLConnection / DNS / Socket / WebView / TLS明文 / connect / Cronet
-├─ UrlProbe      —— URL/Uri/URI/HttpUrl 构造捕捉（v1.5）
-├─ CryptoProbe   —— Cipher 算法/密钥/IV 记录（v1.5）
-├─ LogCatProbe   —— App 自身 Log 拦截（v1.5）
-├─ MethodProbe   —— 函数枚举 / 动态 hook / 返回值劫持
-├─ SQLiteProbe   —— SQLite 增删改查记录（v1.4）
-├─ ClassLoadProbe—— 类加载记录
-├─ PrefsProbe    —— SharedPreferences key 记录
-├─ ActivityProbe —— Activity 生命周期 + Intent（v1.5）
-├─ JsonProbe     —— JSONObject/Gson 序列化（v1.5）
-├─ DexKitProbe   —— DexKit 导出 dex + 字符串反查（v1.9）
-├─ EnvProbe      —— 环境检测探测：root/vpn/传感器/防截屏/设备指纹（v1.9）
-├─ StackUtil     —— 调用栈工具（v1.9）
-├─ NativeProbe   —— native 层抓包：shadowhook libc/SSL/HTTP2 + JNI 桥接 LogStore（v1.10）
-├─ LogStore      —— 环形缓冲日志（默认 4096 条，容量可配置 v1.12）
-└─ SpyServer     —— 本地 HTTP server（127.0.0.1:9901-9910，多进程自动偏移）
+SpyProbe 主进程（控制台 App，数据面）
+├─ SpyHomeServer   —— 本地 HTTP server（127.0.0.1:9900）
+│    ├─ 接收目标进程日志推送（token 鉴权）
+│    ├─ 下发权威配置（spyprobe_cfg.json）
+│    └─ /api/status /api/logs /api/classfind 查询路由
+├─ LogPersister    —— 日志落盘 files/spyprobe_logs/（按会话）
+├─ HomeLogReader   —— 历史会话读取（本地，免 root）
+└─ Compose UI      —— 抓包 / 探测 / Hook / 日志 / 设置
 
-控制台 App（MainActivity）
-└─ 通过 HTTP 拉日志 / 下发配置 / 探测函数 / 管理 hook / 设置劫持 / 导出
+目标 App 进程内（XposedModule，控制面）
+├─ NetProbe        —— SSL 绕过（Java 12 点 + BoringSSL 5 接口）/ OkHttp / HttpURLConnection / DNS / Socket / WebView / TLS明文 / connect / Cronet
+├─ NativeProbe     —— native 层抓包：xhook libc/SSL/HTTP2 + KeyLog + JNI 桥接 LogStore
+├─ KeystoreProbe   —— mTLS 客户端证书 dump（v1.38）
+├─ UrlProbe        —— URL/Uri/URI/HttpUrl 构造捕捉
+├─ CryptoProbe     —— Cipher 算法/密钥/IV 记录 + SecretKeySpec/DESKeySpec/Mac/SecureRandom
+├─ LogCatProbe     —— App 自身 Log 拦截
+├─ MethodProbe     —— 函数枚举 / 动态 hook / 返回值劫持
+├─ SQLiteProbe     —— SQLite 增删改查记录
+├─ ClassLoadProbe  —— 类加载记录
+├─ PrefsProbe      —— SharedPreferences key 记录
+├─ ActivityProbe   —— Activity 生命周期 + Intent
+├─ JsonProbe       —— JSONObject/Gson 序列化
+├─ DexKitProbe     —— DexKit 导出 dex + 字符串反查 + 类名搜索
+├─ EnvProbe        —— 环境检测探测：root/vpn/传感器/防截屏/设备指纹
+├─ AntiDetectProbe —— 反检测 hook 集
+├─ StackUtil       —— 调用栈工具
+├─ HookSafe        —— hook 统一失败隔离
+└─ LogStore        —— 环形缓冲日志 + 批量推送主进程
 ```
+
+> **v1.32 架构修正**：日志/配置不再写入目标 App 目录，全部归 SpyProbe 自己家；目标进程只做探测与推送，历史日志由主进程本地读取。
 
 ## 使用
 
-1. 安装 `SpyProbe-v1.15.apk`
+1. 安装最新版 `SpyProbe-v1.38.0.apk`（Release 页面下载）
 2. 在 LSPosed 中勾选目标 App 作用域
 3. 重启目标 App
-4. 打开 SpyProbe 控制台，自动发现端口（9901-9910）并连接
-5. 按需开启探测开关（设置对话框），操作已 Hook 列表设置劫持
+4. 打开 SpyProbe 控制台，自动连接主进程服务
+5. 按需开启探测开关（设置页），操作已 Hook 列表设置劫持
 
 ## 本地 HTTP 路由
+
+### 主进程 SpyHomeServer（127.0.0.1:9900）
+
+| 路由 | 方法 | 说明 |
+|:-----|:-----|:-----|
+| `/api/ping` | GET | 心跳 + 运行状态 |
+| `/api/config` | GET/POST | 读写全部探测开关（权威配置） |
+| `/api/status` | GET | 运行时长 / 日志条数（v1.38） |
+| `/api/logs?since=N` | GET | 增量拉日志（v1.38） |
+| `/api/classfind?name=` | GET | DexKit 类名模糊搜索 → 方法清单（v1.38） |
+| `/api/push_logs` | POST | 目标进程日志推送（需 X-Spy-Token 鉴权） |
+
+### 目标进程 SpyServer（127.0.0.1:9901，多进程自动偏移）
 
 | 路由 | 方法 | 说明 |
 |:-----|:-----|:-----|
 | `/api/ping` | GET | 心跳 + 包名 + 实际端口 + 日志数 + 类数 + App 版本 |
 | `/api/logs?since=N` | GET | 增量拉日志 |
-| `/api/logs/all` `/api/export` | GET | 全量日志 |
-| `/api/config` | GET/POST | 读写全部探测开关 |
-| `/api/classes?filter=` | GET | 类加载列表 |
 | `/api/scan` | POST | 枚举类方法/字段 |
 | `/api/hook` | POST | 动态 hook 方法 |
 | `/api/unhook` | POST | 卸载 hook |
 | `/api/hooks` | GET | 当前 hook 列表 |
 | `/api/hijack` | POST | 设置/取消返回值劫持 |
 | `/api/hijacks` | GET | 当前劫持规则 |
-| `/api/clear` | POST | 清空日志 |
-| `/api/dexdump` | GET | 导出全部 dex（v1.9） |
-| `/api/stringfind` | POST | 字符串反查引用方法（v1.9） |
-| `/api/dexclose` | GET | 释放 DexKit bridge（v1.9） |
+| `/api/dexdump` | GET | 导出全部 dex |
+| `/api/stringfind` | POST | 字符串反查引用方法 |
 
 ## 版本历史
 
 | 版本 | 说明 |
 |:-----|:-----|
-| v1.15 | 全面审核修复：反检测修复（Modifier 检测净化改用实例 hook、loadClass 伪装改"类不存在"语义、exec 拦截返回假进程防崩溃）；配置页/抓包页开关从后端回读真实状态；native 层抓包可独立开关；Hook 规则查找走类名索引提速；Cipher 跟踪防泄漏 + 补 2 个 doFinal 重载；SQLite 补 insertWithOnConflict 4 参/rawQuery 3 参；构造器一键 hook 修复；日志流 key 稳定化 |
-| v1.14 | 加密跟踪升级（按实例跟踪 init/update/doFinal 完整上下文：算法/密钥/IV/明文/密文/堆栈，流式数据拼接）；新增记录参数/记录返回/记录两者三种纯观测模式；Hook 规则支持方法名与参数通配符 `*`；随机返回值（可定时刷新） |
-| v1.13 | 通用 Hook 规则引擎（返回值/参数值/拦截执行/静态变量）+ 反检测 hook 集（隐藏 root / Xposed） |
-| v1.12 | Hook 失败隔离（回调最外层兜底）/ 应用图标懒加载 + 8MiB LRU / 日志容量可配置（100-20000） |
-| v1.11 | Compose UI 重构：Kotlin + Material3 深色主题 + 4 Tab 底部导航（抓包/探测/Hook/设置），日志流 LazyColumn 化 |
-| v1.10 | Native 层抓包：shadowhook hook libc 七函数 + 4 SSL 库 TLS 解密 + HTTP/2 帧解析，专治 Flutter/Unity |
-| v1.9 | DexKit（导出 dex + 字符串反查）/ 环境检测探测 / TLS 明文抓包 / 万能连接点 / Cronet |
-| v1.5 | 全面审核 + 反编译难点增强：URL 捕捉 / Crypto / Log 拦截 / Activity / JSON 5 大新 Probe + isNative 标记 |
-| v1.4 | 增强模式：返回值劫持 + SQLite 记录 |
-| v1.3 | 第三轮审核：重复 hook 防重、多进程端口自动发现 |
-| v1.2 | 二轮审核：DNS/Socket 抓包、类加载记录、字段值快照 |
-| v1.1 | 首轮全面审查优化 |
-| v1.0 | 初版 |
+| **v1.38** | SSL 绕过增强：补齐 12 个证书校验绕过点（网络配置 pinning/Conscrypt/OkHttp 主机名/WebView/Cronet/xutils/httpclient/Platform）+ BoringSSL 五接口 verify 绕过 + SSL KeyLog（Wireshark 可还原明文）+ mTLS 客户端证书 dump（指纹不导出私钥）+ 加密追踪扩展（SecretKeySpec/DESKeySpec/Mac/SecureRandom）+ 反检测扩充（listFiles/isDebuggerConnected/ROOT_FILES 全集）+ WebView 调试开关 + DexKit 类名搜索 + 状态/日志查询路由 |
+| **v1.37** | 内置更新系统（GitHub 多镜像 + SHA-256 校验 + root 静默安装）/ Hook 失败隔离（HookSafe 统一包裹）/ 惰性 Hook（按配置按需加载）/ R8 入口发布前自动校验 / 日志推送 token 鉴权 |
+| **v1.36** | 全量审查修复 16 项：历史会话分组根治字典序陷阱 / 连接恢复 / Root 模式"本地优先"降级文案 / 代码清理与序列化收敛 |
+| **v1.35** | 日志架构优化：推送改纯 Socket 根治递归爆炸 / 单行化 / URL 去重 / native hex 收敛 / 请求关联 ID / 分享格式优化 |
+| **v1.34** | **shadowhook → xhook 换库**：根治 OnePlus Android 16 PAC 崩溃（inline hook 改写指令破坏 PAC 配对 → 32 tombstone 空指针；xhook 只改 GOT 表项，PAC 免疫） |
+| **v1.33** | 历史日志按会话记录（目标进程每次启动 = 新会话文件）+ 卡片式浏览 + 勾选批量分享 |
+| **v1.32** | **架构修正：日志/配置全部搬回 SpyProbe 自己家**——新增主进程数据面 SpyHomeServer :9900，目标进程日志实时推回，历史日志本地读取（免 root 免目标在线） |
+| v1.31 | 工作模式（Root/普通）/ 修复 native 开关语义 / 配置持久化修复 |
+| v1.30 | 日志导出 txt 分享 / 全链路调试日志埋点 / 修复 NetworkOnMainThreadException |
+| v1.29 | 调试日志不落盘修复 |
+| v1.28 | 全量审查修复 11 P1 + 8 P2 |
+| v1.26 | 导出失败 P0 ×3 修复 |
+| v1.25 | 全量审查修复 20 项 |
+| v1.10-1.24 | Native 层抓包（shadowhook libc/SSL/HTTP2）/ DexKit 导出 + 字符串反查 / 环境检测探测 / TLS 明文 / 万能连接点 / 通用 Hook 规则引擎 7 模式 / 反检测 hook 集 / 返回值劫持 / SQLite 记录 / URL/Crypto/Log/Activity/JSON 探测 / Compose UI 重构 / Hook 失败隔离 |
+| v1.0-1.9 | 初版 + 多轮审查增强（DNS/Socket/类加载/字段快照/端口自动发现） |
 
 ## 版权声明
 
