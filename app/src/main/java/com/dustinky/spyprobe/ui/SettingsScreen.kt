@@ -365,6 +365,41 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             BoolSetting(effective, "pcap", "pcap 导出 (Wireshark)", false,
                 inherited = inh("pcap"),
                 onSet = { setCfg("pcap", it) })
+            // v1.39.1: 导出 pcap 按钮放开关正下方（与调试日志分开——pcap=抓包明文，调试日志=排障内部日志）
+            var pcapStatus by remember { mutableStateOf("") }
+            Button(
+                onClick = {
+                    com.dustinky.spyprobe.util.UiLog.log("Settings: 点击「导出 pcap」")
+                    scope.launch {
+                        pcapStatus = withContext(Dispatchers.IO) {
+                            try {
+                                // 先让目标进程把活跃会话 flush 到主进程（在线时）
+                                vm.api.httpPost("/api/flush_pcap", "{}")
+                            } catch (t: Throwable) { }
+                            val bytes = com.dustinky.spyprobe.PcapStore.get().exportAllBytes()
+                            if (bytes == null || bytes.size <= 24) {
+                                "暂无 pcap 数据（需先开 pcap 开关并抓包，TLS 连接关闭后落盘）"
+                            } else {
+                                val uri = com.dustinky.spyprobe.util.ShareLogUtil.writePcapFile(context, bytes)
+                                if (uri == null) {
+                                    "pcap 写文件失败（详见 UiLog）"
+                                } else {
+                                    val err = com.dustinky.spyprobe.util.ShareLogUtil.shareUri(
+                                        context,
+                                        "SpyProbe pcap ${bytes.size / 1024}KB",
+                                        uri
+                                    )
+                                    if (err != null) "分享失败：$err" else "已导出 pcap（${bytes.size / 1024}KB），可在 Download/SpyProbe/ 找到"
+                                }
+                            }
+                        }
+                        android.widget.Toast.makeText(context, pcapStatus, android.widget.Toast.LENGTH_LONG).show()
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+            ) {
+                Text("导出 pcap（Wireshark 直开 TLS 明文）")
+            }
         }
 
         Spacer(Modifier.height(8.dp))
@@ -668,42 +703,9 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
             ) {
                 Text("发送调试日志（含 UI 侧，排查导出失败）")
-            }
-            // v1.39 P0: 导出 pcap（native TLS 明文 → 标准 pcap，Wireshark 直接打开看双向流）
-            var pcapStatus by remember { mutableStateOf("") }
-            Button(
-                onClick = {
-                    com.dustinky.spyprobe.util.UiLog.log("Settings: 点击「导出 pcap」")
-                    scope.launch {
-                        pcapStatus = withContext(Dispatchers.IO) {
-                            try {
-                                // 先让目标进程把活跃会话 flush 到主进程（在线时）
-                                vm.api.httpPost("/api/flush_pcap", "{}")
-                            } catch (t: Throwable) { }
-                            val bytes = com.dustinky.spyprobe.PcapStore.get().exportAllBytes()
-                            if (bytes == null || bytes.size <= 24) {
-                                "暂无 pcap 数据（需先开 pcap 开关并抓包，TLS 连接关闭后落盘）"
-                            } else {
-                                val uri = com.dustinky.spyprobe.util.ShareLogUtil.writePcapFile(context, bytes)
-                                if (uri == null) {
-                                    "pcap 写文件失败（详见 UiLog）"
-                                } else {
-                                    val err = com.dustinky.spyprobe.util.ShareLogUtil.shareUri(
-                                        context,
-                                        "SpyProbe pcap ${bytes.size / 1024}KB",
-                                        uri
-                                    )
-                                    if (err != null) "分享失败：$err" else "已导出 pcap（${bytes.size / 1024}KB），可在 Download/SpyProbe/ 找到"
-                                }
-                            }
-                        }
-                        android.widget.Toast.makeText(context, pcapStatus, android.widget.Toast.LENGTH_LONG).show()
-                    }
-                },
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
-            ) {
-                Text("导出 pcap（Wireshark 直开 TLS 明文）")
-            }
+            // v1.39 P0: 导出 pcap 按钮已移至「通用」区块（pcap 开关正下方），
+            // 与调试日志分开 —— 调试日志=排障内部日志，pcap=抓包明文数据，语义不同
+        }
         }
 
         Spacer(Modifier.height(16.dp))
