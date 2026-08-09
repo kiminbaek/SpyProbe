@@ -60,6 +60,9 @@ public class LogPersister {
     private volatile boolean enabled = true;
     // v1.28 P1: 清空历史后通知写线程重开文件——否则写线程继续写已删除的 inode（新日志丢失直到滚动/跨天）
     private volatile boolean resetRequested = false;
+    // v1.33: 会话滚动——目标进程每启动一次（新 sessionId 推送）开新文件 spyprobe_logs_<date>_<n>.log
+    //   n 从"5MB 滚动序号"升级为"会话序号"：8:10 一次抓包=_0，8:20 又一次=_1，天然分开
+    private volatile boolean sessionRollRequested = false;
 
     /** 初始化（幂等）：由目标 App 进程启动时调用 */
     public synchronized void init(File appFilesDir) {
@@ -86,6 +89,11 @@ public class LogPersister {
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean e) { enabled = e; }
 
+    /** v1.33: 新会话开始（目标进程重启/重新推送）——写线程下次开新文件，会话号 = 当天最大+1 */
+    public void startSession() {
+        sessionRollRequested = true;
+    }
+
     /** hook 线程调用（非阻塞）：入队失败丢最旧一条 */
     public void log(long seq, String tag, String msg) {
         if (!enabled || dir == null) return;
@@ -108,8 +116,10 @@ public class LogPersister {
         while (true) {
             try {
                 // v1.28 P1: 清空历史后写线程重开文件（旧 inode 已被删，继续写会丢新日志）
-                if (resetRequested) {
+                // v1.33: 会话滚动（startSession）同样走这里重开文件
+                if (resetRequested || sessionRollRequested) {
                     resetRequested = false;
+                    sessionRollRequested = false;
                     if (bw != null) { try { bw.flush(); bw.close(); } catch (Throwable t3) { } }
                     bw = null;
                     day = null;

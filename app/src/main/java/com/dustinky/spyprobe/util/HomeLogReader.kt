@@ -1,7 +1,6 @@
 package com.dustinky.spyprobe.util
 
 import java.io.File
-import java.text.SimpleDateFormat
 import java.util.Collections
 import java.util.Locale
 import java.util.TreeSet
@@ -15,6 +14,9 @@ import java.util.TreeSet
  *
  * 文件格式（LogPersister）：spyprobe_logs_<yyyy-MM-dd>_<n>.log，JSONL 每行：
  * {"seq":..,"t":"HH:mm:ss.SSS","tag":"..","m":".."}（UTF-8）
+ *
+ * v1.33: _<n> 从"5MB 滚动序号"升级为"会话序号"——目标进程每启动一次开新文件，
+ *   8:10 一次抓包=_0，8:20 又一次=_1，天然分开。UI 卡片从"天"变为"会话"。
  */
 object HomeLogReader {
 
@@ -23,32 +25,108 @@ object HomeLogReader {
 
     data class Entry(val seq: Long, val time: String, val tag: String, val msg: String)
 
+    /** 会话卡片：date=开始日期；session=会话号（0,1,2...）；count=总条数；first/lastTime=首末时间 */
+    data class SessionInfo(
+        val date: String,
+        val session: Int,
+        val fileCount: Int,
+        val count: Int,
+        val firstTime: String,
+        val lastTime: String
+    )
+
     /** 自己家日志目录（filesDir/spyprobe_logs）；不存在返回 null */
     private fun logDir(filesDir: File): File? {
         val d = File(filesDir, "spyprobe_logs")
         return if (d.isDirectory) d else null
     }
 
-    private fun dayFromName(name: String): String? {
-        // spyprobe_logs_2026-08-09_0.log
+    /** spyprobe_logs_2026-08-09_0.log -> (date=2026-08-09, session=0)；非法返回 null */
+    fun parseName(name: String): Pair<String, Int>? {
         if (!name.startsWith(LOG_PREFIX) || !name.endsWith(".log")) return null
         val core = name.substring(LOG_PREFIX.length, name.length - 4)
         val u = core.lastIndexOf('_')
-        if (u < 10) return null
-        return core.substring(0, u)
+        if (u != 10) return null
+        val date = core.substring(0, u)
+        val session = core.substring(u + 1).toIntOrNull() ?: return null
+        return date to session
     }
 
-    /** 可用的历史日期（新日期在前）；目录不存在返回空 */
-    fun days(filesDir: File): List<String> {
+    /**
+     * 会话列表（新会话在前）：扫描全部文件，按 (date, session) 分组，
+     * 统计条数 + 首末时间（只读每个文件首/末行，避免大文件全读）。
+     */
+    fun sessions(filesDir: File): List<SessionInfo> {
         val d = logDir(filesDir) ?: return emptyList()
-        val set = TreeSet<String>(Collections.reverseOrder())
-        d.listFiles { f -> f.isFile && dayFromName(f.name) != null }?.forEach { f ->
-            dayFromName(f.name)?.let { set.add(it) }
+        val files = d.listFiles { f -> f.isFile && parseName(f.name) != null }
+            ?.sortedBy { it.name } ?: return emptyList()
+        val out = ArrayList<SessionInfo>()
+        var idx = 0
+        while (idx < files.size) {
+            val parsed = parseName(files[idx].name)
+            if (parsed != null) {
+                val (date, session) = parsed
+                val filesOf = ArrayList<File>()
+                while (idx < files.size && parseName(files[idx].name) == (date to session)) {
+                    filesOf.add(files[idx]); idx++
+                }
+                var count = 0
+                var firstTime = ""
+                var lastTime = ""
+                for (f in filesOf) {
+                    var f1: String? = null
+                    var l1: String? = null
+                    var n = 0
+                    try {
+                        f.forEachLine { line ->
+                            if (line.isBlank()) return@forEachLine
+                            if (f1 == null) parseTime(line)?.let { f1 = it }
+                            parseTime(line)?.let { l1 = it }
+                            n++
+                        }
+                    } catch (t: Throwable) {
+                        UiLog.log("$TAG session $date/$session ${f.name} error: $t")
+                    }
+                    count += n
+                    if (f1 != null && (firstTime.isEmpty() || f1!! < firstTime)) firstTime = f1!!
+                    if (l1 != null && (lastTime.isEmpty() || l1!! > lastTime)) lastTime = l1!!
+                }
+                out.add(SessionInfo(date, session, filesOf.size, count, firstTime, lastTime))
+            } else {
+                idx++
+            }
         }
-        return ArrayList(set)
+        out.sortWith(compareByDescending<SessionInfo> { it.date }.thenByDescending { it.session })
+        return out
     }
 
-    /** 读某天全部日志（多分片按 seq 排序），max>0 保留最新 max 条 */
+    /** 读某会话全部日志（多分片按 seq 排序），max>0 保留最新 max 条 */
+    fun readSession(filesDir: File, date: String, session: Int, max: Int = 0): List<Entry> {
+        val d = logDir(filesDir) ?: return emptyList()
+        val prefix = "$LOG_PREFIX$date"
+        val files = d.listFiles { f ->
+            f.isFile && f.name.startsWith(prefix) && f.name.endsWith(".log") &&
+                    parseName(f.name)?.second == session
+        }?.sortedBy { it.name } ?: return emptyList()
+        val out = ArrayList<Entry>()
+        for (f in files) {
+            try {
+                f.forEachLine { line ->
+                    if (line.isBlank()) return@forEachLine
+                    parseLine(line)?.let { out.add(it) }
+                }
+            } catch (t: Throwable) {
+                UiLog.log("$TAG read $date/$session ${f.name} error: $t")
+            }
+        }
+        out.sortBy { it.seq }
+        if (max > 0 && out.size > max) {
+            return ArrayList(out.subList(out.size - max, out.size))
+        }
+        return out
+    }
+
+    /** 读某天全部会话（兼容旧调用：按天聚合），max>0 保留最新 max 条 */
     fun readDay(filesDir: File, day: String, max: Int = 0): List<Entry> {
         val d = logDir(filesDir) ?: return emptyList()
         val prefix = "$LOG_PREFIX$day"
@@ -73,6 +151,18 @@ object HomeLogReader {
         return out
     }
 
+    /** 删除指定会话（date+session）；返回是否删了文件 */
+    fun clearSession(filesDir: File, date: String, session: Int): Boolean {
+        val d = logDir(filesDir) ?: return false
+        var any = false
+        d.listFiles { f ->
+            f.isFile && parseName(f.name) == (date to session)
+        }?.forEach { f ->
+            if (f.delete()) any = true
+        }
+        return any
+    }
+
     /** 删除某天（day=null 全清）；返回是否删了文件 */
     fun clear(filesDir: File, day: String?): Boolean {
         val d = logDir(filesDir) ?: return false
@@ -83,6 +173,15 @@ object HomeLogReader {
             if (f.delete()) any = true
         }
         return any
+    }
+
+    /** 极简 JSON 行取 t 字段（首末时间用） */
+    private fun parseTime(line: String): String? {
+        val i = line.indexOf("\"t\":\"")
+        if (i < 0) return null
+        val j = line.indexOf('"', i + 5)
+        if (j < 0) return null
+        return line.substring(i + 5, j)
     }
 
     /** 极简 JSONL 解析（与 RootLogReader.parseLine 同款语义） */
@@ -118,8 +217,12 @@ object HomeLogReader {
                                         try {
                                             sb.append(line.substring(i + 2, i + 6).toInt(16).toChar())
                                             i += 6
-                                        } catch (_: Throwable) { sb.append('u'); i += 2 }
-                                    } else { sb.append('u'); i += 2 }
+                                        } catch (t3: Throwable) {
+                                            sb.append('u'); i += 2
+                                        }
+                                    } else {
+                                        sb.append('u'); i += 2
+                                    }
                                 }
                                 else -> { sb.append(e); i += 2 }
                             }
@@ -127,21 +230,24 @@ object HomeLogReader {
                         else { sb.append(c); i++ }
                     }
                     when (key) {
+                        "seq" -> seq = sb.toString().toLongOrNull() ?: -1L
                         "t" -> t = sb.toString()
                         "tag" -> tag = sb.toString()
                         "m" -> m = sb.toString()
                     }
                     idx = i
                 } else {
-                    var i = idx
-                    while (i < n && line[i] != ',' && line[i] != '}') i++
-                    val v = line.substring(idx, i).trim()
-                    if (key == "seq") seq = v.toLongOrNull() ?: -1L
-                    idx = i
+                    val end = idx
+                    var j = end
+                    while (j < n && line[j] != ',' && line[j] != '}') j++
+                    when (key) {
+                        "seq" -> seq = line.substring(end, j).trim().toLongOrNull() ?: -1L
+                    }
+                    idx = j
                 }
             }
             Entry(seq, t, tag, m)
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
             null
         }
     }

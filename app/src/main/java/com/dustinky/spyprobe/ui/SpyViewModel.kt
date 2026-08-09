@@ -70,8 +70,9 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
     // ---------- v1.27: 历史日志（落盘文件） ----------
     // v1.31: 数据源双模式——Root 模式直读目标沙箱文件（目标 App 可不在线）；
     //   普通模式走 HTTP（目标 App 需在线）。UI 层通过 rootMode 自动选择。
-    private val _historyDays = MutableStateFlow<List<String>>(emptyList())
-    val historyDays: StateFlow<List<String>> = _historyDays.asStateFlow()
+    // v1.33: 卡片从"天"升级为"会话"（目标进程每启动一次 = 一个会话，天然分开）
+    private val _historySessions = MutableStateFlow<List<com.dustinky.spyprobe.util.HomeLogReader.SessionInfo>>(emptyList())
+    val historySessions: StateFlow<List<com.dustinky.spyprobe.util.HomeLogReader.SessionInfo>> = _historySessions.asStateFlow()
 
     private val _historyLogs = MutableStateFlow<List<Pair<Long, String>>>(emptyList())
     val historyLogs: StateFlow<List<Pair<Long, String>>> = _historyLogs.asStateFlow()
@@ -82,6 +83,10 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
     // v1.31: 历史读取来源说明（UI 显示数据源 + 错误原因）
     private val _historySource = MutableStateFlow("")
     val historySource: StateFlow<String> = _historySource.asStateFlow()
+
+    // v1.33: 当前选中会话（date + session）
+    private val _selectedHistorySession = MutableStateFlow<com.dustinky.spyprobe.util.HomeLogReader.SessionInfo?>(null)
+    val selectedHistorySession: StateFlow<com.dustinky.spyprobe.util.HomeLogReader.SessionInfo?> = _selectedHistorySession.asStateFlow()
 
     // 状态栏
     private val _status = MutableStateFlow("未连接（目标 App 需在运行）")
@@ -311,14 +316,15 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- v1.27: 历史日志 ----------
     // v1.31: Root 模式直读目标沙箱落盘文件（目标 App 可不在线）
+    // v1.33: 卡片 = 会话（目标进程每启动一次 = 一个会话）；主进程自己家优先（免 root 免目标在线）
     fun loadHistoryDays() {
         viewModelScope.launch {
-            val days = withContext(Dispatchers.IO) {
+            val sessions = withContext(Dispatchers.IO) {
                 // v1.32: 第一优先 = SpyProbe 自己家（本地文件，免 root 免目标 App 在线）
-                val homeDays = com.dustinky.spyprobe.util.HomeLogReader.days(getApplication<Application>().filesDir)
-                if (homeDays.isNotEmpty()) {
+                val homeSessions = com.dustinky.spyprobe.util.HomeLogReader.sessions(getApplication<Application>().filesDir)
+                if (homeSessions.isNotEmpty()) {
                     _historySource.value = "本地：SpyProbe 自己家（免 root）"
-                    homeDays
+                    homeSessions
                 } else if (_rootMode.value) {
                     val pkg = _targetPkg.value
                     if (pkg.isEmpty()) {
@@ -329,51 +335,57 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
                         emptyList()
                     } else {
                         _historySource.value = "Root 模式：直读 ${pkg} 落盘文件"
-                        com.dustinky.spyprobe.util.RootLogReader.days(pkg)
+                        // 旧版按天文件 → 包装成"会话 0"兼容展示
+                        com.dustinky.spyprobe.util.RootLogReader.days(pkg).map { day ->
+                            com.dustinky.spyprobe.util.HomeLogReader.SessionInfo(day, 0, 0, 0, "", "")
+                        }
                     }
                 } else {
                     _historySource.value = "普通模式：HTTP 读取（目标 App 需在线）"
-                    api.historyDays()
+                    (api.historyDays() ?: emptyList()).map { day ->
+                        com.dustinky.spyprobe.util.HomeLogReader.SessionInfo(day, 0, 0, 0, "", "")
+                    }
                 }
             }
-            _historyDays.value = days ?: emptyList()
-            com.dustinky.spyprobe.util.UiLog.log("loadHistoryDays: home/root/http days=${_historyDays.value.size} src=${_historySource.value}")
+            _historySessions.value = sessions
+            com.dustinky.spyprobe.util.UiLog.log("loadHistoryDays: sessions=${sessions.size} src=${_historySource.value}")
         }
     }
 
-    // v1.31.1 P2-4: loadHistory 并发竞态——记录最近一次请求的 day，完成时丢弃过期结果
+    // v1.31.1 P2-4: loadHistory 并发竞态——记录最近一次请求的 (day,session)，完成时丢弃过期结果
     //   （连续点击两个日期卡片时，旧请求后完成会覆盖新请求的数据 → 界面显示与 selectedDay 不匹配）
     @Volatile
-    private var latestHistoryDay: String? = null
+    private var latestHistoryKey: String? = null
 
-    fun loadHistory(day: String) {
-        latestHistoryDay = day
+    fun loadHistory(session: com.dustinky.spyprobe.util.HomeLogReader.SessionInfo) {
+        val key = "${session.date}#${session.session}"
+        latestHistoryKey = key
         viewModelScope.launch {
             _historyLoading.value = true
-            com.dustinky.spyprobe.util.UiLog.log("loadHistory: day=$day mode=${if (_rootMode.value) "root" else "http"}")
+            com.dustinky.spyprobe.util.UiLog.log("loadHistory: session=$key mode=${if (_rootMode.value) "root" else "http"}")
             val logs = withContext(Dispatchers.IO) {
                 // v1.32: 第一优先 = SpyProbe 自己家（本地文件，免 root）
-                val homeLogs = com.dustinky.spyprobe.util.HomeLogReader.readDay(getApplication<Application>().filesDir, day, 10000)
+                val homeLogs = com.dustinky.spyprobe.util.HomeLogReader.readSession(getApplication<Application>().filesDir, session.date, session.session, 10000)
                 if (homeLogs.isNotEmpty()) {
                     _historySource.value = "本地：SpyProbe 自己家（免 root）"
                     homeLogs.map { com.dustinky.spyprobe.ui.LogEntry(it.time, it.tag, it.msg) }
                 } else if (_rootMode.value) {
                     val pkg = _targetPkg.value
                     if (pkg.isEmpty()) null
-                    else com.dustinky.spyprobe.util.RootLogReader.readDay(pkg, day, 10000)
+                    else com.dustinky.spyprobe.util.RootLogReader.readDay(pkg, session.date, 10000)
                         .map { com.dustinky.spyprobe.ui.LogEntry(it.time, it.tag, it.msg) }
                 } else {
-                    api.history(day, 10000)
+                    api.history(session.date, 10000)
                 }
             }
-            // 过期请求丢弃（期间用户又点了别的日期）
-            if (latestHistoryDay != day) {
-                com.dustinky.spyprobe.util.UiLog.log("loadHistory: day=$day 过期结果丢弃（当前请求 day=$latestHistoryDay）")
+            // 过期请求丢弃（期间用户又点了别的会话）
+            if (latestHistoryKey != key) {
+                com.dustinky.spyprobe.util.UiLog.log("loadHistory: session=$key 过期结果丢弃（当前 key=$latestHistoryKey）")
                 return@launch
             }
             _historyLogs.value = logs?.mapIndexed { i, it -> Pair(i.toLong() + 1, it.display()) }
                 ?: emptyList()
-            com.dustinky.spyprobe.util.UiLog.log("loadHistory: day=$day entries=${logs?.size}")
+            com.dustinky.spyprobe.util.UiLog.log("loadHistory: session=$key entries=${logs?.size}")
             _historyLoading.value = false
         }
     }
@@ -400,6 +412,29 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
                 _historyLogs.value = emptyList()
             }
             com.dustinky.spyprobe.util.UiLog.log("clearHistory: ok=$ok")
+            onDone(ok)
+        }
+    }
+
+    /** v1.33: 清空单个会话（session=null 清全部）。本地优先（自己家文件）；旧按天文件按天清兜底 */
+    fun clearHistorySession(session: com.dustinky.spyprobe.util.HomeLogReader.SessionInfo?, onDone: (Boolean) -> Unit = {}) {
+        viewModelScope.launch {
+            com.dustinky.spyprobe.util.UiLog.log("clearHistorySession: ${session?.let { "${it.date}#${it.session}" } ?: "(全部)"}")
+            val ok = withContext(Dispatchers.IO) {
+                if (session == null) {
+                    com.dustinky.spyprobe.util.HomeLogReader.clear(getApplication<Application>().filesDir, null)
+                } else {
+                    // 先清精确会话（会话级文件）；若命中不到（旧按天文件）则清该天全部
+                    val any = com.dustinky.spyprobe.util.HomeLogReader.clearSession(getApplication<Application>().filesDir, session.date, session.session)
+                    if (any) true
+                    else com.dustinky.spyprobe.util.HomeLogReader.clear(getApplication<Application>().filesDir, session.date)
+                }
+            }
+            if (ok) {
+                loadHistoryDays()
+                _historyLogs.value = emptyList()
+            }
+            com.dustinky.spyprobe.util.UiLog.log("clearHistorySession: ok=$ok")
             onDone(ok)
         }
     }

@@ -55,6 +55,9 @@ public class LogStore {
     private static final int PUSH_QUEUE_CAP = 4096;
     private static final int PUSH_BATCH = 50;
     private final ArrayBlockingQueue<String> pushQueue = new ArrayBlockingQueue<>(PUSH_QUEUE_CAP);
+    // v1.33: 会话标识——每次目标进程启动生成，随推送带给主进程；
+    //   主进程看到 session 变化 → LogPersister.startSession() → 新会话文件（按次数记，不按天混）
+    private final String sessionId = java.util.UUID.randomUUID().toString();
 
     public void enablePushHome() {
         if (pushHome) return;
@@ -87,7 +90,7 @@ public class LogStore {
 
     private void flushPush(List<String> batch) {
         try {
-            StringBuilder sb = new StringBuilder("{\"entries\":[");
+            StringBuilder sb = new StringBuilder("{\"session\":\"").append(sessionId).append("\",\"entries\":[");
             for (int i = 0; i < batch.size(); i++) {
                 if (i > 0) sb.append(',');
                 sb.append(batch.get(i));

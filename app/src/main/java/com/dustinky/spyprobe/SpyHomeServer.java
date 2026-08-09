@@ -31,6 +31,8 @@ public class SpyHomeServer {
 
     private volatile ServerSocket serverSocket;
     private volatile Thread acceptThread;
+    // v1.33: 会话识别——目标进程每启动一次 session 都不同；变化时 LogPersister 开新会话文件
+    private volatile String lastSession = "";
 
     private static final SpyHomeServer INSTANCE = new SpyHomeServer();
     public static SpyHomeServer get() { return INSTANCE; }
@@ -135,6 +137,13 @@ public class SpyHomeServer {
                     // 目标进程批量推送日志 → 主进程 LogStore（LogPersister 落自己家）
                     JSONObject root = new JSONObject(body == null ? "{}" : body);
                     JSONArray arr = root.optJSONArray("entries");
+                    // v1.33: 会话识别——目标进程每启动一次 session 都不同 → 开新会话文件（按次数记）
+                    String sess = root.optString("session", "");
+                    if (!sess.isEmpty() && !sess.equals(lastSession)) {
+                        lastSession = sess;
+                        LogPersister.get().startSession();
+                        DebugLog.get().log("Home", "new session " + (sess.length() > 8 ? sess.substring(0, 8) : sess));
+                    }
                     int n = 0;
                     if (arr != null) {
                         for (int i = 0; i < arr.length(); i++) {

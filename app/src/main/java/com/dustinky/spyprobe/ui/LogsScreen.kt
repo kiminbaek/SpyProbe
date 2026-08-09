@@ -186,7 +186,7 @@ private val CopyIcon: ImageVector by lazy {
 fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     val logLines by vm.logLines.collectAsState()
     val logCount by vm.logCount.collectAsState()
-    val historyDays by vm.historyDays.collectAsState()
+    val historySessions by vm.historySessions.collectAsState()
     val historyLogs by vm.historyLogs.collectAsState()
     val historyLoading by vm.historyLoading.collectAsState()
     val historySource by vm.historySource.collectAsState()
@@ -198,7 +198,8 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     var filter by remember { mutableStateOf("") }
     var category by remember { mutableStateOf(LogCategory.ALL) }
     var autoScroll by remember { mutableStateOf(true) }
-    var selectedDay by remember { mutableStateOf<String?>(null) }
+    // v1.33: 卡片 = 会话（目标进程每启动一次 = 一个会话）
+    var selectedSession by remember { mutableStateOf<com.dustinky.spyprobe.util.HomeLogReader.SessionInfo?>(null) }
     var showClearDialog by remember { mutableStateOf(false) }
     // v1.31: 历史三层导航
     var historyLevel by remember { mutableStateOf(HistoryLevel.DAYS) }
@@ -209,18 +210,18 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
 
     val displayLines = if (modeHistory && historyLevel != HistoryLevel.DAYS) historyLogs else logLines
 
-    // v1.27: 进入历史模式拉日期列表
+    // v1.27: 进入历史模式拉会话列表
     LaunchedEffect(modeHistory) {
         if (modeHistory) {
             historyLevel = HistoryLevel.DAYS
-            selectedDay = null
+            selectedSession = null
             vm.loadHistoryDays()
         }
     }
-    // v1.31: 进入某天 → 拉该天日志
-    LaunchedEffect(selectedDay, historyLevel) {
-        if (modeHistory && historyLevel == HistoryLevel.LINES && selectedDay != null) {
-            vm.loadHistory(selectedDay!!)
+    // v1.31: 进入某会话 → 拉该会话日志
+    LaunchedEffect(selectedSession, historyLevel) {
+        if (modeHistory && historyLevel == HistoryLevel.LINES && selectedSession != null) {
+            vm.loadHistory(selectedSession!!)
         }
     }
 
@@ -265,7 +266,7 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                 historyLevel = HistoryLevel.LINES
                             } else {
                                 historyLevel = HistoryLevel.DAYS
-                                selectedDay = null
+                                selectedSession = null
                             }
                         }, modifier = Modifier.size(30.dp)) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回",
@@ -276,7 +277,7 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                     // v1.27: 实时 / 历史 模式切换
                     FilterChip(
                         selected = !modeHistory,
-                        onClick = { modeHistory = false; selectedDay = null; historyLevel = HistoryLevel.DAYS },
+                        onClick = { modeHistory = false; selectedSession = null; historyLevel = HistoryLevel.DAYS },
                         label = { Text("实时", fontSize = 11.sp) }
                     )
                     Spacer(Modifier.width(6.dp))
@@ -295,10 +296,10 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                         Spacer(Modifier.width(8.dp))
                         StatChip("错误", errCount, MaterialTheme.colorScheme.error)
                     } else {
-                        // v1.31: 层级指示：卡片列表 → 某天 → 详情
+                        // v1.31: 层级指示：卡片列表 → 某会话 → 详情
                         when (historyLevel) {
                             HistoryLevel.DAYS -> {
-                                StatChip("历史天数", historyDays.size, MaterialTheme.colorScheme.primary)
+                                StatChip("历史会话", historySessions.size, MaterialTheme.colorScheme.primary)
                                 Spacer(Modifier.width(8.dp))
                                 Text(
                                     historySource,
@@ -345,7 +346,7 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                         }
                         Spacer(Modifier.width(6.dp))
                         Text(
-                            if (historyDays.isEmpty()) "暂无历史日志（抓包时日志会自动落盘保存）" else "点击日期卡片查看当天日志",
+                            if (historySessions.isEmpty()) "暂无历史日志（抓包时日志会自动落盘保存）" else "点击会话卡片查看该次抓包日志",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             fontSize = 10.sp
@@ -358,8 +359,8 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                 if (modeHistory && historyLevel == HistoryLevel.LINES) {
                     Spacer(Modifier.height(8.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = { selectedDay?.let { vm.loadHistory(it) } }, modifier = Modifier.size(30.dp)) {
-                            Icon(Icons.Filled.Refresh, contentDescription = "刷新当天",
+                        IconButton(onClick = { selectedSession?.let { vm.loadHistory(it) } }, modifier = Modifier.size(30.dp)) {
+                            Icon(Icons.Filled.Refresh, contentDescription = "刷新该会话",
                                 modifier = Modifier.size(16.dp))
                         }
                         IconButton(onClick = { showClearDialog = true }, modifier = Modifier.size(30.dp)) {
@@ -438,9 +439,9 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
         // ===== 内容区（v1.31 三层）=====
         Box(Modifier.fillMaxSize()) {
             when {
-                // ---- 历史层 ①：日期卡片列表（小黄鸟式）----
+                // ---- 历史层 ①：会话卡片列表（小黄鸟式）----
                 modeHistory && historyLevel == HistoryLevel.DAYS -> {
-                    if (historyDays.isEmpty()) {
+                    if (historySessions.isEmpty()) {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Text(
                                 if (historyLoading) "加载中…"
@@ -457,13 +458,11 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                 .padding(horizontal = 10.dp, vertical = 8.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            items(historyDays, key = { it }) { day ->
-                                HistoryDayCard(
-                                    day = day,
-                                    favorite = vm.isFavoriteDay(day),
-                                    onToggleFavorite = { vm.toggleFavoriteDay(day) },
+                            items(historySessions, key = { "${it.date}#${it.session}" }) { session ->
+                                HistorySessionCard(
+                                    session = session,
                                     onClick = {
-                                        selectedDay = day
+                                        selectedSession = session
                                         historyLevel = HistoryLevel.LINES
                                     }
                                 )
@@ -472,14 +471,14 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                     }
                 }
 
-                // ---- 历史层 ②：某天日志列表 ----
+                // ---- 历史层 ②：某会话日志列表 ----
                 modeHistory && historyLevel == HistoryLevel.LINES -> {
                     if (filtered.isEmpty()) {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Text(
                                 if (historyLoading) "加载中…"
-                                else if (selectedDay == null) "未选择日期"
-                                else "该日期/分类下暂无日志",
+                                else if (selectedSession == null) "未选择会话"
+                                else "该会话/分类下暂无日志",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -610,21 +609,21 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                             modifier = Modifier.size(20.dp))
                     }
                 } else if (modeHistory && historyLevel == HistoryLevel.LINES) {
-                    // 列表层：导出当天
+                    // 列表层：导出当前会话
                     FloatingActionButton(
                         onClick = {
-                            val day = selectedDay
+                            val session = selectedSession
                             scope.launch {
-                                if (day == null) {
-                                    android.widget.Toast.makeText(context, "请先选择日期", android.widget.Toast.LENGTH_SHORT).show()
+                                if (session == null) {
+                                    android.widget.Toast.makeText(context, "请先选择会话", android.widget.Toast.LENGTH_SHORT).show()
                                     return@launch
                                 }
                                 val text = withContext(Dispatchers.IO) {
                                     if (vm.rootMode.value) {
-                                        // Root 模式：本地已有数据，直接拼文本
+                                        // Root 模式：本地已有数据，直接拼文本（v1.33：会话日志已在 historyLogs）
                                         vm.historyLogs.value.joinToString("\n") { it.second }
                                     } else {
-                                        vm.api.exportDay(day)
+                                        vm.api.exportDay(session.date)
                                     }
                                 }
                                 if (text == null || text.isEmpty()) {
@@ -634,10 +633,10 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                     return@launch
                                 }
                                 val uri = withContext(Dispatchers.IO) {
-                                    com.dustinky.spyprobe.util.ShareLogUtil.writeLogTxtFile(context, "spyprobe_logs_$day", text)
+                                    com.dustinky.spyprobe.util.ShareLogUtil.writeLogTxtFile(context, "spyprobe_logs_${session.date}_s${session.session}", text)
                                 }
                                 if (uri == null) {
-                                    com.dustinky.spyprobe.util.UiLog.log("LogsScreen 写文件失败: $day len=${text.length}")
+                                    com.dustinky.spyprobe.util.UiLog.log("LogsScreen 写文件失败: ${session.date}#${session.session} len=${text.length}")
                                     android.widget.Toast.makeText(context, "导出失败：无法写入 txt 文件（详见 UiLog）", android.widget.Toast.LENGTH_LONG).show()
                                     return@launch
                                 }
@@ -653,37 +652,61 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier.size(44.dp)
                     ) {
-                        Icon(Icons.Filled.Share, contentDescription = "导出当天",
+                        Icon(Icons.Filled.Share, contentDescription = "导出该会话",
                             modifier = Modifier.size(20.dp))
                     }
                 } else if (!modeHistory || historyLevel == HistoryLevel.DAYS) {
-                    // 实时层 / 历史卡片层：导出（实时=内存；历史卡片层=当前选中天或全部）
+                    // 实时层 / 历史卡片层：导出
                     FloatingActionButton(
                         onClick = {
                             scope.launch {
                                 if (modeHistory && historyLevel == HistoryLevel.DAYS) {
-                                    // 卡片层导出整段历史（全部天）——HTTP 模式导出全部
-                                    // v1.31.1 P2-2: Root 模式卡片层不能整段导出（历史为按天文件），直接提示并取消，
-                                    //   不再把提示文案写成 txt 分享（原逻辑误分享"提示文本.txt"）
-                                    if (vm.rootMode.value) {
-                                        android.widget.Toast.makeText(
-                                            context,
-                                            "Root 模式：请进入具体日期后导出（历史为按天文件）",
-                                            android.widget.Toast.LENGTH_SHORT
-                                        ).show()
-                                        return@launch
+                                    // v1.33: 卡片层导出全部历史——优先本地拼（免 root 免目标 App 在线），
+                                    //   删除 v1.31.1 的 root 模式 Toast 拦截（当时历史在目标沙箱无法整段导出，现已搬回自己家）
+                                    val text = withContext(Dispatchers.IO) {
+                                        val appCtx = context.applicationContext as android.app.Application
+                                        val sessions = com.dustinky.spyprobe.util.HomeLogReader.sessions(appCtx.filesDir)
+                                        if (sessions.isEmpty()) null
+                                        else {
+                                            val sb = StringBuilder()
+                                            for (s in sessions) {
+                                                sb.append("===== 会话 ${s.date} #${s.session}（${s.count} 条，${s.firstTime} → ${s.lastTime}）=====\n")
+                                                val entries = com.dustinky.spyprobe.util.HomeLogReader.readSession(appCtx.filesDir, s.date, s.session, 20000)
+                                                for (e in entries) {
+                                                    sb.append(e.time).append(" [").append(e.tag).append("] ").append(e.msg).append('\n')
+                                                }
+                                            }
+                                            sb.toString()
+                                        }
                                     }
-                                    val text = withContext(Dispatchers.IO) { vm.api.export() }
-                                    if (text.isNullOrEmpty()) {
-                                        val why = if (text == null) vm.api.lastHttpError.ifEmpty { "HTTP 无响应" } else "日志内容为空"
-                                        android.widget.Toast.makeText(context, "导出失败：$why", android.widget.Toast.LENGTH_LONG).show()
+                                    if (text == null || text.isEmpty()) {
+                                        // 本地无历史 → 退回 HTTP 整段导出（目标 App 在线时）
+                                        val httpText = withContext(Dispatchers.IO) { vm.api.export() }
+                                        if (httpText.isNullOrEmpty()) {
+                                            val why = if (httpText == null) vm.api.lastHttpError.ifEmpty { "HTTP 无响应" } else "日志内容为空"
+                                            android.widget.Toast.makeText(context, "导出失败：$why", android.widget.Toast.LENGTH_LONG).show()
+                                        } else {
+                                            val uri = withContext(Dispatchers.IO) {
+                                                com.dustinky.spyprobe.util.ShareLogUtil.writeLogTxtFile(context, "spyprobe_logs", httpText)
+                                            }
+                                            if (uri != null) {
+                                                val err = com.dustinky.spyprobe.util.ShareLogUtil.shareUri(context, "SpyProbe 日志导出", uri)
+                                                if (err != null) android.widget.Toast.makeText(context, "导出失败：$err", android.widget.Toast.LENGTH_LONG).show()
+                                            }
+                                        }
                                     } else {
                                         val uri = withContext(Dispatchers.IO) {
-                                            com.dustinky.spyprobe.util.ShareLogUtil.writeLogTxtFile(context, "spyprobe_logs", text)
+                                            com.dustinky.spyprobe.util.ShareLogUtil.writeLogTxtFile(context, "spyprobe_logs_all", text)
                                         }
-                                        if (uri != null) {
+                                        if (uri == null) {
+                                            com.dustinky.spyprobe.util.UiLog.log("LogsScreen 写文件失败: all len=${text.length}")
+                                            android.widget.Toast.makeText(context, "导出失败：无法写入 txt 文件（详见 UiLog）", android.widget.Toast.LENGTH_LONG).show()
+                                        } else {
                                             val err = com.dustinky.spyprobe.util.ShareLogUtil.shareUri(context, "SpyProbe 日志导出", uri)
-                                            if (err != null) android.widget.Toast.makeText(context, "导出失败：$err", android.widget.Toast.LENGTH_LONG).show()
+                                            if (err != null) {
+                                                com.dustinky.spyprobe.util.UiLog.log("LogsScreen 分享失败: $err")
+                                                android.widget.Toast.makeText(context, "导出失败：$err", android.widget.Toast.LENGTH_LONG).show()
+                                            }
                                         }
                                     }
                                     return@launch
@@ -754,37 +777,37 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
         }
     }
 
-    // ===== v1.27: 清空历史确认弹窗（v1.31.1 P2-3: 按层级提供 清当天/清全部）=====
+    // ===== v1.27: 清空历史确认弹窗（v1.33: LINES 层清当前会话；DAYS 层清全部）=====
     if (showClearDialog) {
-        val clearingDay = selectedDay // LINES 层 selectedDay 非空 → 清当天；DAYS 层 → 清全部
+        val clearingSession = selectedSession // LINES 层 selectedSession 非空 → 清当前会话；DAYS 层 → 清全部
         AlertDialog(
             onDismissRequest = { showClearDialog = false },
             title = { Text("清空历史日志") },
             text = {
                 Text(
-                    if (clearingDay != null) "删除 $clearingDay 当天已落盘日志，不可恢复。"
-                    else "已落盘的历史日志删除后不可恢复。\n\n当前层级：卡片列表（${historyDays.size} 天）"
+                    if (clearingSession != null) "删除 ${clearingSession.date} #${clearingSession.session} 该会话已落盘日志，不可恢复。"
+                    else "已落盘的历史日志删除后不可恢复。\n\n当前层级：卡片列表（${historySessions.size} 个会话）"
                 )
             },
             confirmButton = {
                 TextButton(
                     onClick = {
                         showClearDialog = false
-                        vm.clearHistory(clearingDay) { ok ->
+                        vm.clearHistorySession(clearingSession) { ok ->
                             android.widget.Toast.makeText(context,
-                                if (ok) if (clearingDay != null) "已清空当天历史" else "已清空全部历史"
+                                if (ok) if (clearingSession != null) "已清空该会话历史" else "已清空全部历史"
                                 else "清空失败（无权限/未连接）", android.widget.Toast.LENGTH_SHORT).show()
                             if (ok) {
-                                // 清当天后回到卡片层刷新列表
-                                if (clearingDay != null) {
+                                // 清会话后回到卡片层刷新列表
+                                if (clearingSession != null) {
                                     historyLevel = HistoryLevel.DAYS
-                                    selectedDay = null
+                                    selectedSession = null
                                     vm.loadHistoryDays()
                                 }
                             }
                         }
                     }
-                ) { Text(if (clearingDay != null) "清空当天" else "清空全部", color = MaterialTheme.colorScheme.error) }
+                ) { Text(if (clearingSession != null) "清空该会话" else "清空全部", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = {
                 TextButton(onClick = { showClearDialog = false }) { Text("取消") }
@@ -795,12 +818,20 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
 
 /** v1.31: 历史日期卡片（小黄鸟式：日期 + 记录数 + 时间范围 + 收藏星） */
 @Composable
-private fun HistoryDayCard(
-    day: String,
-    favorite: Boolean,
-    onToggleFavorite: () -> Unit,
+/** v1.33: 历史会话卡片（日期 + 会话号 + 条数 + 时间范围） */
+private fun HistorySessionCard(
+    session: com.dustinky.spyprobe.util.HomeLogReader.SessionInfo,
     onClick: () -> Unit
 ) {
+    // 2026-08-09 -> 08-09
+    val shortDate = session.date.takeLast(5)
+    val timeRange = if (session.firstTime.isNotEmpty() && session.lastTime.isNotEmpty())
+        "${session.firstTime} → ${session.lastTime}" else "时间未知"
+    val countText = when {
+        session.count > 0 -> "${session.count} 条"
+        session.fileCount > 0 -> "${session.fileCount} 文件"
+        else -> "—"
+    }
     Card(
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainer
@@ -817,25 +848,17 @@ private fun HistoryDayCard(
         ) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    day,
+                    "$shortDate  #${session.session}",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary
                 )
                 Spacer(Modifier.height(3.dp))
                 Text(
-                    "点击查看当天日志",
+                    "$countText · $timeRange",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 10.sp
-                )
-            }
-            IconButton(onClick = onToggleFavorite, modifier = Modifier.size(32.dp)) {
-                Icon(
-                    if (favorite) Icons.Filled.Star else StarBorderIcon,
-                    contentDescription = if (favorite) "取消收藏" else "收藏",
-                    tint = if (favorite) Color(0xFFFFB300) else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(20.dp)
                 )
             }
             Text("›", style = MaterialTheme.typography.titleLarge,
