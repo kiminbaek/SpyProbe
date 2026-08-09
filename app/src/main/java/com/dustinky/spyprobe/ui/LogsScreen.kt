@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
@@ -200,6 +201,8 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     var autoScroll by remember { mutableStateOf(true) }
     // v1.33: 卡片 = 会话（目标进程每启动一次 = 一个会话）
     var selectedSession by remember { mutableStateOf<com.dustinky.spyprobe.util.HomeLogReader.SessionInfo?>(null) }
+    // v1.33.1: 会话勾选分享——卡片层勾选要导出的会话（key = "date#session"），选中才分享
+    var checkedSessions by remember { mutableStateOf<Set<String>>(emptySet()) }
     var showClearDialog by remember { mutableStateOf(false) }
     // v1.31: 历史三层导航
     var historyLevel by remember { mutableStateOf(HistoryLevel.DAYS) }
@@ -215,6 +218,7 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
         if (modeHistory) {
             historyLevel = HistoryLevel.DAYS
             selectedSession = null
+            checkedSessions = emptySet()
             vm.loadHistoryDays()
         }
     }
@@ -451,21 +455,38 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                             )
                         }
                     } else {
-                        LazyColumn(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(MaterialTheme.colorScheme.surfaceContainerLowest)
-                                .padding(horizontal = 10.dp, vertical = 8.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            items(historySessions, key = { "${it.date}#${it.session}" }) { session ->
-                                HistorySessionCard(
-                                    session = session,
-                                    onClick = {
-                                        selectedSession = session
-                                        historyLevel = HistoryLevel.LINES
-                                    }
-                                )
+                        Column(Modifier.fillMaxSize()) {
+                            // v1.33.1: 勾选提示
+                            Text(
+                                "勾选要分享的会话（点卡片右侧查看内容），再点右下角分享；未勾选时分享将提示",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 6.dp)
+                            )
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+                                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(historySessions, key = { "${it.date}#${it.session}" }) { session ->
+                                    val key = "${session.date}#${session.session}"
+                                    HistorySessionCard(
+                                        session = session,
+                                        checked = key in checkedSessions,
+                                        onToggleChecked = {
+                                            checkedSessions = if (key in checkedSessions) checkedSessions - key
+                                            else checkedSessions + key
+                                        },
+                                        onClick = {
+                                            selectedSession = session
+                                            historyLevel = HistoryLevel.LINES
+                                        }
+                                    )
+                                }
                             }
                         }
                     }
@@ -609,7 +630,8 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                             modifier = Modifier.size(20.dp))
                     }
                 } else if (modeHistory && historyLevel == HistoryLevel.LINES) {
-                    // 列表层：导出当前会话
+                    // 列表层：导出当前会话（v1.33.1: 一律优先本地 readSession，免 root 免目标 App 在线——
+                    //   旧逻辑普通模式走 api.exportDay 依赖目标进程，目标 App 闪退后分享必失败）
                     FloatingActionButton(
                         onClick = {
                             val session = selectedSession
@@ -619,8 +641,16 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                     return@launch
                                 }
                                 val text = withContext(Dispatchers.IO) {
-                                    if (vm.rootMode.value) {
-                                        // Root 模式：本地已有数据，直接拼文本（v1.33：会话日志已在 historyLogs）
+                                    val appCtx = context.applicationContext as android.app.Application
+                                    val local = com.dustinky.spyprobe.util.HomeLogReader.readSession(appCtx.filesDir, session.date, session.session, 20000)
+                                    if (local.isNotEmpty()) {
+                                        val sb = StringBuilder()
+                                        sb.append("===== 会话 ${session.date} #${session.session}（${local.size} 条）=====\n")
+                                        for (e in local) {
+                                            sb.append(e.time).append(" [").append(e.tag).append("] ").append(e.msg).append('\n')
+                                        }
+                                        sb.toString()
+                                    } else if (vm.rootMode.value) {
                                         vm.historyLogs.value.joinToString("\n") { it.second }
                                     } else {
                                         vm.api.exportDay(session.date)
@@ -632,6 +662,7 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                     android.widget.Toast.makeText(context, "导出失败：$why", android.widget.Toast.LENGTH_LONG).show()
                                     return@launch
                                 }
+                                android.widget.Toast.makeText(context, "正在导出会话 ${session.date.takeLast(5)} #${session.session}…", android.widget.Toast.LENGTH_SHORT).show()
                                 val uri = withContext(Dispatchers.IO) {
                                     com.dustinky.spyprobe.util.ShareLogUtil.writeLogTxtFile(context, "spyprobe_logs_${session.date}_s${session.session}", text)
                                 }
@@ -640,7 +671,7 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                     android.widget.Toast.makeText(context, "导出失败：无法写入 txt 文件（详见 UiLog）", android.widget.Toast.LENGTH_LONG).show()
                                     return@launch
                                 }
-                                val err = com.dustinky.spyprobe.util.ShareLogUtil.shareUri(context, "SpyProbe 日志导出", uri)
+                                val err = com.dustinky.spyprobe.util.ShareLogUtil.shareUri(context, "SpyProbe 日志导出（会话 ${session.date.takeLast(5)} #${session.session}）", uri)
                                 if (err != null) {
                                     com.dustinky.spyprobe.util.UiLog.log("LogsScreen 分享失败: $err")
                                     android.widget.Toast.makeText(context, "导出失败：$err", android.widget.Toast.LENGTH_LONG).show()
@@ -661,11 +692,15 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                         onClick = {
                             scope.launch {
                                 if (modeHistory && historyLevel == HistoryLevel.DAYS) {
-                                    // v1.33: 卡片层导出全部历史——优先本地拼（免 root 免目标 App 在线），
-                                    //   删除 v1.31.1 的 root 模式 Toast 拦截（当时历史在目标沙箱无法整段导出，现已搬回自己家）
+                                    // v1.33.1: 卡片层分享 = 只导出勾选的会话（本地拼，免 root 免目标 App 在线）
+                                    if (checkedSessions.isEmpty()) {
+                                        android.widget.Toast.makeText(context, "请先勾选要分享的会话（点卡片左侧勾选框）", android.widget.Toast.LENGTH_SHORT).show()
+                                        return@launch
+                                    }
                                     val text = withContext(Dispatchers.IO) {
                                         val appCtx = context.applicationContext as android.app.Application
                                         val sessions = com.dustinky.spyprobe.util.HomeLogReader.sessions(appCtx.filesDir)
+                                            .filter { "${it.date}#${it.session}" in checkedSessions }
                                         if (sessions.isEmpty()) null
                                         else {
                                             val sb = StringBuilder()
@@ -680,33 +715,20 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                         }
                                     }
                                     if (text == null || text.isEmpty()) {
-                                        // 本地无历史 → 退回 HTTP 整段导出（目标 App 在线时）
-                                        val httpText = withContext(Dispatchers.IO) { vm.api.export() }
-                                        if (httpText.isNullOrEmpty()) {
-                                            val why = if (httpText == null) vm.api.lastHttpError.ifEmpty { "HTTP 无响应" } else "日志内容为空"
-                                            android.widget.Toast.makeText(context, "导出失败：$why", android.widget.Toast.LENGTH_LONG).show()
-                                        } else {
-                                            val uri = withContext(Dispatchers.IO) {
-                                                com.dustinky.spyprobe.util.ShareLogUtil.writeLogTxtFile(context, "spyprobe_logs", httpText)
-                                            }
-                                            if (uri != null) {
-                                                val err = com.dustinky.spyprobe.util.ShareLogUtil.shareUri(context, "SpyProbe 日志导出", uri)
-                                                if (err != null) android.widget.Toast.makeText(context, "导出失败：$err", android.widget.Toast.LENGTH_LONG).show()
-                                            }
-                                        }
+                                        android.widget.Toast.makeText(context, "导出失败：勾选的会话在本地无日志（无法读取）", android.widget.Toast.LENGTH_LONG).show()
+                                        return@launch
+                                    }
+                                    val uri = withContext(Dispatchers.IO) {
+                                        com.dustinky.spyprobe.util.ShareLogUtil.writeLogTxtFile(context, "spyprobe_logs_selected_${checkedSessions.size}", text)
+                                    }
+                                    if (uri == null) {
+                                        com.dustinky.spyprobe.util.UiLog.log("LogsScreen 写文件失败: selected ${checkedSessions.size} len=${text.length}")
+                                        android.widget.Toast.makeText(context, "导出失败：无法写入 txt 文件（详见 UiLog）", android.widget.Toast.LENGTH_LONG).show()
                                     } else {
-                                        val uri = withContext(Dispatchers.IO) {
-                                            com.dustinky.spyprobe.util.ShareLogUtil.writeLogTxtFile(context, "spyprobe_logs_all", text)
-                                        }
-                                        if (uri == null) {
-                                            com.dustinky.spyprobe.util.UiLog.log("LogsScreen 写文件失败: all len=${text.length}")
-                                            android.widget.Toast.makeText(context, "导出失败：无法写入 txt 文件（详见 UiLog）", android.widget.Toast.LENGTH_LONG).show()
-                                        } else {
-                                            val err = com.dustinky.spyprobe.util.ShareLogUtil.shareUri(context, "SpyProbe 日志导出", uri)
-                                            if (err != null) {
-                                                com.dustinky.spyprobe.util.UiLog.log("LogsScreen 分享失败: $err")
-                                                android.widget.Toast.makeText(context, "导出失败：$err", android.widget.Toast.LENGTH_LONG).show()
-                                            }
+                                        val err = com.dustinky.spyprobe.util.ShareLogUtil.shareUri(context, "SpyProbe 日志导出（已选 ${checkedSessions.size} 个会话）", uri)
+                                        if (err != null) {
+                                            com.dustinky.spyprobe.util.UiLog.log("LogsScreen 分享失败: $err")
+                                            android.widget.Toast.makeText(context, "导出失败：$err", android.widget.Toast.LENGTH_LONG).show()
                                         }
                                     }
                                     return@launch
@@ -819,8 +841,11 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
 /** v1.31: 历史日期卡片（小黄鸟式：日期 + 记录数 + 时间范围 + 收藏星） */
 @Composable
 /** v1.33: 历史会话卡片（日期 + 会话号 + 条数 + 时间范围） */
+/** v1.33.1: 会话卡片 = 会话 + 勾选框（勾选才分享；点卡片本体进详情） */
 private fun HistorySessionCard(
     session: com.dustinky.spyprobe.util.HomeLogReader.SessionInfo,
+    checked: Boolean,
+    onToggleChecked: () -> Unit,
     onClick: () -> Unit
 ) {
     // 2026-08-09 -> 08-09
@@ -834,18 +859,29 @@ private fun HistorySessionCard(
     }
     Card(
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer
+            containerColor = if (checked) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+            else MaterialTheme.colorScheme.surfaceContainer
         ),
         shape = RoundedCornerShape(12.dp),
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
+            .border(
+                if (checked) 1.5.dp else 1.dp,
+                if (checked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                RoundedCornerShape(12.dp)
+            )
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp)
         ) {
+            Checkbox(
+                checked = checked,
+                onCheckedChange = { onToggleChecked() },
+                modifier = Modifier.size(36.dp)
+            )
+            Spacer(Modifier.width(4.dp))
             Column(Modifier.weight(1f)) {
                 Text(
                     "$shortDate  #${session.session}",
