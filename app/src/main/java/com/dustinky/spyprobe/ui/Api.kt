@@ -524,4 +524,13 @@ class SpyApi(private var port: Int = 9901) {
             httpPost("/api/stringfind", o.toString())
         } catch (t: Throwable) { null }
     }
+
+    /** v1.38 P2-8: 类名模糊搜索 → 自动生成 hook 清单；返回 null=未连接/失败 */
+    fun classFind(pattern: String): String? {
+        return try {
+            val o = JSONObject()
+            o.put("pattern", pattern)
+            httpPost("/api/classfind", o.toString())
+        } catch (t: Throwable) { null }
+    }
 }

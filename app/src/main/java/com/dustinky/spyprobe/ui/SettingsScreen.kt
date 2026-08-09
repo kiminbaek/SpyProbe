@@ -347,6 +347,19 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             BoolSetting(effective, "debug", "调试日志", false,
                 inherited = inh("debug"),
                 onSet = { setCfg("debug", it) })
+            // v1.38 (hooker 借鉴): 3 个新开关
+            Divider()
+            BoolSetting(effective, "keystore", "证书 Dump (mTLS)", false,
+                inherited = inh("keystore"),
+                onSet = { setCfg("keystore", it) })
+            Divider()
+            BoolSetting(effective, "keylog", "SSL KeyLog", false,
+                inherited = inh("keylog"),
+                onSet = { setCfg("keylog", it) })
+            Divider()
+            BoolSetting(effective, "webViewDebug", "WebView 调试", false,
+                inherited = inh("webViewDebug"),
+                onSet = { setCfg("webViewDebug", it) })
         }
 
         Spacer(Modifier.height(8.dp))
@@ -446,6 +459,39 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             if (findResult.isNotEmpty()) {
                 Text(
                     findResult.take(500),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
+
+            // v1.38 P2-8: 类名模糊搜索 → 自动生成 hook 清单（hooker gs 命令借鉴）
+            Divider()
+            var findClassStr by remember { mutableStateOf("") }
+            var classResult by remember { mutableStateOf("") }
+            OutlinedTextField(
+                value = findClassStr,
+                onValueChange = { findClassStr = it },
+                label = { Text("类名搜索 (生成 hook 清单)", fontSize = 12.sp) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = {
+                    scope.launch {
+                        classResult = withContext(Dispatchers.IO) { vm.api.classFind(findClassStr) }
+                            ?: "失败"
+                    }
+                }, enabled = findClassStr.isNotEmpty()) {
+                    Text("搜索", fontSize = 12.sp)
+                }
+            }
+            if (classResult.isNotEmpty()) {
+                Text(
+                    classResult.take(800),
                     style = MaterialTheme.typography.bodySmall,
                     fontFamily = FontFamily.Monospace,
                     fontSize = 11.sp,

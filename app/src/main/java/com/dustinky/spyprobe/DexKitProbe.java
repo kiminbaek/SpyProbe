@@ -5,8 +5,12 @@ import android.os.Environment;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.luckypray.dexkit.DexKitBridge;
+import org.luckypray.dexkit.result.ClassData;
 import org.luckypray.dexkit.result.MethodData;
+import org.luckypray.dexkit.query.FindClass;
 import org.luckypray.dexkit.query.FindMethod;
+import org.luckypray.dexkit.query.enums.StringMatchType;
+import org.luckypray.dexkit.query.matchers.ClassMatcher;
 import org.luckypray.dexkit.query.matchers.MethodMatcher;
 
 import java.io.File;
@@ -153,6 +157,59 @@ public class DexKitProbe {
             return o.toString();
         } catch (Throwable t) {
             LogStore.get().log(TAG, "string-find fail: " + t);
+            return err(t.toString());
+        }
+    }
+
+    /**
+     * v1.38 P2-8: 类名模糊搜索 → 自动生成 hook 清单（hooker gs 命令借鉴）
+     *
+     * 输入类名关键字（Contains 匹配，忽略大小写）→ 返回匹配类的全部方法列表。
+     * 用户可直接把返回的 类#方法 复制到「探测」页手动 hook（MethodProbe 规则）。
+     * 与 findMethods（字符串反查）互补：一个按方法内容找，一个按类名找。
+     */
+    public String findClassMethods(String pattern) {
+        if (pattern == null || pattern.trim().isEmpty()) return err("empty pattern");
+        init();
+        if (bridge == null) return err("bridge not ready");
+        try {
+            java.util.List<ClassData> classes = bridge.findClass(FindClass.create()
+                    .matcher(ClassMatcher.create()
+                            .className(pattern.trim(), StringMatchType.Contains, true)));
+            JSONArray arr = new JSONArray();
+            int shown = 0;
+            for (ClassData cd : classes) {
+                if (shown >= 50) break; // 类上限防卡
+                shown++;
+                JSONObject o = new JSONObject();
+                o.put("class", cd.getName());
+                o.put("methodCount", cd.getMethodCount());
+                JSONArray ms = new JSONArray();
+                for (MethodData md : cd.getMethods()) {
+                    if (ms.length() >= 60) break; // 每类方法上限
+                    JSONObject mo = new JSONObject();
+                    mo.put("method", md.getMethodName());
+                    mo.put("params", joinParams(md));
+                    try {
+                        mo.put("returnType", md.getReturnTypeName());
+                    } catch (Throwable t) {
+                        mo.put("returnType", "?");
+                    }
+                    ms.put(mo);
+                }
+                o.put("methods", ms);
+                arr.put(o);
+            }
+            JSONObject o = new JSONObject();
+            o.put("ok", true);
+            o.put("query", pattern.trim());
+            o.put("total", classes.size());
+            o.put("shown", shown);
+            o.put("classes", arr);
+            LogStore.get().log(TAG, "class-find \"" + pattern + "\" total=" + classes.size());
+            return o.toString();
+        } catch (Throwable t) {
+            LogStore.get().log(TAG, "class-find fail: " + t);
             return err(t.toString());
         }
     }

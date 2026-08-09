@@ -46,12 +46,19 @@ public class NetProbe {
      *   若某项被用户关闭，这里跳过不装。 */
     public void install(String phase) {
         DebugLog.get().log("Net", "install(" + phase + ") 开始");
-        if (Config.get().sslBypass) installSslBypass(phase);
+        if (Config.get().sslBypass) {
+            installSslBypass(phase);
+            // v1.38 P0-1: hooker just_trust_me 清单核对——补 12 个 SSL 绕过点
+            //   （NetworkSecurityTrustManager/TrustManagerImpl/OkHostnameVerifier/WebView/Cronet/xutils/httpclient 等）
+            installSslBypassExt(phase);
+        }
         if (Config.get().okhttpCapture) installOkHttpCapture(phase);
         if (Config.get().urlCapture) installUrlCapture(phase);
         if (Config.get().dnsCapture) installDnsCapture(phase);
         if (Config.get().tcpCapture) installSocketCapture(phase);
         if (Config.get().webViewCapture) installWebViewCapture(phase);
+        // v1.38 P2-7: WebView debug 开关（hooker webview_enable_debug 借鉴）
+        if (Config.get().webViewDebug) installWebViewDebug(phase);
         // v1.9: TLS 明文抓包 + 万能连接点 + Cronet
         if (Config.get().tlsCapture) installTlsCapture(phase);
         if (Config.get().connectCapture) installConnectCapture(phase);
@@ -162,6 +169,299 @@ public class NetProbe {
         @Override public void checkServerTrusted(X509Certificate[] chain, String authType) { }
         @Override public X509Certificate[] getAcceptedIssuers() { return orig != null ? orig.getAcceptedIssuers() : new X509Certificate[0]; }
     }
+
+    // ================= v1.38 P0-1: hooker just_trust_me 清单补充 SSL 绕过 =================
+    // 覆盖现有 3 点之外的盲区：网络安全配置 pinning / Conscrypt TrustManagerImpl 重载 /
+    // OkHostnameVerifier / 老 okhttp / xutils / httpclient / WebView / Cronet / Platform.checkServerTrusted。
+    // 全部 try-catch：类/方法不存在（不同 ROM/库版本）时静默跳过，不拖垮 install。
+    private void installSslBypassExt(String phase) {
+        int ok = 0;
+
+        // 1. NetworkSecurityTrustManager.checkPins —— Android 网络安全配置（network_security_config）pinning
+        //    签名: List<X509Certificate> checkPins(X509Certificate[] chain, String hostname, String authType)
+        //    绕过：直接返回 null（不抛 CertificatePinException → pin 校验放行）
+        try {
+            Class<?> nstm = Class.forName("android.security.net.config.NetworkSecurityTrustManager");
+            Method m = nstm.getMethod("checkPins", X509Certificate[].class, String.class, String.class);
+            module.hook(m).intercept(chain -> {
+                if (!Config.get().sslBypass) return chain.proceed();
+                return null;
+            });
+            ok++;
+            LogStore.get().log(TAG, "[" + phase + "] hooked NetworkSecurityTrustManager.checkPins");
+        } catch (Throwable t) { }
+
+        // 2. com.android.org.conscrypt.TrustManagerImpl.checkServerTrusted (3 重载)
+        //    —— app 直接引用 TrustManagerImpl 类型时，X509TrustManager 接口 hook 覆盖不到这些重载
+        try {
+            Class<?> tmi = Class.forName("com.android.org.conscrypt.TrustManagerImpl");
+            for (Class<?> extra : new Class<?>[]{ javax.net.ssl.SSLSocket.class, javax.net.ssl.SSLEngine.class }) {
+                try {
+                    Method m = tmi.getMethod("checkServerTrusted", X509Certificate[].class, String.class, extra);
+                    module.hook(m).intercept(chain -> {
+                        if (!Config.get().sslBypass) return chain.proceed();
+                        return null;
+                    });
+                    ok++;
+                } catch (Throwable t) { }
+            }
+            try {
+                Method m = tmi.getMethod("checkServerTrusted", X509Certificate[].class, String.class);
+                module.hook(m).intercept(chain -> {
+                    if (!Config.get().sslBypass) return chain.proceed();
+                    return null;
+                });
+                ok++;
+            } catch (Throwable t) { }
+            LogStore.get().log(TAG, "[" + phase + "] hooked TrustManagerImpl.checkServerTrusted x3");
+        } catch (Throwable t) { }
+
+        // 3. TrustManagerImpl.checkTrusted (2 签名) / checkTrustedRecursive —— 链验证内部入口
+        try {
+            Class<?> tmi = Class.forName("com.android.org.conscrypt.TrustManagerImpl");
+            try {
+                Method m = tmi.getDeclaredMethod("checkTrusted", X509Certificate[].class);
+                module.hook(m).intercept(chain -> {
+                    if (!Config.get().sslBypass) return chain.proceed();
+                    return null;
+                });
+                ok++;
+            } catch (Throwable t) { }
+            try {
+                Method m = tmi.getDeclaredMethod("checkTrusted", X509Certificate[].class, String.class);
+                module.hook(m).intercept(chain -> {
+                    if (!Config.get().sslBypass) return chain.proceed();
+                    return null;
+                });
+                ok++;
+            } catch (Throwable t) { }
+            try {
+                Method m = tmi.getDeclaredMethod("checkTrustedRecursive", X509Certificate[].class, java.util.Date.class, String.class, String.class, boolean.class, java.util.Set.class, java.util.Set.class);
+                module.hook(m).intercept(chain -> {
+                    if (!Config.get().sslBypass) return chain.proceed();
+                    return null;
+                });
+                ok++;
+            } catch (Throwable t) { }
+            LogStore.get().log(TAG, "[" + phase + "] hooked TrustManagerImpl.checkTrusted(+Recursive)");
+        } catch (Throwable t) { }
+
+        // 4. X509TrustManagerExtensions.checkServerTrusted —— 带 host 的扩展校验
+        //    签名: List<X509Certificate> checkServerTrusted(X509Certificate[] chain, String authType, String host)
+        try {
+            Class<?> xte = Class.forName("android.net.http.X509TrustManagerExtensions");
+            Method m = xte.getMethod("checkServerTrusted", X509Certificate[].class, String.class, String.class);
+            module.hook(m).intercept(chain -> {
+                if (!Config.get().sslBypass) return chain.proceed();
+                Object a0 = chain.getArg(0);
+                if (a0 instanceof X509Certificate[]) return java.util.Arrays.asList((X509Certificate[]) a0);
+                return null;
+            });
+            ok++;
+            LogStore.get().log(TAG, "[" + phase + "] hooked X509TrustManagerExtensions.checkServerTrusted");
+        } catch (Throwable t) { }
+
+        // 5. okhttp3.internal.tls.OkHostnameVerifier.verify —— 主机名校验（证书 CN/SAN 匹配域名）
+        //    签名: boolean verify(String hostname, SSLSession session) / boolean verify(String host, X509Certificate cert)
+        try {
+            Class<?> ohv = Class.forName("okhttp3.internal.tls.OkHostnameVerifier", false, appCl);
+            try {
+                Method m = ohv.getMethod("verify", String.class, javax.net.ssl.SSLSession.class);
+                module.hook(m).intercept(chain -> {
+                    if (!Config.get().sslBypass) return chain.proceed();
+                    return Boolean.TRUE;
+                });
+                ok++;
+            } catch (Throwable t) { }
+            try {
+                Method m = ohv.getMethod("verify", String.class, X509Certificate.class);
+                module.hook(m).intercept(chain -> {
+                    if (!Config.get().sslBypass) return chain.proceed();
+                    return Boolean.TRUE;
+                });
+                ok++;
+            } catch (Throwable t) { }
+            try {
+                Method m = ohv.getMethod("verify", X509Certificate.class);
+                module.hook(m).intercept(chain -> {
+                    if (!Config.get().sslBypass) return chain.proceed();
+                    return Boolean.TRUE;
+                });
+                ok++;
+            } catch (Throwable t) { }
+            if (ok > 0) LogStore.get().log(TAG, "[" + phase + "] hooked OkHostnameVerifier.verify");
+        } catch (Throwable t) { }
+
+        // 6. com.squareup.okhttp.OkHttpClient.setCertificatePinner —— 老 okhttp (2.x) 证书固定
+        try {
+            Class<?> ohc = Class.forName("com.squareup.okhttp.OkHttpClient", false, appCl);
+            Method m = ohc.getMethod("setCertificatePinner", Class.forName("com.squareup.okhttp.CertificatePinner", false, appCl));
+            module.hook(m).intercept(chain -> {
+                if (Config.get().sslBypass) {
+                    LogStore.get().log(TAG, "[SSL] old-okhttp setCertificatePinner intercepted (bypass)");
+                    return chain.getThisObject();
+                }
+                return chain.proceed();
+            });
+            ok++;
+            LogStore.get().log(TAG, "[" + phase + "] hooked squareup OkHttpClient.setCertificatePinner");
+        } catch (Throwable t) { }
+
+        // 7. xutils RequestParams.setSslSocketFactory / setHostnameVerifier —— 记日志（xutils 库）
+        try {
+            Class<?> rp = Class.forName("org.xutils.http.RequestParams", false, appCl);
+            try {
+                Method m = rp.getMethod("setSslSocketFactory", javax.net.ssl.SSLSocketFactory.class);
+                module.hook(m).intercept(chain -> {
+                    LogStore.get().log(TAG, "[SSL] xutils setSslSocketFactory -> trust-all (bypass)");
+                    return chain.getThisObject();
+                });
+                ok++;
+            } catch (Throwable t) { }
+            try {
+                Method m = rp.getMethod("setHostnameVerifier", javax.net.ssl.HostnameVerifier.class);
+                module.hook(m).intercept(chain -> {
+                    LogStore.get().log(TAG, "[SSL] xutils setHostnameVerifier -> allow-all (bypass)");
+                    return chain.getThisObject();
+                });
+                ok++;
+            } catch (Throwable t) { }
+        } catch (Throwable t) { }
+
+        // 8. httpclientandroidlib.AbstractVerifier.verify —— 老 Android HttpClient 主机名校验
+        //    签名: void verify(String host, SSLSocket ssl) / void verify(String host, String[] cns, String[] subjectAlts) / void verify(String host, X509Certificate cert)
+        try {
+            Class<?> av = Class.forName("ch.boye.httpclientandroidlib.conn.ssl.AbstractVerifier", false, appCl);
+            for (Class<?>[] sig : new Class<?>[][]{
+                    {String.class, javax.net.ssl.SSLSocket.class},
+                    {String.class, String[].class, String[].class},
+                    {String.class, X509Certificate.class}}) {
+                try {
+                    Method m = av.getMethod("verify", sig);
+                    module.hook(m).intercept(chain -> {
+                        if (!Config.get().sslBypass) return chain.proceed();
+                        return null; // 校验通过（void）
+                    });
+                    ok++;
+                } catch (Throwable t) { }
+            }
+            LogStore.get().log(TAG, "[" + phase + "] hooked AbstractVerifier.verify");
+        } catch (Throwable t) { }
+
+        // 9. WebViewClient.onReceivedSslError —— WebView SSL 错误放行
+        //    默认实现 cancel() 拒绝；拦截后调 handler.proceed() 放行（不执行原方法）
+        try {
+            Class<?> wvc = Class.forName("android.webkit.WebViewClient");
+            Class<?> handler = Class.forName("android.webkit.SslErrorHandler");
+            Class<?> err = Class.forName("android.webkit.SslError");
+            Method m = wvc.getMethod("onReceivedSslError", Class.forName("android.webkit.WebView"), handler, err);
+            module.hook(m).intercept(chain -> {
+                if (!Config.get().sslBypass) return chain.proceed();
+                Object h = chain.getArg(1);
+                if (h != null) {
+                    try { handler.getMethod("proceed").invoke(h); } catch (Throwable t) { }
+                }
+                return null;
+            });
+            ok++;
+            LogStore.get().log(TAG, "[" + phase + "] hooked WebViewClient.onReceivedSslError (proceed)");
+        } catch (Throwable t) { }
+
+        // 10. CronetEngine$Builder.addPublicKeyPins + enablePublicKeyPinningBypassForLocalTrustAnchors —— Cronet pinning
+        //     （标准 org.chromium + 字节 com.ttnet 变体都试）
+        for (String base : new String[]{"org.chromium.net", "com.ttnet.org.chromium.net"}) {
+            try {
+                Class<?> b = Class.forName(base + ".CronetEngine$Builder", false, appCl);
+                try {
+                    Method m = b.getMethod("addPublicKeyPins", String.class, java.util.Collection.class, boolean.class, java.util.Date.class);
+                    module.hook(m).intercept(chain -> {
+                        if (Config.get().sslBypass) {
+                            LogStore.get().log(TAG, "[SSL] Cronet addPublicKeyPins intercepted (bypass) host=" + chain.getArg(0));
+                        }
+                        return chain.getThisObject();
+                    });
+                    ok++;
+                } catch (Throwable t) { }
+                try {
+                    Method m = b.getMethod("enablePublicKeyPinningBypassForLocalTrustAnchors", boolean.class);
+                    module.hook(m).intercept(chain -> {
+                        if (Config.get().sslBypass) {
+                            LogStore.get().log(TAG, "[SSL] Cronet enablePinningBypass intercepted");
+                        }
+                        return chain.getThisObject();
+                    });
+                    ok++;
+                } catch (Throwable t) { }
+            } catch (Throwable t) { }
+        }
+        LogStore.get().log(TAG, "[" + phase + "] SSL bypass ext: " + ok + " hook points installed");
+
+        // 11. com.android.org.conscrypt.Platform.checkServerTrusted (4 重载) —— Conscrypt 底层校验入口
+        //     （SSLContext.init 已替换 TM，但部分库直接调 Platform.checkServerTrusted）
+        try {
+            Class<?> pf = Class.forName("com.android.org.conscrypt.Platform");
+            Class<?>[] extra = new Class<?>[]{
+                    Class.forName("com.android.org.conscrypt.AbstractConscryptSocket"),
+                    Class.forName("com.android.org.conscrypt.OpenSSLEngineImpl"),
+                    Class.forName("com.android.org.conscrypt.OpenSSLSocketImpl"),
+                    Class.forName("com.android.org.conscrypt.ConscryptEngine")};
+            int n = 0;
+            for (Class<?> e : extra) {
+                try {
+                    Method m = pf.getDeclaredMethod("checkServerTrusted", X509Certificate[].class, String.class, e);
+                    module.hook(m).intercept(chain -> {
+                        if (!Config.get().sslBypass) return chain.proceed();
+                        return null;
+                    });
+                    n++;
+                } catch (Throwable t) { }
+            }
+            if (n > 0) {
+                ok++;
+                LogStore.get().log(TAG, "[" + phase + "] hooked Platform.checkServerTrusted x" + n);
+            }
+        } catch (Throwable t) { }
+
+        LogStore.get().log(TAG, "[" + phase + "] SSL bypass ext total: " + ok + " (含子点，部分 ROM 无对应类属正常)");
+    }
+
+    // ================= v1.38 P2-7: WebView debug 开启（hooker webview_enable_debug 借鉴）=================
+    // WebView 构造后自动 setWebContentsDebuggingEnabled(true) —— Chrome DevTools 可调试 H5 页面
+    private void installWebViewDebug(String phase) {
+        try {
+            Class<?> wv = Class.forName("android.webkit.WebView");
+            for (Class<?>[] sig : new Class<?>[][]{
+                    {android.content.Context.class},
+                    {android.content.Context.class, android.util.AttributeSet.class},
+                    {android.content.Context.class, android.util.AttributeSet.class, int.class},
+                    {android.content.Context.class, android.util.AttributeSet.class, int.class, boolean.class}}) {
+                try {
+                    java.lang.reflect.Constructor<?> m = wv.getConstructor(sig);
+                    module.hook(m).intercept(chain -> {
+                        Object r = chain.proceed();
+                        if (Config.get().webViewDebug) {
+                            Object thiz = chain.getThisObject();
+                            if (thiz != null) {
+                                try {
+                                    wv.getMethod("setWebContentsDebuggingEnabled", boolean.class).invoke(null, true);
+                                    // 只在首次记录（WebView 常被大量构造）
+                                    if (!webViewDebugLogged) {
+                                        webViewDebugLogged = true;
+                                        LogStore.get().log(TAG, "[WebView] setWebContentsDebuggingEnabled(true) 已开启");
+                                    }
+                                } catch (Throwable t) { }
+                            }
+                        }
+                        return r;
+                    });
+                } catch (Throwable t) { }
+            }
+            LogStore.get().log(TAG, "[" + phase + "] hooked WebView.<init> (debug enabled)");
+        } catch (Throwable t) {
+            LogStore.get().log(TAG, "[" + phase + "] WebView debug hook fail: " + t);
+        }
+    }
+    private static volatile boolean webViewDebugLogged = false;
 
     // ================= DNS 解析记录（v1.2）=================
     private void installDnsCapture(String phase) {

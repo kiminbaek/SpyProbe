@@ -43,7 +43,8 @@ public class AntiDetectProbe {
         this.appCl = appCl;
     }
 
-    /** root 检测特征文件（fckvip 黑名单精简版） */
+    /** root 检测特征文件（fckvip 黑名单精简版 + v1.38 P1-6 hooker bypass_root_detect 清单扩充：
+     *   magisk 各路径 / KernelSU / SuperSU 安装目录 / Xposed 框架文件） */
     private static final String[] ROOT_FILES = {
             "/system/bin/su", "/system/xbin/su", "/sbin/su", "/su/bin/su",
             "/system/app/Superuser.apk", "/system/etc/init.d/99SuperSUDaemon",
@@ -52,6 +53,14 @@ public class AntiDetectProbe {
             "/system/bin/.ext/.su", "/vendor/bin/su", "/vendor/xbin/su",
             "/system/app/Magisk.apk", "/data/adb/magisk", "/sbin/magisk",
             "/system/bin/app_process_xposed",
+            // v1.38 P1-6 扩充
+            "/sbin/.magisk", "/system/bin/magisk", "/system/xbin/magisk",
+            "/data/adb/magisk.img", "/data/adb/magisk.db",
+            "/data/adb/ksu", "/data/adb/ksud", "/system/bin/ksud", "/system/xbin/ksud",
+            "/data/adb/kernelsu", "/data/adb/kerelsu",
+            "/vendor/etc/init.d/99SuperSUDaemon", "/system/app/SuperSU", "/system/app/MagiskManager",
+            "/system/framework/XposedBridge.jar", "/system/bin/app_process32_xposed", "/system/bin/app_process64_xposed",
+            "/data/app/com.topjohnwu.magisk", "/data/app/eu.chainfire.supersu",
     };
 
     /** Xposed 特征类名（loadClass 拦截）—— v1.31.1 P2-6: 精确匹配+子包边界，避免误伤框架自身/其他含子串类 */
@@ -126,6 +135,83 @@ public class AntiDetectProbe {
                             }
                             return r;
                         });
+            } catch (Throwable t) { }
+
+            // v1.38 P1-6: hooker bypass_root_detect 借鉴——File.listFiles() 过滤 root 特征文件
+            //   （App 常 list /system/bin 等目录找 su/magisk 可执行文件；exists 单独 hook 拦不住目录列举）
+            try {
+                module.hook(java.io.File.class.getMethod("listFiles"))
+                        .intercept((chain) -> {
+                            Object r = chain.proceed();
+                            if (!Config.get().antiRoot) return r;
+                            if (r instanceof java.io.File[]) {
+                                java.io.File[] arr = (java.io.File[]) r;
+                                java.util.List<java.io.File> kept = new java.util.ArrayList<java.io.File>();
+                                for (java.io.File f : arr) {
+                                    if (isRootFile(f.getPath())) {
+                                        LogStore.get().log(TAG, "[anti-root] File.listFiles 过滤 " + f.getPath());
+                                    } else {
+                                        kept.add(f);
+                                    }
+                                }
+                                return kept.toArray(new java.io.File[0]);
+                            }
+                            return r;
+                        });
+            } catch (Throwable t) { }
+            // File.listFiles(FileFilter) / listFiles(FilenameFilter) —— 带过滤器的列举
+            try {
+                module.hook(java.io.File.class.getMethod("listFiles", java.io.FileFilter.class))
+                        .intercept((chain) -> {
+                            Object r = chain.proceed();
+                            if (!Config.get().antiRoot) return r;
+                            if (r instanceof java.io.File[]) {
+                                java.io.File[] arr = (java.io.File[]) r;
+                                java.util.List<java.io.File> kept = new java.util.ArrayList<java.io.File>();
+                                for (java.io.File f : arr) {
+                                    if (isRootFile(f.getPath())) {
+                                        LogStore.get().log(TAG, "[anti-root] File.listFiles(filter) 过滤 " + f.getPath());
+                                    } else {
+                                        kept.add(f);
+                                    }
+                                }
+                                return kept.toArray(new java.io.File[0]);
+                            }
+                            return r;
+                        });
+            } catch (Throwable t) { }
+
+            // v1.38 P1-6: File.canRead() / canExecute() —— root 特征文件不可读/不可执行
+            try {
+                module.hook(java.io.File.class.getMethod("canRead"))
+                        .intercept((chain) -> {
+                            if (!Config.get().antiRoot) return chain.proceed();
+                            Object thiz = chain.getThisObject();
+                            if (thiz instanceof java.io.File && isRootFile(((java.io.File) thiz).getPath())) {
+                                return Boolean.FALSE;
+                            }
+                            return chain.proceed();
+                        });
+                module.hook(java.io.File.class.getMethod("canExecute"))
+                        .intercept((chain) -> {
+                            if (!Config.get().antiRoot) return chain.proceed();
+                            Object thiz = chain.getThisObject();
+                            if (thiz instanceof java.io.File && isRootFile(((java.io.File) thiz).getPath())) {
+                                return Boolean.FALSE;
+                            }
+                            return chain.proceed();
+                        });
+                LogStore.get().log(TAG, "[anti-root] hooked File.listFiles/canRead/canExecute (v1.38 P1-6)");
+            } catch (Throwable t) { }
+
+            // v1.38 P1-6: Debug.isDebuggerConnected() -> false —— 防调试器检测（常见 root 检测前置项）
+            try {
+                module.hook(android.os.Debug.class.getMethod("isDebuggerConnected"))
+                        .intercept((chain) -> {
+                            if (!Config.get().antiRoot) return chain.proceed();
+                            return Boolean.FALSE;
+                        });
+                LogStore.get().log(TAG, "[anti-root] hooked Debug.isDebuggerConnected (v1.38 P1-6)");
             } catch (Throwable t) { }
 
             // Runtime.exec(String) / exec(String[]) —— 拦截 su / magisk 命令
@@ -266,6 +352,7 @@ public class AntiDetectProbe {
             } catch (Throwable t) { }
 
             // BufferedReader.readLine() —— 净化包含 XposedBridge.jar 的输出（fckvip 26 号 hook）
+            // v1.38 P1-6: 净化扩展——su/magisk/ksu 可执行输出（ps/which 结果）也拦
             try {
                 module.hook(BufferedReader.class.getMethod("readLine"))
                         .intercept((chain) -> {
@@ -274,7 +361,11 @@ public class AntiDetectProbe {
                             if (r instanceof String) {
                                 String s = (String) r;
                                 if (s.contains("XposedBridge.jar") || s.contains("libxposed")
-                                        || s.contains("lspd") || s.contains("magisk")) {
+                                        || s.contains("lspd") || s.contains("magisk")
+                                        || s.contains("KernelSU") || s.contains("ksud")
+                                        || s.contains("/system/bin/su") || s.contains("/system/xbin/su")
+                                        || s.contains("/sbin/su") || s.contains("Superuser.apk")
+                                        || s.contains("which su") || s.equalsIgnoreCase("su")) {
                                     return "";
                                 }
                             }

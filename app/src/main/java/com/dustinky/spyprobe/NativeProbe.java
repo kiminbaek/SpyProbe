@@ -106,6 +106,24 @@ public class NativeProbe {
         }
     }
 
+    /**
+     * v1.38 P0-3: native SSL keylog 回调（hooker ssl_log.js 借鉴）
+     *
+     * BoringSSL SSL_CTX_set_keylog_callback 输出：`CLIENT_RANDOM <64hex> <96hex master_secret>`
+     * 配合抓包（native hex 或外部 pcap）可还原 TLS 会话明文——Wireshark 直接导入 keylog 文件。
+     * 开关 Config.keylogCapture（默认关，防刷屏：每次 TLS 握手 1 行）。
+     */
+    @SuppressWarnings("unused")
+    private static void nativeKeylog(String line) {
+        try {
+            if (!Config.get().keylogCapture) return;
+            if (line != null && !line.isEmpty()) {
+                LogStore.get().log(TAG, "[KeyLog] " + line);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
     /** libc / SSL 数据：id=socket fd 或 ssl 指针；isWrite=true 上行；isSsl=true TLS 解密明文 */
     @SuppressWarnings("unused")
     private static boolean onNativeData(long id, boolean isWrite, ByteBuffer buf, String socketInfo, String stack, boolean isSsl) {

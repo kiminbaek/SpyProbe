@@ -549,6 +549,12 @@ public class SpyServer {
                     String r = dexKit != null ? dexKit.findMethods(str) : "{\"ok\":false,\"error\":\"dexkit null\"}";
                     return r;
                 }
+                case "/api/classfind": { // v1.38 P2-8: 类名模糊搜索 → 自动生成 hook 清单
+                    JSONObject c = new JSONObject(body);
+                    String pat = c.optString("pattern", "");
+                    String r = dexKit != null ? dexKit.findClassMethods(pat) : "{\"ok\":false,\"error\":\"dexkit null\"}";
+                    return r;
+                }
                 case "/api/dexclose": { // v1.9: 释放 DexKit bridge
                     if (dexKit != null) dexKit.close();
                     JSONObject o = new JSONObject();

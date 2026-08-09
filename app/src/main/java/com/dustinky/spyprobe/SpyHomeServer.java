@@ -29,6 +29,9 @@ public class SpyHomeServer {
     static final int PORT = 9900;
     static final int MAX_BODY = 1 << 20; // 请求体上限 1MB
 
+    // v1.38 P2-9: 服务启动时间戳（/api/status uptime 用）
+    private static final long START_TS = System.currentTimeMillis();
+
     private volatile ServerSocket serverSocket;
     private volatile Thread acceptThread;
     // v1.33: 会话识别——目标进程每启动一次 session 都不同；变化时 LogPersister 开新会话文件
@@ -187,6 +190,53 @@ public class SpyHomeServer {
                     JSONObject o = new JSONObject();
                     o.put("ok", true);
                     o.put("accepted", n);
+                    return o.toString();
+                }
+                // v1.38 P2-9: hooker webserver 思路——探测结果 HTTP 化补充
+                case "/api/status": {
+                    // 实时状态：版本/运行时长/日志条数/最近 seq/最后一条时间
+                    JSONObject o = new JSONObject();
+                    o.put("ok", true);
+                    o.put("v", BuildConfig.VERSION_NAME);
+                    o.put("uptimeMs", System.currentTimeMillis() - START_TS);
+                    o.put("logCount", LogStore.get().size());
+                    o.put("lastSeq", LogStore.get().lastSeq());
+                    java.util.List<LogStore.Entry> all = LogStore.get().all();
+                    o.put("lastTime", all.isEmpty() ? "" : all.get(all.size() - 1).time);
+                    return o.toString();
+                }
+                case "/api/logs": {
+                    // 最近 N 条日志（可选 tag 过滤）；URL: /api/logs?limit=100&tag=SpyProbe
+                    int limit = 200;
+                    String tagFilter = "";
+                    String q = path.contains("?") ? path.substring(path.indexOf('?') + 1) : "";
+                    for (String kv : q.split("&")) {
+                        String[] pair = kv.split("=");
+                        if (pair.length != 2) continue;
+                        if ("limit".equals(pair[0])) {
+                            try { limit = Math.max(1, Math.min(Integer.parseInt(pair[1]), 2000)); } catch (Throwable t) { }
+                        } else if ("tag".equals(pair[0])) {
+                            tagFilter = pair[1];
+                        }
+                    }
+                    java.util.List<LogStore.Entry> all = LogStore.get().all();
+                    JSONArray arr = new JSONArray();
+                    int from = Math.max(0, all.size() - limit);
+                    for (int i = from; i < all.size(); i++) {
+                        LogStore.Entry e = all.get(i);
+                        if (!tagFilter.isEmpty() && !e.tag.contains(tagFilter)) continue;
+                        JSONObject eo = new JSONObject();
+                        eo.put("seq", e.seq);
+                        eo.put("t", e.time);
+                        eo.put("tag", e.tag);
+                        eo.put("m", e.msg);
+                        arr.put(eo);
+                    }
+                    JSONObject o = new JSONObject();
+                    o.put("ok", true);
+                    o.put("count", arr.length());
+                    o.put("total", all.size());
+                    o.put("entries", arr);
                     return o.toString();
                 }
                 case "/api/config": {

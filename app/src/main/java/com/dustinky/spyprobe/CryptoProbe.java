@@ -309,10 +309,199 @@ public class CryptoProbe {
                 });
             } catch (Throwable t) { }
 
-            LogStore.get().log(TAG, "[" + phase + "] hooked Cipher (getInstance/init/update/doFinal, v1.14 实例跟踪 + v1.15 补2重载)");
+            // v1.38 P1-5: hooker cipher.js/hook_encryption_algo.js 借鉴——补 SecretKeySpec/DESKeySpec/Mac/SecureRandom
+            installExt(phase);
+
+            LogStore.get().log(TAG, "[" + phase + "] hooked Cipher (getInstance/init/update/doFinal, v1.14 实例跟踪 + v1.15 补2重载 + v1.38 扩展)");
         } catch (Throwable t) {
             LogStore.get().log(TAG, "[" + phase + "] Cipher hook fail: " + t);
         }
+    }
+
+    /**
+     * v1.38 P1-5: 加密算法追踪扩展（hooker cipher.js / hook_encryption_algo.js 借鉴）
+     *   - SecretKeySpec/DESKeySpec 构造：密钥材料构建点（对称加密密钥源头）
+     *   - Mac.getInstance/init/update/doFinal：HMAC/摘要 MAC 计算追踪
+     *   - SecureRandom.setSeed：自定义种子（可预测随机数线索）
+     */
+    private void installExt(String phase) {
+        // SecretKeySpec.<init>(byte[], String) / (byte[], int, String) —— 对称密钥材料
+        try {
+            Class<?> sks = javax.crypto.spec.SecretKeySpec.class;
+            java.lang.reflect.Constructor<?> m1 = sks.getConstructor(byte[].class, String.class);
+            module.hook(m1).intercept(chain -> {
+                Object r = chain.proceed();
+                if (Config.get().cryptoCapture) {
+                    try {
+                        Object k = chain.getArg(0);
+                        if (k instanceof byte[]) {
+                            byte[] kb = (byte[]) k;
+                            LogStore.get().log(TAG, "[SecretKeySpec] algo=" + chain.getArg(1)
+                                    + " key=" + MethodProbe.hex(kb, Math.min(kb.length, 128))
+                                    + (kb.length > 128 ? "...(" + kb.length + "B)" : "(" + kb.length + "B)"));
+                        }
+                    } catch (Throwable t) { }
+                }
+                return r;
+            });
+            java.lang.reflect.Constructor<?> m2 = sks.getConstructor(byte[].class, int.class, String.class);
+            module.hook(m2).intercept(chain -> {
+                Object r = chain.proceed();
+                if (Config.get().cryptoCapture) {
+                    try {
+                        Object k = chain.getArg(0);
+                        if (k instanceof byte[]) {
+                            byte[] kb = (byte[]) k;
+                            LogStore.get().log(TAG, "[SecretKeySpec] algo=" + chain.getArg(2) + " off=" + chain.getArg(1)
+                                    + " key=" + MethodProbe.hex(kb, Math.min(kb.length, 128))
+                                    + (kb.length > 128 ? "...(" + kb.length + "B)" : "(" + kb.length + "B)"));
+                        }
+                    } catch (Throwable t) { }
+                }
+                return r;
+            });
+        } catch (Throwable t) { }
+
+        // DESKeySpec.<init>(byte[]) / (byte[], int) —— 老 DES 密钥
+        try {
+            Class<?> dks = javax.crypto.spec.DESKeySpec.class;
+            java.lang.reflect.Constructor<?> m1 = dks.getConstructor(byte[].class);
+            module.hook(m1).intercept(chain -> {
+                Object r = chain.proceed();
+                if (Config.get().cryptoCapture) {
+                    try {
+                        Object k = chain.getArg(0);
+                        if (k instanceof byte[]) {
+                            byte[] kb = (byte[]) k;
+                            LogStore.get().log(TAG, "[DESKeySpec] key=" + MethodProbe.hex(kb, Math.min(kb.length, 128)));
+                        }
+                    } catch (Throwable t) { }
+                }
+                return r;
+            });
+            java.lang.reflect.Constructor<?> m2 = dks.getConstructor(byte[].class, int.class);
+            module.hook(m2).intercept(chain -> {
+                Object r = chain.proceed();
+                if (Config.get().cryptoCapture) {
+                    try {
+                        Object k = chain.getArg(0);
+                        if (k instanceof byte[]) {
+                            byte[] kb = (byte[]) k;
+                            LogStore.get().log(TAG, "[DESKeySpec] off=" + chain.getArg(1)
+                                    + " key=" + MethodProbe.hex(kb, Math.min(kb.length, 128)));
+                        }
+                    } catch (Throwable t) { }
+                }
+                return r;
+            });
+        } catch (Throwable t) { }
+
+        // Mac —— HMAC 计算（getInstance 记算法；init 记密钥；doFinal 汇总）
+        try {
+            Class<?> macCls = javax.crypto.Mac.class;
+            try {
+                Method gi = macCls.getMethod("getInstance", String.class);
+                module.hook(gi).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (Config.get().cryptoCapture && r != null) {
+                        LogStore.get().log(TAG, "[Mac.getInstance] " + chain.getArg(0));
+                    }
+                    return r;
+                });
+            } catch (Throwable t) { }
+            try {
+                Method init = macCls.getMethod("init", java.security.Key.class);
+                module.hook(init).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (Config.get().cryptoCapture) {
+                        try {
+                            Object key = chain.getArg(0);
+                            if (key instanceof java.security.Key) {
+                                java.security.Key k = (java.security.Key) key;
+                                String kh = "<" + k.getClass().getName() + ">";
+                                try {
+                                    byte[] enc = k.getEncoded();
+                                    if (enc != null) kh = MethodProbe.hex(enc, Math.min(enc.length, 128))
+                                            + (enc.length > 128 ? "...(" + enc.length + "B)" : "(" + enc.length + "B)");
+                                } catch (Throwable t2) { }
+                                LogStore.get().log(TAG, "[Mac.init] algo=" + k.getAlgorithm() + " key=" + kh);
+                            }
+                        } catch (Throwable t2) { }
+                    }
+                    return r;
+                });
+            } catch (Throwable t) { }
+            try {
+                Method up = macCls.getMethod("update", byte[].class);
+                module.hook(up).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (Config.get().cryptoCapture) {
+                        try {
+                            Object in = chain.getArg(0);
+                            if (in instanceof byte[]) {
+                                byte[] d = (byte[]) in;
+                                LogStore.get().log(TAG, "[Mac.update] " + MethodProbe.hex(d, Math.min(d.length, 64))
+                                        + (d.length > 64 ? "...(" + d.length + "B)" : "(" + d.length + "B)"));
+                            }
+                        } catch (Throwable t2) { }
+                    }
+                    return r;
+                });
+            } catch (Throwable t) { }
+            try {
+                Method df = macCls.getMethod("doFinal");
+                module.hook(df).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (Config.get().cryptoCapture) {
+                        try {
+                            if (r instanceof byte[]) {
+                                byte[] d = (byte[]) r;
+                                LogStore.get().log(TAG, "[Mac.doFinal] mac=" + MethodProbe.hex(d, Math.min(d.length, 64))
+                                        + (d.length > 64 ? "...(" + d.length + "B)" : "(" + d.length + "B)"));
+                                LogStore.get().log(TAG, "[stack]\n" + MethodProbe.stack(8));
+                            }
+                        } catch (Throwable t2) { }
+                    }
+                    return r;
+                });
+            } catch (Throwable t) { }
+            LogStore.get().log(TAG, "[" + phase + "] hooked Mac (getInstance/init/update/doFinal)");
+        } catch (Throwable t) { }
+
+        // SecureRandom.setSeed —— 自定义种子（可预测 RNG 线索）
+        try {
+            Class<?> sr = java.security.SecureRandom.class;
+            try {
+                Method m = sr.getMethod("setSeed", byte[].class);
+                module.hook(m).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (Config.get().cryptoCapture) {
+                        try {
+                            Object s = chain.getArg(0);
+                            if (s instanceof byte[]) {
+                                byte[] d = (byte[]) s;
+                                LogStore.get().log(TAG, "[SecureRandom.setSeed] " + MethodProbe.hex(d, Math.min(d.length, 64))
+                                        + (d.length > 64 ? "...(" + d.length + "B)" : "(" + d.length + "B)"));
+                            }
+                        } catch (Throwable t2) { }
+                    }
+                    return r;
+                });
+            } catch (Throwable t) { }
+            try {
+                Method m = sr.getMethod("setSeed", long.class);
+                module.hook(m).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (Config.get().cryptoCapture) {
+                        try {
+                            LogStore.get().log(TAG, "[SecureRandom.setSeed] " + chain.getArg(0));
+                        } catch (Throwable t2) { }
+                    }
+                    return r;
+                });
+            } catch (Throwable t) { }
+            LogStore.get().log(TAG, "[" + phase + "] hooked SecureRandom.setSeed");
+        } catch (Throwable t) { }
     }
 
     /** init 时把算法/模式/密钥/IV 记入实例上下文 */

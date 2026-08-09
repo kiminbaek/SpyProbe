@@ -57,6 +57,8 @@ public class ModuleMain extends XposedModule {
         DexKitProbe dexKit = new DexKitProbe(this, cl, pkg);
         // v1.13: 反检测 hook 集（隐藏 root/Xposed，防目标 App 检测）
         AntiDetectProbe anti = new AntiDetectProbe(this, cl);
+        // v1.38 P0-4: 双向认证证书 dump（hooker keystore_dump.js 借鉴，Config.keystoreCapture 开关）
+        KeystoreProbe keystore = new KeystoreProbe(this);
         // v1.22: 抓包开关持久化文件——目标 App 自身 data 目录（零 IPC，重启必恢复）
         // v1.25 P2-9: hook/hijack 规则持久化同目录文件（spyprobe_rules.json），弃用远程偏好
         // v1.31.6 P0-1: 早期 currentApplication() 可能为 null → cfgFile 可能解析为 null；
@@ -147,6 +149,8 @@ public class ModuleMain extends XposedModule {
                 // v1.23: 每个延迟探测单独 try-catch——任何一个装失败不能拖垮 server 启动
                 // v1.37 P0-2: 全部走 HookSafe（统一失败留痕到 LogStore + DebugLog）
                 HookSafe.install("ModuleMain", "crypto.install(late)", () -> crypto.install("late"));
+                // v1.38 P0-4: mTLS 证书 dump（开关 keystoreCapture；内部自己判断开关，关闭时零成本）
+                HookSafe.install("ModuleMain", "keystore.install(late)", () -> keystore.install("late"));
                 HookSafe.install("ModuleMain", "act.install(late)", () -> act.install("late"));
                 HookSafe.install("ModuleMain", "json.install(late)", () -> json.install("late"));
                 HookSafe.install("ModuleMain", "prefs.install(late)", () -> prefs.install("late"));

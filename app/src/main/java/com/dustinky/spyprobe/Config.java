@@ -47,6 +47,12 @@ public class Config {
     // v1.19: 全自动探测（类加载时自动 hook 该类全部方法，免手动扫描）
     public volatile boolean autoProbe = false;
     public volatile String autoProbeFilter = ""; // 关键字过滤（空 = 所有非系统类）
+    // v1.38 (hooker 借鉴): 双向认证证书 dump（KeyStore.getPrivateKey/getCertificate 记录，默认关防刷屏）
+    public volatile boolean keystoreCapture = false;
+    // v1.38 (hooker 借鉴 P2-7): WebView 构造后自动 setWebContentsDebuggingEnabled(true)
+    public volatile boolean webViewDebug = false;
+    // v1.38 (hooker 借鉴 P0-3): native SSL keylog（CLIENT_RANDOM/master_secret，Wireshark 可导，默认关防刷屏）
+    public volatile boolean keylogCapture = false;
 
     // ===== 方法探测 hook 列表（动态下发）=====
     public static class HookSpec {
@@ -520,6 +526,10 @@ public class Config {
             o.put("native", nativeCapture);
             o.put("autoProbe", autoProbe);
             o.put("autoProbeFilter", autoProbeFilter == null ? "" : autoProbeFilter);
+            // v1.38: 3 新字段（hooker 借鉴）
+            o.put("keystore", keystoreCapture);
+            o.put("webViewDebug", webViewDebug);
+            o.put("keylog", keylogCapture);
             o.put("debug", debugEnabled);
         } catch (Throwable t) {
             debugLog("toJsonObject FAIL: " + t);
@@ -557,6 +567,10 @@ public class Config {
         nativeCapture = o.optBoolean("native", nativeCapture);
         autoProbe = o.optBoolean("autoProbe", autoProbe);
         autoProbeFilter = o.optString("autoProbeFilter", autoProbeFilter);
+        // v1.38: 3 新字段（hooker 借鉴）
+        keystoreCapture = o.optBoolean("keystore", keystoreCapture);
+        webViewDebug = o.optBoolean("webViewDebug", webViewDebug);
+        keylogCapture = o.optBoolean("keylog", keylogCapture);
         debugEnabled = o.optBoolean("debug", debugEnabled);
     }
 

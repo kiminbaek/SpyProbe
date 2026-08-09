@@ -42,6 +42,8 @@ static jmethodID gCollectRespBodyMethod = nullptr;
 static jmethodID gOnConnClosedMethod    = nullptr;
 // v1.30.4: native→Java 日志桥（shadowhook_init / hook 结果写 LogStore，任意线程可调）
 static jmethodID gNativeLogMethod       = nullptr;
+// v1.38 P0-3: SSL keylog 回调 → Java NativeProbe.nativeKeylog(String)
+static jmethodID gNativeKeylogMethod    = nullptr;
 
 static pthread_key_t g_thread_key;
 thread_local bool g_is_in_hook = false;
@@ -531,6 +533,116 @@ static void native_log(const char* msg) {
     if (need_detach) gJvm->DetachCurrentThread();
 }
 
+// ================= v1.38 P0-2/P0-3: BoringSSL verify 绕过 + keylog =================
+// hooker just_trust_me.js (native 部分) + find_boringssl_custom_verify_func.js + ssl_log.js 借鉴
+// 符号在 libssl.so（BoringSSL），xhook PLT/GOT hook 对调用方生效（libconscrypt_jni 等 GOT 表项）
+typedef int (*ssl_verify_callback_t)(void *ssl, uint8_t *out_alert);   // ssl_verify_ok=0, invalid=1, retry=2
+typedef int (*type_SSL_CTX_set_custom_verify)(void *ctx, int mode, ssl_verify_callback_t cb);
+typedef void (*type_SSL_CTX_set_verify)(void *ctx, int mode, void *cb);
+typedef void (*type_SSL_set_verify)(void *ssl, int mode, void *cb);
+typedef int (*type_SSL_CTX_set_cert_verify_callback)(void *ctx, void *cb, void *arg);
+typedef long (*type_SSL_get_verify_result)(const void *ssl);
+typedef void (*ssl_keylog_callback_t)(const void *ssl, const char *line);
+typedef void (*type_SSL_CTX_set_keylog_callback)(void *ctx, ssl_keylog_callback_t cb);
+typedef void* (*type_SSL_get_SSL_CTX)(const void *ssl);
+typedef void* (*type_SSL_new)(void *ctx);
+
+static type_SSL_CTX_set_custom_verify orig_ctx_set_custom_verify = nullptr;
+static type_SSL_CTX_set_verify orig_ctx_set_verify = nullptr;
+static type_SSL_set_verify orig_ssl_set_verify = nullptr;
+static type_SSL_CTX_set_cert_verify_callback orig_ctx_set_cert_verify = nullptr;
+static type_SSL_get_verify_result orig_ssl_get_verify_result = nullptr;
+static type_SSL_CTX_set_keylog_callback orig_ctx_set_keylog = nullptr;
+static type_SSL_new orig_ssl_new = nullptr;
+// dlsym 拿真实函数指针（在 hook 回调里调用原函数用；走 GOT 会触发 xhook 递归）
+static type_SSL_get_SSL_CTX real_SSL_get_SSL_CTX = nullptr;
+static type_SSL_CTX_set_keylog_callback real_ctx_set_keylog = nullptr;
+
+// BoringSSL: ssl_verify_ok = 0
+static int always_verify_ok(void *ssl, uint8_t *out_alert) { return 0; }
+// SSL_CTX_set_cert_verify_callback 回调：返回 1 = 验证通过
+static int always_cert_ok(void *store, void *arg) { return 1; }
+
+// keylog 回调：CLIENT_RANDOM <64hex> <96hex> → Java NativeProbe.nativeKeylog(String)
+static void keylog_cb(const void *ssl, const char *line) {
+    if (line == nullptr) return;
+    if (gNativeRequestHookClass == nullptr || gNativeKeylogMethod == nullptr) return;
+    JNIEnv* env = nullptr;
+    bool need_detach = false;
+    jint attach = gJvm->GetEnv((void**)&env, JNI_VERSION_1_6);
+    if (attach == JNI_EDETACHED) {
+        if (gJvm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
+        need_detach = true;
+    }
+    if (env == nullptr) return;
+    jstring jline = env->NewStringUTF(line);
+    if (jline != nullptr) {
+        env->CallStaticVoidMethod(gNativeRequestHookClass, gNativeKeylogMethod, jline);
+        env->DeleteLocalRef(jline);
+    }
+    if (need_detach) gJvm->DetachCurrentThread();
+}
+
+// P0-2: 自定义 verify 回调替换——无论 app 设置什么 verify 回调，都换成总是通过
+static int hook_SSL_CTX_set_custom_verify(void *ctx, int mode, ssl_verify_callback_t cb) {
+    if (orig_ctx_set_custom_verify == nullptr) return -1;
+    if (g_is_in_hook) return orig_ctx_set_custom_verify(ctx, mode, cb);
+    ScopedHookGuard guard;
+    native_log("BoringSSL: SSL_CTX_set_custom_verify intercepted (verify -> always OK)");
+    return orig_ctx_set_custom_verify(ctx, mode, always_verify_ok);
+}
+// P0-2: verify mode 强制 SSL_VERIFY_NONE(0)
+static void hook_SSL_CTX_set_verify(void *ctx, int mode, void *cb) {
+    if (orig_ctx_set_verify == nullptr) return;
+    if (g_is_in_hook) { orig_ctx_set_verify(ctx, mode, cb); return; }
+    ScopedHookGuard guard;
+    native_log("BoringSSL: SSL_CTX_set_verify intercepted (mode -> SSL_VERIFY_NONE)");
+    orig_ctx_set_verify(ctx, 0, cb);
+}
+static void hook_SSL_set_verify(void *ssl, int mode, void *cb) {
+    if (orig_ssl_set_verify == nullptr) return;
+    if (g_is_in_hook) { orig_ssl_set_verify(ssl, mode, cb); return; }
+    ScopedHookGuard guard;
+    orig_ssl_set_verify(ssl, 0, cb);
+}
+// P0-2: cert verify callback 替换为总是返回 1
+static int hook_SSL_CTX_set_cert_verify_callback(void *ctx, void *cb, void *arg) {
+    if (orig_ctx_set_cert_verify == nullptr) return -1;
+    if (g_is_in_hook) return orig_ctx_set_cert_verify(ctx, cb, arg);
+    ScopedHookGuard guard;
+    native_log("BoringSSL: SSL_CTX_set_cert_verify_callback intercepted (always OK)");
+    return orig_ctx_set_cert_verify(ctx, (void*)always_cert_ok, arg);
+}
+// P0-2: 手动查 verify_result 强制返回 X509_V_OK(0)
+static long hook_SSL_get_verify_result(const void *ssl) {
+    if (orig_ssl_get_verify_result == nullptr) return 0;
+    if (g_is_in_hook) return orig_ssl_get_verify_result(ssl);
+    ScopedHookGuard guard;
+    return 0; // X509_V_OK
+}
+
+// P0-3: set_keylog_callback 拦截——无论 app 设置什么，都换成我们的 keylog 回调
+static void hook_SSL_CTX_set_keylog_callback(void *ctx, ssl_keylog_callback_t cb) {
+    if (orig_ctx_set_keylog == nullptr) return;
+    if (g_is_in_hook) { orig_ctx_set_keylog(ctx, cb); return; }
+    ScopedHookGuard guard;
+    native_log("BoringSSL: SSL_CTX_set_keylog_callback intercepted (keylog enabled)");
+    orig_ctx_set_keylog(ctx, keylog_cb);
+}
+// P0-3: SSL_new 时主动给 ctx 设置 keylog（即使 app 从不调用 set_keylog_callback）
+//   real_SSL_get_SSL_CTX / real_ctx_set_keylog 是 dlsym 真实指针，不触发 xhook 递归
+static void* hook_SSL_new(void *ctx) {
+    if (orig_ssl_new == nullptr) return nullptr;
+    if (g_is_in_hook) return orig_ssl_new(ctx);
+    ScopedHookGuard guard;
+    void* ssl = orig_ssl_new(ctx);
+    if (ssl != nullptr && real_SSL_get_SSL_CTX != nullptr && real_ctx_set_keylog != nullptr) {
+        void* sctx = real_SSL_get_SSL_CTX(ssl);
+        if (sctx != nullptr) real_ctx_set_keylog(sctx, keylog_cb);
+    }
+    return ssl;
+}
+
 // v1.34: shadowhook(inline) → xhook(PLT/GOT)。xhook 只改 GOT 表项、不改函数入口指令，
 // 完全免疫 Android 16 PAC（Pointer Authentication Code）导致的 pc=0 崩溃。
 // 注意 xhook 的 old_func 语义：register 后 xh_core 会在 refresh 时把 GOT 原值回填到 orig_func。
@@ -567,6 +679,11 @@ Java_com_dustinky_spyprobe_NativeProbe_initNativeHook(JNIEnv *env, jobject thiz,
     gCollectRespBodyMethod = env->GetStaticMethodID(clazz, "getCollectResponseBody", "()Z");
     gOnConnClosedMethod = env->GetStaticMethodID(clazz, "onConnectionClosed", "(JZ)V");
     gNativeLogMethod = env->GetStaticMethodID(clazz, "nativeLog", "(Ljava/lang/String;)V");
+    // v1.38 P0-3: keylog 回调方法
+    gNativeKeylogMethod = env->GetStaticMethodID(clazz, "nativeKeylog", "(Ljava/lang/String;)V");
+    if (gNativeKeylogMethod == nullptr) {
+        native_log("XH keylog: GetStaticMethodID(nativeKeylog) FAIL");
+    }
 
     if (enableNativeHook) {
         char buf[256];
@@ -591,6 +708,13 @@ Java_com_dustinky_spyprobe_NativeProbe_initNativeHook(JNIEnv *env, jobject thiz,
             native_log(buf);
             if (h != nullptr) dlclose(h);
         }
+        // v1.38 P0-3: keylog 需要的真实函数指针（dlsym 直接拿，hook 回调里调用不走 GOT → 不触发递归）
+        real_SSL_get_SSL_CTX = (type_SSL_get_SSL_CTX)dlsym(RTLD_DEFAULT, "SSL_get_SSL_CTX");
+        real_ctx_set_keylog = (type_SSL_CTX_set_keylog_callback)dlsym(RTLD_DEFAULT, "SSL_CTX_set_keylog_callback");
+        if (real_SSL_get_SSL_CTX == nullptr || real_ctx_set_keylog == nullptr) {
+            native_log("XH keylog: dlsym SSL_get_SSL_CTX/SSL_CTX_set_keylog_callback FAIL (libssl.so 未加载?)");
+        }
+
         // v1.34: xhook 按符号注册（对所有已加载 so 的 GOT 生效），lib_name 仅作日志标注
         hook_func("libc.so", "send", (void*)hook_send, (void**)&orig_send);
         hook_func("libc.so", "recv", (void*)hook_recv, (void**)&orig_recv);
@@ -613,6 +737,16 @@ Java_com_dustinky_spyprobe_NativeProbe_initNativeHook(JNIEnv *env, jobject thiz,
             hook_func(lib, "NativeCrypto_SSL_read", (void*)native_read_hooks[i], (void**)&g_ssl_hooks[i].orig_native_read);
             hook_func(lib, "NativeCrypto_SSL_free", (void*)native_free_hooks[i], (void**)&g_ssl_hooks[i].orig_native_free);
         }
+        // v1.38 P0-2: BoringSSL 自定义 verify 绕过（just_trust_me native 部分借鉴）
+        //   libssl.so 符号，对调用方 GOT 生效（libconscrypt_jni 等）；未加载时 xhook 自动补挂
+        hook_func("libssl.so", "SSL_CTX_set_custom_verify", (void*)hook_SSL_CTX_set_custom_verify, (void**)&orig_ctx_set_custom_verify);
+        hook_func("libssl.so", "SSL_CTX_set_verify", (void*)hook_SSL_CTX_set_verify, (void**)&orig_ctx_set_verify);
+        hook_func("libssl.so", "SSL_set_verify", (void*)hook_SSL_set_verify, (void**)&orig_ssl_set_verify);
+        hook_func("libssl.so", "SSL_CTX_set_cert_verify_callback", (void*)hook_SSL_CTX_set_cert_verify_callback, (void**)&orig_ctx_set_cert_verify);
+        hook_func("libssl.so", "SSL_get_verify_result", (void*)hook_SSL_get_verify_result, (void**)&orig_ssl_get_verify_result);
+        // v1.38 P0-3: SSL keylog（ssl_log.js 借鉴）——Wireshark 导入 CLIENT_RANDOM 还原 TLS 明文
+        hook_func("libssl.so", "SSL_CTX_set_keylog_callback", (void*)hook_SSL_CTX_set_keylog_callback, (void**)&orig_ctx_set_keylog);
+        hook_func("libssl.so", "SSL_new", (void*)hook_SSL_new, (void**)&orig_ssl_new);
 
         // 同步执行 GOT 改写（async=0 同步，确保返回时 hook 已生效）
         int xh_ret = xhook_refresh(0);
