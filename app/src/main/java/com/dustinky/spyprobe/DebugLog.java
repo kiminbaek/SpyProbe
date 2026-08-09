@@ -48,6 +48,7 @@ public class DebugLog {
 
     private volatile File file = null;      // files/spyprobe_debug.log
     private volatile boolean failed = false; // 文件写过但出错过 → 每条都尝试重开
+    private BufferedWriter writer = null;    // v1.31.1 P3-5: 持 writer 复用（此前每次 open/close）
 
     private DebugLog() { }
 
@@ -86,28 +87,44 @@ public class DebugLog {
         appendFile(full);
     }
 
-    /** 同步追加（直写，失败置 failed 下次重试） */
+    /** 同步追加（v1.31.1 P3-5: 持 writer 复用；256KB 滚动时关闭重建；失败关闭下次重开） */
     private void appendFile(String line) {
         File f = file;
         if (f == null) return;
         try {
             if (f.length() > MAX_FILE) {
                 // 滚动：删旧文件，从 0 开始（调试日志保留最近信息即可）
+                closeWriter();
                 boolean del = f.delete();
                 if (!del) { /* 删除失败继续写（append） */ }
             }
-            BufferedWriter w = new BufferedWriter(new OutputStreamWriter(
-                    new FileOutputStream(f, true), StandardCharsets.UTF_8));
+            BufferedWriter w = writer;
+            if (w == null) {
+                w = new BufferedWriter(new OutputStreamWriter(
+                        new FileOutputStream(f, true), StandardCharsets.UTF_8));
+                writer = w;
+            }
             w.write(line);
             w.newLine();
             w.flush();
-            w.close();
             failed = false;
         } catch (Throwable t) {
+            closeWriter(); // 写失败关闭，下次重开（避免持有坏 writer 一直写不进去）
             failed = true;
             try {
                 Log.e(TAG, "debug log file write fail: " + t);
             } catch (Throwable t2) { }
+        }
+    }
+
+    /** v1.31.1 P3-5: 关闭 writer（滚动/写失败时调用） */
+    private void closeWriter() {
+        BufferedWriter w = writer;
+        writer = null;
+        if (w != null) {
+            try {
+                w.close();
+            } catch (Throwable t) { }
         }
     }
 

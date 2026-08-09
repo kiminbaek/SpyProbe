@@ -6,8 +6,9 @@
     <!-- v1.7: 应用列表勾选需要（Android 11+ 查询其他已安装应用） -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
     <!-- v1.9: 导出 dex 到 Download 需要存储权限（Android 11+ 需用户授予"所有文件访问"；无权限自动 fallback 到 app 专属目录） -->
+    <!-- v1.31.1 P3-13: 移除 MANAGE_EXTERNAL_STORAGE（仅声明无运行时请求代码，且 Android 11+ 该权限需单独设置页授权；
+         实际导出走 DexKitProbe.dumpDex() 的 fallback 到 app 专属目录，删后无实际影响） -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
-    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
     <application
         android:label="@string/app_name"

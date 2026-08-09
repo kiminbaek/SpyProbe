@@ -51,6 +51,10 @@ public class SpyServer {
     private volatile ServerSocket serverSocket;
     private volatile Thread acceptThread;
     private volatile int actualPort = PORT; // v1.3: 实际绑定端口（多进程 app 时可能偏移）
+    // v1.31.1 P3-4: /api/ping 版本信息缓存（避免每连接反射 getPackageInfo；首次成功后缓存）
+    private volatile String cachedVersionName = null;
+    private volatile int cachedVersionCode = -1;
+    private volatile int cachedTargetSdk = -1;
 
     public SpyServer(NetProbe net, MethodProbe mth, ClassLoadProbe clsProbe, String pkg,
                      DexKitProbe dexKit, java.io.File cfgFile) {
@@ -178,21 +182,29 @@ public class SpyServer {
                     o.put("logCount", LogStore.get().size());
                     o.put("classCount", clsProbe.size());
                     // v1.2: app 版本信息（版本判断/加固识别用）ActivityThread 是 @hide，反射获取
-                    try {
-                        Class<?> at = Class.forName("android.app.ActivityThread");
-                        Object app = at.getMethod("currentApplication").invoke(null);
-                        if (app != null) {
-                            Object pm = app.getClass().getMethod("getPackageManager").invoke(app);
-                            if (pm != null) {
-                                android.content.pm.PackageInfo pi = ((android.content.pm.PackageManager) pm).getPackageInfo(pkg, 0);
-                                o.put("versionName", pi.versionName);
-                                o.put("versionCode", pi.versionCode);
-                                if (android.os.Build.VERSION.SDK_INT >= 28) {
-                                    o.put("targetSdk", pi.applicationInfo.targetSdkVersion);
+                    // v1.31.1 P3-4: 缓存版本信息（高频轮询下避免每连接反射 getPackageInfo）
+                    if (cachedVersionName == null) {
+                        try {
+                            Class<?> at = Class.forName("android.app.ActivityThread");
+                            Object app = at.getMethod("currentApplication").invoke(null);
+                            if (app != null) {
+                                Object pm = app.getClass().getMethod("getPackageManager").invoke(app);
+                                if (pm != null) {
+                                    android.content.pm.PackageInfo pi = ((android.content.pm.PackageManager) pm).getPackageInfo(pkg, 0);
+                                    cachedVersionName = pi.versionName;
+                                    cachedVersionCode = pi.versionCode;
+                                    if (android.os.Build.VERSION.SDK_INT >= 28) {
+                                        cachedTargetSdk = pi.applicationInfo.targetSdkVersion;
+                                    }
                                 }
                             }
-                        }
-                    } catch (Throwable t) { }
+                        } catch (Throwable t) { }
+                    }
+                    if (cachedVersionName != null) {
+                        o.put("versionName", cachedVersionName);
+                        o.put("versionCode", cachedVersionCode);
+                        if (cachedTargetSdk >= 0) o.put("targetSdk", cachedTargetSdk);
+                    }
                     return o.toString();
                 }
                 case "/api/logs": {
@@ -268,7 +280,8 @@ public class SpyServer {
                 }
                 case "/api/history": {
                     String day = getQueryParam(query, "day", "");
-                    int max = parseIntSafe(getQueryParam(query, "max", "5000"), 5000);
+                    // v1.31.1 P3-3: max 加下限 clamp（手输 max=0 会读全部文件）
+                    int max = Math.max(1, parseIntSafe(getQueryParam(query, "max", "5000"), 5000));
                     List<LogPersister.Entry> entries = LogPersister.get().readDay(day, max);
                     JSONArray arr = new JSONArray();
                     for (LogPersister.Entry e : entries) {

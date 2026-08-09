@@ -90,9 +90,11 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             globalCfg = g
             val r = withContext(Dispatchers.IO) { vm.api.fetchConfig() }
             remoteCfg = r
+            loading = false
+            // v1.31.1 P3-14: loading 结束后按「当前」cfgLevel/targetPkg 加载 displayCfg
+            //   （此前 loading 期间切 Tab，LaunchedEffect 被跳过，displayCfg 短暂显示全局配置）
             displayCfg = if (cfgLevel == 0) g
             else withContext(Dispatchers.IO) { vm.loadAppConfig(targetPkg) }
-            loading = false
         }
     }
 

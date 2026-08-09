@@ -101,9 +101,6 @@ object RootLogReader {
         return suExec(cmd) != null
     }
 
-    /** 删除结果是否为"命令没执行成功"（su 无权限/无 root） */
-    fun isPermissionDenied(cmd: String): Boolean = cmd.contains("denied") || cmd.contains("not permitted")
-
     // ---------- 内部 ----------
     data class FileRef(val day: String, val part: Int, val path: String)
 
@@ -120,6 +117,9 @@ object RootLogReader {
             val err = BufferedReader(InputStreamReader(p.errorStream, StandardCharsets.UTF_8))
             val eb = StringBuilder()
             while (err.readLine().also { line = it } != null) eb.append(line).append('\n')
+            // v1.31.1 P3-2: 显式关闭流（此前只 destroy()，fd 泄漏；8s 超时 destroyForcibly 仅兜底）
+            try { err.close() } catch (t: Throwable) { }
+            try { r.close() } catch (t: Throwable) { }
             val code = p.exitValue()
             p.destroy()
             if (code != 0) {

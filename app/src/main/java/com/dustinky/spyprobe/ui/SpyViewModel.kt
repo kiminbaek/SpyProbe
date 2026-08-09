@@ -328,7 +328,13 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // v1.31.1 P2-4: loadHistory 并发竞态——记录最近一次请求的 day，完成时丢弃过期结果
+    //   （连续点击两个日期卡片时，旧请求后完成会覆盖新请求的数据 → 界面显示与 selectedDay 不匹配）
+    @Volatile
+    private var latestHistoryDay: String? = null
+
     fun loadHistory(day: String) {
+        latestHistoryDay = day
         viewModelScope.launch {
             _historyLoading.value = true
             com.dustinky.spyprobe.util.UiLog.log("loadHistory: day=$day mode=${if (_rootMode.value) "root" else "http"}")
@@ -341,6 +347,11 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     api.history(day, 10000)
                 }
+            }
+            // 过期请求丢弃（期间用户又点了别的日期）
+            if (latestHistoryDay != day) {
+                com.dustinky.spyprobe.util.UiLog.log("loadHistory: day=$day 过期结果丢弃（当前请求 day=$latestHistoryDay）")
+                return@launch
             }
             _historyLogs.value = logs?.mapIndexed { i, it -> Pair(i.toLong() + 1, it.display()) }
                 ?: emptyList()

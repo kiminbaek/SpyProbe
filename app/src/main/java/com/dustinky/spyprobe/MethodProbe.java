@@ -383,6 +383,9 @@ public class MethodProbe {
 
         // v1.14: 记录模式待记返回值（proceed 后由调用方记录）
         final Config.HijackRule[] recordRule = new Config.HijackRule[1];
+        // v1.31.1 P3-11: MODE_PARAM 改了 args 后需显式 proceed(args.toArray())
+        //   （此前走无参 proceed()，依赖 libxposed 用当前 args 执行——语义无法 100% 确认，防御性显式传参）
+        final boolean[] paramModified = new boolean[1];
 
         // v1.4/v1.13/v1.14: hook 规则（7 模式：返回值/参数值/拦截执行/静态变量/记录参数/记录返回值/记录两者）
         try {
@@ -411,6 +414,7 @@ public class MethodProbe {
                             LogStore.get().log(TAG, "[RULE:param] " + m.getDeclaringClass().getName() + "." + m.getName()
                                     + "(" + joinParams(m.getParameterTypes()) + ") 改参数: " + rule.paramValue);
                             applyParamValues(args, rule.paramValue);
+                            paramModified[0] = true;
                             // 参数修改后继续执行原方法
                             break;
                         }
@@ -501,7 +505,8 @@ public class MethodProbe {
             } catch (Throwable t) { }
         }
 
-        Object result = chain.proceed();
+        // v1.31.1 P3-11: MODE_PARAM 改参后显式传 args 执行原方法（防御性，语义明确）
+        Object result = paramModified[0] ? chain.proceed(args.toArray()) : chain.proceed();
         try {
             LogStore.get().log(TAG, "[return] " + str(result, detail ? 300 : 100));
         } catch (Throwable t) { }

@@ -54,7 +54,7 @@ public class AntiDetectProbe {
             "/system/bin/app_process_xposed",
     };
 
-    /** Xposed 特征类名（loadClass 拦截） */
+    /** Xposed 特征类名（loadClass 拦截）—— v1.31.1 P2-6: 精确匹配+子包边界，避免误伤框架自身/其他含子串类 */
     private static final Set<String> XPOSED_CLASSES = new HashSet<String>(Arrays.asList(
             "de.robv.android.xposed.XposedBridge",
             "de.robv.android.xposed.XposedHelpers",
@@ -94,6 +94,7 @@ public class AntiDetectProbe {
             } catch (Throwable t) { }
 
             // File(String) 构造器 —— 构造 root 特征文件路径时拦截（fckvip 10000 号 hook）
+            // v1.31.1 P3-8: 改 path 时同步改 pathBytes（File 内部字段，不一致会导致 equals/hashCode 与 getPath 矛盾）
             try {
                 module.hook(java.io.File.class.getConstructor(String.class))
                         .intercept((chain) -> {
@@ -105,10 +106,16 @@ public class AntiDetectProbe {
                                 if (isRootFile(path)) {
                                     LogStore.get().log(TAG, "[anti-root] File构造(" + path + ") 已拦截");
                                     // 把路径换成无害路径（防后续 exists 命中）
+                                    String fake = "/nonexistent/" + path.hashCode();
                                     try {
                                         java.lang.reflect.Field f = java.io.File.class.getDeclaredField("path");
                                         f.setAccessible(true);
-                                        f.set(thiz, "/nonexistent/" + path.hashCode());
+                                        f.set(thiz, fake);
+                                    } catch (Throwable t2) { }
+                                    try {
+                                        java.lang.reflect.Field fb = java.io.File.class.getDeclaredField("pathBytes");
+                                        fb.setAccessible(true);
+                                        fb.set(thiz, fake.getBytes(java.nio.charset.StandardCharsets.UTF_8));
                                     } catch (Throwable t2) { }
                                 }
                             }
@@ -336,11 +343,13 @@ public class AntiDetectProbe {
         return false;
     }
 
+    /** v1.31.1 P2-6: 精确匹配 + 子包边界（"io.github.libxposed" 只匹配自身或 . 子包，不匹配 "notio.github.libxposed" 等含子串类） */
     private static boolean containsXposed(String s) {
         if (s == null) return false;
         String lower = s.toLowerCase();
         for (String c : XPOSED_CLASSES) {
-            if (lower.contains(c.toLowerCase())) return true;
+            String cl = c.toLowerCase();
+            if (lower.equals(cl) || lower.startsWith(cl + ".")) return true;
         }
         return false;
     }

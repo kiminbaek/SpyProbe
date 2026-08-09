@@ -21,14 +21,12 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -54,6 +52,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -91,6 +92,95 @@ internal fun categoryOfLine(line: String): LogCategory = when {
 
 /** v1.31: 历史导航层级 */
 private enum class HistoryLevel { DAYS, LINES, DETAIL }
+
+/** v1.31.1 P3-12: 自定义 StarBorder 图标（material-icons-core 无此图标，extended 已移除） */
+private val StarBorderIcon: ImageVector by lazy {
+    ImageVector.Builder(
+        name = "StarBorder",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        path(fill = SolidColor(Color.Black)) {
+            moveTo(22f, 9.24f)
+            lineToRelative(-7.19f, -0.62f)
+            lineTo(12f, 2f)
+            lineTo(9.19f, 8.63f)
+            lineTo(2f, 9.24f)
+            lineToRelative(5.46f, 4.73f)
+            lineTo(5.82f, 21f)
+            lineTo(12f, 17.27f)
+            lineTo(18.18f, 21f)
+            lineToRelative(-1.63f, -7.03f)
+            lineTo(22f, 9.24f)
+            close()
+            moveTo(12f, 15.4f)
+            lineToRelative(-3.76f, 2.27f)
+            lineToRelative(1f, -4.28f)
+            lineToRelative(-3.32f, -2.88f)
+            lineToRelative(4.38f, -0.38f)
+            lineTo(12f, 6.1f)
+            lineToRelative(1.71f, 4.04f)
+            lineToRelative(4.38f, 0.38f)
+            lineToRelative(-3.32f, 2.88f)
+            lineToRelative(1f, 4.28f)
+            lineTo(12f, 15.4f)
+            close()
+        }
+    }.build()
+}
+
+/**
+ * v1.31.1 P3-12: 自定义 ContentCopy 图标（去掉 material-icons-extended 依赖，APK -5MB）。
+ * 标准 Material Icons content_copy 路径（24dp viewport），与原 extended 图标完全一致。
+ */
+private val CopyIcon: ImageVector by lazy {
+    ImageVector.Builder(
+        name = "ContentCopy",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        path(fill = SolidColor(Color.Black)) {
+            moveTo(19f, 3f)
+            horizontalLineTo(5f)
+            curveTo(3.9f, 3f, 3f, 3.9f, 3f, 5f)
+            verticalLineToRelative(14f)
+            curveTo(3f, 20.1f, 3.9f, 21f, 5f, 21f)
+            horizontalLineToRelative(14f)
+            curveTo(20.1f, 21f, 21f, 20.1f, 21f, 19f)
+            verticalLineTo(5f)
+            curveTo(21f, 3.9f, 20.1f, 3f, 19f, 3f)
+            close()
+            moveTo(19f, 19f)
+            horizontalLineTo(5f)
+            verticalLineTo(5f)
+            horizontalLineToRelative(14f)
+            verticalLineTo(19f)
+            close()
+            moveTo(17f, 7f)
+            horizontalLineTo(9f)
+            verticalLineToRelative(2f)
+            horizontalLineToRelative(8f)
+            verticalLineTo(7f)
+            close()
+            moveTo(17f, 11f)
+            horizontalLineTo(9f)
+            verticalLineToRelative(2f)
+            horizontalLineToRelative(8f)
+            verticalLineTo(11f)
+            close()
+            moveTo(9f, 15f)
+            horizontalLineToRelative(5f)
+            verticalLineToRelative(-2f)
+            horizontalLineTo(9f)
+            verticalLineTo(15f)
+            close()
+        }
+    }.build()
+}
 
 @Composable
 fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
@@ -168,11 +258,15 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
         ) {
             Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    // v1.31: 历史详情层级有返回键
+                    // v1.31: 历史详情层级有返回键（v1.31.1 P2-1: 按层级降级——DETAIL→LINES→DAYS，而非直接跳回卡片）
                     if (modeHistory && historyLevel != HistoryLevel.DAYS) {
                         IconButton(onClick = {
-                            historyLevel = HistoryLevel.DAYS
-                            selectedDay = null
+                            if (historyLevel == HistoryLevel.DETAIL) {
+                                historyLevel = HistoryLevel.LINES
+                            } else {
+                                historyLevel = HistoryLevel.DAYS
+                                selectedDay = null
+                            }
                         }, modifier = Modifier.size(30.dp)) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回",
                                 modifier = Modifier.size(18.dp))
@@ -236,7 +330,7 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                     }
                 }
 
-                // v1.31: 卡片列表层 —— 刷新/清空按钮；列表层 —— 刷新按钮
+                // v1.31: 卡片列表层 —— 刷新/清空全部按钮；列表层 —— 刷新/清空当天按钮（v1.31.1 P2-3 新增单天清空入口）
                 if (modeHistory && historyLevel == HistoryLevel.DAYS) {
                     Spacer(Modifier.height(8.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -261,8 +355,29 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                         LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                     }
                 }
-                if (modeHistory && historyLevel == HistoryLevel.LINES && historyLoading) {
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                if (modeHistory && historyLevel == HistoryLevel.LINES) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { selectedDay?.let { vm.loadHistory(it) } }, modifier = Modifier.size(30.dp)) {
+                            Icon(Icons.Filled.Refresh, contentDescription = "刷新当天",
+                                modifier = Modifier.size(16.dp))
+                        }
+                        IconButton(onClick = { showClearDialog = true }, modifier = Modifier.size(30.dp)) {
+                            Icon(Icons.Filled.Delete, contentDescription = "清空当天",
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(16.dp))
+                        }
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "点击日志行查看详情",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 10.sp
+                        )
+                    }
+                    if (historyLoading) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    }
                 }
 
                 Spacer(Modifier.height(8.dp))
@@ -458,7 +573,7 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier.size(44.dp)
                     ) {
-                        Icon(Icons.Filled.ContentCopy, contentDescription = "复制",
+                        Icon(CopyIcon, contentDescription = "复制",
                             modifier = Modifier.size(20.dp))
                     }
                     FloatingActionButton(
@@ -540,14 +655,18 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                         onClick = {
                             scope.launch {
                                 if (modeHistory && historyLevel == HistoryLevel.DAYS) {
-                                    // 卡片层导出整段历史（全部天）——Root 模式直接拼本地；HTTP 模式导出全部
-                                    val text = withContext(Dispatchers.IO) {
-                                        if (vm.rootMode.value) {
-                                            "Root 模式：请进入具体日期后导出（历史为按天文件）"
-                                        } else {
-                                            vm.api.export()
-                                        }
+                                    // 卡片层导出整段历史（全部天）——HTTP 模式导出全部
+                                    // v1.31.1 P2-2: Root 模式卡片层不能整段导出（历史为按天文件），直接提示并取消，
+                                    //   不再把提示文案写成 txt 分享（原逻辑误分享"提示文本.txt"）
+                                    if (vm.rootMode.value) {
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            "Root 模式：请进入具体日期后导出（历史为按天文件）",
+                                            android.widget.Toast.LENGTH_SHORT
+                                        ).show()
+                                        return@launch
                                     }
+                                    val text = withContext(Dispatchers.IO) { vm.api.export() }
                                     if (text.isNullOrEmpty()) {
                                         val why = if (text == null) vm.api.lastHttpError.ifEmpty { "HTTP 无响应" } else "日志内容为空"
                                         android.widget.Toast.makeText(context, "导出失败：$why", android.widget.Toast.LENGTH_LONG).show()
@@ -628,22 +747,37 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
         }
     }
 
-    // ===== v1.27: 清空历史确认弹窗（清当天 / 清全部 / 取消）=====
+    // ===== v1.27: 清空历史确认弹窗（v1.31.1 P2-3: 按层级提供 清当天/清全部）=====
     if (showClearDialog) {
+        val clearingDay = selectedDay // LINES 层 selectedDay 非空 → 清当天；DAYS 层 → 清全部
         AlertDialog(
             onDismissRequest = { showClearDialog = false },
             title = { Text("清空历史日志") },
-            text = { Text("已落盘的历史日志删除后不可恢复。\n\n当前层级：卡片列表（${historyDays.size} 天）") },
+            text = {
+                Text(
+                    if (clearingDay != null) "删除 $clearingDay 当天已落盘日志，不可恢复。"
+                    else "已落盘的历史日志删除后不可恢复。\n\n当前层级：卡片列表（${historyDays.size} 天）"
+                )
+            },
             confirmButton = {
                 TextButton(
                     onClick = {
                         showClearDialog = false
-                        vm.clearHistory(null) { ok ->
+                        vm.clearHistory(clearingDay) { ok ->
                             android.widget.Toast.makeText(context,
-                                if (ok) "已清空全部历史" else "清空失败（无权限/未连接）", android.widget.Toast.LENGTH_SHORT).show()
+                                if (ok) if (clearingDay != null) "已清空当天历史" else "已清空全部历史"
+                                else "清空失败（无权限/未连接）", android.widget.Toast.LENGTH_SHORT).show()
+                            if (ok) {
+                                // 清当天后回到卡片层刷新列表
+                                if (clearingDay != null) {
+                                    historyLevel = HistoryLevel.DAYS
+                                    selectedDay = null
+                                    vm.loadHistoryDays()
+                                }
+                            }
                         }
                     }
-                ) { Text("清空全部", color = MaterialTheme.colorScheme.error) }
+                ) { Text(if (clearingDay != null) "清空当天" else "清空全部", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = {
                 TextButton(onClick = { showClearDialog = false }) { Text("取消") }
@@ -691,7 +825,7 @@ private fun HistoryDayCard(
             }
             IconButton(onClick = onToggleFavorite, modifier = Modifier.size(32.dp)) {
                 Icon(
-                    if (favorite) Icons.Filled.Star else Icons.Filled.StarBorder,
+                    if (favorite) Icons.Filled.Star else StarBorderIcon,
                     contentDescription = if (favorite) "取消收藏" else "收藏",
                     tint = if (favorite) Color(0xFFFFB300) else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(20.dp)
