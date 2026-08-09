@@ -215,8 +215,12 @@ public class SpyServer {
                 }
                 case "/api/logs/all":
                 case "/api/export": {
+                    // v1.26 P0-3: 导出限制最近 3000 条（日志含 body 可能极大，全量拼接超时/OOM）
                     StringBuilder sb = new StringBuilder();
-                    for (LogStore.Entry e : LogStore.get().all()) {
+                    List<LogStore.Entry> all = LogStore.get().all();
+                    int from = Math.max(0, all.size() - 3000);
+                    for (int i = from; i < all.size(); i++) {
+                        LogStore.Entry e = all.get(i);
                         sb.append(e.time).append(" [").append(e.tag).append("] ").append(e.msg).append('\n');
                     }
                     JSONObject o = new JSONObject();

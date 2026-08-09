@@ -86,12 +86,12 @@ class SpyApi(private var port: Int = 9901) {
     fun baseUrl(): String = "http://127.0.0.1:$port"
 
     // ---------- HTTP ----------
-    fun httpGet(path: String): String? {
+    fun httpGet(path: String, readTimeoutMs: Int = 1500): String? {
         return try {
             val u = URL(baseUrl() + path)
             val c = u.openConnection() as HttpURLConnection
             c.connectTimeout = 1500
-            c.readTimeout = 1500
+            c.readTimeout = readTimeoutMs
             val r = BufferedReader(InputStreamReader(c.inputStream, StandardCharsets.UTF_8))
             val sb = StringBuilder()
             var line: String?
@@ -214,7 +214,15 @@ class SpyApi(private var port: Int = 9901) {
 
     fun clear(): String? = httpPost("/api/clear", "{}")
 
-    fun export(): String? = httpGet("/api/export")
+    fun export(): String? {
+        // v1.26 P0-1: 解析 /api/export JSON 的 text 字段（此前直接返回整个 JSON 字符串 → 分享出去是 JSON 乱码）
+        // v1.26 P0-2: 导出单独 20s 长超时（日志量大时 1500ms 必超时 → Toast "导出失败"）
+        val resp = httpGet("/api/export", 20000) ?: return null
+        return try {
+            val o = JSONObject(resp)
+            if (!o.optBoolean("ok", false)) null else o.optString("text")
+        } catch (t: Throwable) { null }
+    }
 
     fun scanClass(cls: String): ScanResult {
         val resp = try {
