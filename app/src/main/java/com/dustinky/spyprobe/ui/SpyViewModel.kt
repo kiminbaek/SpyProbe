@@ -214,6 +214,14 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
         val overrides = HashMap<String, Any>()
         effective.forEach { (k, v) -> if (global[k] != v) overrides[k] = v }
         saveAppConfig(pkg, overrides)
+        // v1.32: 权威配置同步到 SpyProbe 自己家（files/spyprobe_cfg.json）——
+        // 目标进程下次启动从 :9900 拉这份，UI 改的开关（含 native）重启后依然生效
+        try {
+            com.dustinky.spyprobe.Config.get().applyJson(JSONObject(effective as Map<*, *>).toString())
+            com.dustinky.spyprobe.Config.get().saveConfig(com.dustinky.spyprobe.Config.get().homeCfgFile())
+        } catch (t: Throwable) {
+            com.dustinky.spyprobe.util.UiLog.log("setEffectiveSwitch: save home cfg FAIL: $t")
+        }
         val pushed = pushConfig(pkg)
         com.dustinky.spyprobe.util.UiLog.log("setEffectiveSwitch: $key=$value pushed=$pushed")
         return pushed
@@ -306,7 +314,12 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
     fun loadHistoryDays() {
         viewModelScope.launch {
             val days = withContext(Dispatchers.IO) {
-                if (_rootMode.value) {
+                // v1.32: 第一优先 = SpyProbe 自己家（本地文件，免 root 免目标 App 在线）
+                val homeDays = com.dustinky.spyprobe.util.HomeLogReader.days(getApplication<Application>().filesDir)
+                if (homeDays.isNotEmpty()) {
+                    _historySource.value = "本地：SpyProbe 自己家（免 root）"
+                    homeDays
+                } else if (_rootMode.value) {
                     val pkg = _targetPkg.value
                     if (pkg.isEmpty()) {
                         _historySource.value = "Root 模式：请先在抓包页选择目标 App"
@@ -324,7 +337,7 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             _historyDays.value = days ?: emptyList()
-            com.dustinky.spyprobe.util.UiLog.log("loadHistoryDays: mode=${if (_rootMode.value) "root" else "http"} days=${_historyDays.value.size} src=${_historySource.value}")
+            com.dustinky.spyprobe.util.UiLog.log("loadHistoryDays: home/root/http days=${_historyDays.value.size} src=${_historySource.value}")
         }
     }
 
@@ -339,7 +352,12 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
             _historyLoading.value = true
             com.dustinky.spyprobe.util.UiLog.log("loadHistory: day=$day mode=${if (_rootMode.value) "root" else "http"}")
             val logs = withContext(Dispatchers.IO) {
-                if (_rootMode.value) {
+                // v1.32: 第一优先 = SpyProbe 自己家（本地文件，免 root）
+                val homeLogs = com.dustinky.spyprobe.util.HomeLogReader.readDay(getApplication<Application>().filesDir, day, 10000)
+                if (homeLogs.isNotEmpty()) {
+                    _historySource.value = "本地：SpyProbe 自己家（免 root）"
+                    homeLogs.map { com.dustinky.spyprobe.ui.LogEntry(it.time, it.tag, it.msg) }
+                } else if (_rootMode.value) {
                     val pkg = _targetPkg.value
                     if (pkg.isEmpty()) null
                     else com.dustinky.spyprobe.util.RootLogReader.readDay(pkg, day, 10000)
@@ -365,7 +383,10 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             com.dustinky.spyprobe.util.UiLog.log("clearHistory: day=${day ?: "(全部)"} mode=${if (_rootMode.value) "root" else "http"}")
             val ok = withContext(Dispatchers.IO) {
-                if (_rootMode.value) {
+                // v1.32: 第一优先清自己家（本地文件，免 root）；本地无文件再走 Root/HTTP
+                val homeCleared = com.dustinky.spyprobe.util.HomeLogReader.clear(getApplication<Application>().filesDir, day)
+                if (homeCleared) true
+                else if (_rootMode.value) {
                     val pkg = _targetPkg.value
                     if (pkg.isEmpty()) false
                     else com.dustinky.spyprobe.util.RootLogReader.clear(pkg, day)

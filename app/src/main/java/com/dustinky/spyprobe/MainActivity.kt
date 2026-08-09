@@ -15,6 +15,26 @@ class MainActivity : ComponentActivity() {
         // v1.30.1: UI 进程自己的调试日志（导出失败原因定位）
         com.dustinky.spyprobe.util.UiLog.init(applicationContext)
         com.dustinky.spyprobe.util.UiLog.log("MainActivity onCreate, v=${BuildConfig.VERSION_NAME}")
+        // v1.32: 数据面初始化 —— 日志/配置全部放 SpyProbe 自己家（不再依赖目标 App data）
+        // ① 日志落盘自己家：files/spyprobe_logs/（目标进程推回来的日志写这里，历史免 root）
+        try {
+            com.dustinky.spyprobe.LogPersister.get().init(applicationContext.filesDir)
+        } catch (t: Throwable) {
+            com.dustinky.spyprobe.util.UiLog.log("Home init LogPersister FAIL: $t")
+        }
+        // ② 权威配置自己家：files/spyprobe_cfg.json（目标进程启动时从 :9900 拉）
+        try {
+            com.dustinky.spyprobe.Config.get().loadConfig(
+                java.io.File(applicationContext.filesDir, "spyprobe_cfg.json"))
+        } catch (t: Throwable) {
+            com.dustinky.spyprobe.util.UiLog.log("Home init Config FAIL: $t")
+        }
+        // ③ 数据面 server（目标进程日志推送 / 配置拉取的接收端）
+        try {
+            com.dustinky.spyprobe.SpyHomeServer.get().start()
+        } catch (t: Throwable) {
+            com.dustinky.spyprobe.util.UiLog.log("Home server start FAIL: $t")
+        }
         enableEdgeToEdge()
         setContent {
             SpyProbeTheme {

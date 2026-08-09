@@ -66,11 +66,11 @@ public class ModuleMain extends XposedModule {
         // v1.29: 日志持久化初始化（DebugLog 三保险：内存环形 + 落盘 + logcat）
         // v1.29 修复：原实现 currentApplication() 返回 null 时静默跳过 → dir=null 一行不写盘且无痕迹。
         // 现在：立即尝试 + 延迟重试（1s/3s/10s），任何失败写 DebugLog。
-        DebugLog.get().init(appFilesDirOrNull());
-        initLogPersister("early", 0);
-        scheduleLogPersisterRetry(1000);
-        scheduleLogPersisterRetry(3000);
-        scheduleLogPersisterRetry(10000);
+        // v1.32【架构修正】：目标进程不再落盘目标 App data（用户拍板：日志/配置不能放别人家）——
+        // DebugLog 只走内存环形 + logcat；正式日志 LogStore 推回主进程 :9900（SpyProbe 自己家落盘）。
+        // 历史日志在主进程家 = 免 root、免目标 App 在线。DebugLog.init/LogPersister.init 只在主进程调用。
+        // v1.32: 日志推回主进程（SpyProbe 自己家）——目标进程不再落盘目标 App data（历史日志在主进程家，免 root）
+        LogStore.get().enablePushHome();
         SpyServer server = new SpyServer(net, mth, clsProbe, pkg, dexKit, cfgFile);
 
         // 立即装网络 hook
@@ -110,7 +110,23 @@ public class ModuleMain extends XposedModule {
                 Thread.sleep(500);
                 // v1.22: 恢复用户抓包开关——必须在所有延迟探测安装 + server.start() 之前，
                 // 否则 UI 连上 server 先拿到默认配置、probe 也按默认开关记录
-                Config.get().loadConfig(cfgFile);
+                // v1.32: 配置权威源 = 主进程（SpyProbe 自己家）：先 GET :9900/api/config（UI 在跑时用户最新设置），
+                // 失败再回退目标 App data cfgFile（v1.31.6 兜底），保证"关 native"在下次启动仍生效。
+                boolean homeLoaded = false;
+                try {
+                    String homeCfg = fetchHomeConfig();
+                    if (homeCfg != null && !homeCfg.isEmpty()) {
+                        Config.get().applyJson(homeCfg);
+                        homeLoaded = true;
+                        DebugLog.get().log("ModuleMain", "config loaded from HOME (:9900)");
+                    }
+                } catch (Throwable t) {
+                    DebugLog.get().log("ModuleMain", "fetch home config FAIL: " + t);
+                }
+                if (!homeLoaded) {
+                    Config.get().loadConfig(cfgFile);
+                    DebugLog.get().log("ModuleMain", "config loaded from target data (fallback)");
+                }
                 DebugLog.get().log("ModuleMain", "loadConfig done ssl=" + Config.get().sslBypass
                         + " native=" + Config.get().nativeCapture + " debug=" + Config.get().debugEnabled);
                 // v1.10: native 层抓包（libc + SSL_write/SSL_read + HTTP/2），越早装越好
@@ -194,6 +210,35 @@ public class ModuleMain extends XposedModule {
 
         log(Log.INFO, TAG, "SpyProbe ready for " + pkg);
         DebugLog.get().log("ModuleMain", "onPackageReady 流程编排完成 pkg=" + pkg);
+    }
+
+    /** v1.32: 从主进程（SpyProbe 自己家）拉权威配置；主进程不在线返回 null */
+    private static String fetchHomeConfig() {
+        try {
+            java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
+                    new java.net.URL("http://127.0.0.1:9900/api/config").openConnection();
+            conn.setConnectTimeout(600);
+            conn.setReadTimeout(800);
+            conn.setRequestMethod("GET");
+            int code = conn.getResponseCode();
+            if (code != 200) {
+                conn.disconnect();
+                return null;
+            }
+            java.io.InputStream is = conn.getInputStream();
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+            int n;
+            while ((n = is.read(buf)) > 0) bos.write(buf, 0, n);
+            is.close();
+            conn.disconnect();
+            String json = bos.toString("UTF-8");
+            // 校验是配置 JSON（含 native 字段）才返回，避免误拿非配置响应
+            if (json.contains("\"native\"")) return json;
+            return null;
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     /** v1.29: 反射拿目标 App filesDir；失败返回 null（不静默，写 DebugLog） */

@@ -527,6 +527,97 @@ public class Config {
         }
     }
 
+    // ===== v1.32: 主进程权威配置（SpyProbe 自己家）=====
+    // 目标进程启动时 GET 主进程 :9900/api/config 拿这份配置；UI 在跑则主进程家优先，
+    // 不在线则回退读目标 App data cfgFile（v1.31.6 兜底）。
+    // 注意：resolveCfgFile() 在主进程调用返回 SpyProbe 自己 files/spyprobe_cfg.json（currentApplication 不同进程），
+    // 在目标进程调用返回目标 App data 路径——同一方法天然分家。
+
+    /** 主进程自己家 cfg 路径（= resolveCfgFile：主进程调用时 currentApplication 是 SpyProbe 自己） */
+    public java.io.File homeCfgFile() {
+        return resolveCfgFile();
+    }
+
+    /** 序列化全部抓包开关（与 saveConfig 同字段集） */
+    public org.json.JSONObject toJson() {
+        org.json.JSONObject o = new org.json.JSONObject();
+        try {
+            o.put("sslBypass", sslBypass);
+            o.put("okhttp", okhttpCapture);
+            o.put("url", urlCapture);
+            o.put("dns", dnsCapture);
+            o.put("tcp", tcpCapture);
+            o.put("classes", classCapture);
+            o.put("classFilter", classFilter == null ? "" : classFilter);
+            o.put("classLogAll", classLogAll);
+            o.put("bodyLimit", bodyLimit);
+            o.put("logLimit", logLimit);
+            o.put("webView", webViewCapture);
+            o.put("prefs", prefsCapture);
+            o.put("sqlite", sqliteCapture);
+            o.put("urlBuild", urlBuildCapture);
+            o.put("logcat", logcatCapture);
+            o.put("crypto", cryptoCapture);
+            o.put("activity", activityCapture);
+            o.put("json", jsonCapture);
+            o.put("detailMode", detailMode);
+            o.put("env", envCapture);
+            o.put("tls", tlsCapture);
+            o.put("connect", connectCapture);
+            o.put("cronet", cronetCapture);
+            o.put("antiRoot", antiRoot);
+            o.put("antiXposed", antiXposed);
+            o.put("native", nativeCapture);
+            o.put("autoProbe", autoProbe);
+            o.put("autoProbeFilter", autoProbeFilter == null ? "" : autoProbeFilter);
+            o.put("debug", debugEnabled);
+        } catch (Throwable t) {
+            debugLog("toJson FAIL: " + t);
+        }
+        return o;
+    }
+
+    /** 应用远程配置 JSON（主进程 GET /api/config 拉取后调用；字段集与 loadConfig 一致） */
+    public synchronized void applyJson(String json) {
+        if (json == null || json.isEmpty()) return;
+        try {
+            org.json.JSONObject o = new org.json.JSONObject(json);
+            sslBypass = o.optBoolean("sslBypass", sslBypass);
+            okhttpCapture = o.optBoolean("okhttp", okhttpCapture);
+            urlCapture = o.optBoolean("url", urlCapture);
+            dnsCapture = o.optBoolean("dns", dnsCapture);
+            tcpCapture = o.optBoolean("tcp", tcpCapture);
+            classCapture = o.optBoolean("classes", classCapture);
+            classFilter = o.optString("classFilter", classFilter);
+            classLogAll = o.optBoolean("classLogAll", classLogAll);
+            bodyLimit = o.optInt("bodyLimit", bodyLimit);
+            logLimit = o.optInt("logLimit", logLimit);
+            webViewCapture = o.optBoolean("webView", webViewCapture);
+            prefsCapture = o.optBoolean("prefs", prefsCapture);
+            sqliteCapture = o.optBoolean("sqlite", sqliteCapture);
+            urlBuildCapture = o.optBoolean("urlBuild", urlBuildCapture);
+            logcatCapture = o.optBoolean("logcat", logcatCapture);
+            cryptoCapture = o.optBoolean("crypto", cryptoCapture);
+            activityCapture = o.optBoolean("activity", activityCapture);
+            jsonCapture = o.optBoolean("json", jsonCapture);
+            detailMode = o.optBoolean("detailMode", detailMode);
+            envCapture = o.optBoolean("env", envCapture);
+            tlsCapture = o.optBoolean("tls", tlsCapture);
+            connectCapture = o.optBoolean("connect", connectCapture);
+            cronetCapture = o.optBoolean("cronet", cronetCapture);
+            antiRoot = o.optBoolean("antiRoot", antiRoot);
+            antiXposed = o.optBoolean("antiXposed", antiXposed);
+            nativeCapture = o.optBoolean("native", nativeCapture);
+            autoProbe = o.optBoolean("autoProbe", autoProbe);
+            autoProbeFilter = o.optString("autoProbeFilter", autoProbeFilter);
+            debugEnabled = o.optBoolean("debug", debugEnabled);
+            debugLog("config applied from home: native=" + nativeCapture + " prefs=" + prefsCapture
+                    + " activity=" + activityCapture + " debug=" + debugEnabled);
+        } catch (Throwable t) {
+            debugLog("config apply FAIL: " + t);
+        }
+    }
+
     /** v1.22: 模块调试日志（仅 Config.debugEnabled=true 时写入 LogStore，带 [DBG] 前缀） */
     public static void debugLog(String msg) {
         try {
