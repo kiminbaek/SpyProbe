@@ -298,7 +298,8 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
             val ok = withContext(Dispatchers.IO) { api.clearHistory(day) }
             if (ok) {
                 loadHistoryDays()
-                if (day != null) _historyLogs.value = emptyList()
+                // v1.28 P1: day==null 清全部时也要清空展示列表（之前只清单天，界面残留旧数据）
+                _historyLogs.value = emptyList()
             }
             onDone(ok)
         }

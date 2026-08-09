@@ -121,6 +121,31 @@ public class CryptoProbe {
                     return r;
                 });
             } catch (Throwable t) { }
+            // v1.28 P1: init(int, Certificate) / init(int, Certificate, SecureRandom) —— 证书公钥初始化（RSA 验签/加密场景）
+            try {
+                Method init5 = Cipher.class.getMethod("init", int.class, java.security.cert.Certificate.class);
+                module.hook(init5).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (Config.get().cryptoCapture) {
+                        Object cert = chain.getArg(1);
+                        Object key = (cert instanceof java.security.cert.Certificate) ? ((java.security.cert.Certificate) cert).getPublicKey() : cert;
+                        initCtx(chain.getThisObject(), chain.getArg(0), key, null);
+                    }
+                    return r;
+                });
+            } catch (Throwable t) { }
+            try {
+                Method init6 = Cipher.class.getMethod("init", int.class, java.security.cert.Certificate.class, java.security.SecureRandom.class);
+                module.hook(init6).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (Config.get().cryptoCapture) {
+                        Object cert = chain.getArg(1);
+                        Object key = (cert instanceof java.security.cert.Certificate) ? ((java.security.cert.Certificate) cert).getPublicKey() : cert;
+                        initCtx(chain.getThisObject(), chain.getArg(0), key, null);
+                    }
+                    return r;
+                });
+            } catch (Throwable t) { }
 
             // update(byte[]) —— 流式数据拼接（v1.14 增强：不再是单条日志，拼进 Ctx.dataStream）
             try {

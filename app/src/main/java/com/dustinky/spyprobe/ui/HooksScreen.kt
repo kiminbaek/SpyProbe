@@ -157,7 +157,8 @@ private fun HooksList(vm: SpyViewModel, hooks: List<HookEntry>, onRefresh: () ->
         EmptyState(Icons.Filled.Search, "暂无 hook", "在「探测」页点击方法即可 hook")
     } else {
         LazyColumn(modifier = modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-            items(hooks) { h ->
+            // v1.28 P2: items 加 key（class#method#params 去重标识），避免列表复用错位
+            items(hooks, key = { it.cls + "#" + it.method + "#" + it.params }) { h ->
                 var expanded by remember { mutableStateOf(false) }
                 Card(
                     colors = CardDefaults.cardColors(
@@ -230,7 +231,8 @@ private fun RulesList(vm: SpyViewModel, rules: List<HijackEntry>, onRefresh: () 
         EmptyState(Icons.Filled.Build, "暂无 Hook 规则", "点击右下角 + 添加自定义规则")
     } else {
         LazyColumn(modifier = modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-            items(rules) { r ->
+            // v1.28 P2: items 加 key（class#method#mode#params）
+            items(rules, key = { it.cls + "#" + it.method + "#" + it.mode + "#" + it.params }) { r ->
                 val (modeColor, modeLabel) = modeColorLabel(r.mode)
                 Card(
                     colors = CardDefaults.cardColors(
@@ -443,6 +445,9 @@ private fun AddRuleDialog(vm: SpyViewModel, onDismiss: () -> Unit, onSaved: () -
                         modifier = Modifier.fillMaxWidth())
                     MODE_PARAM -> OutlinedTextField(paramValue, { paramValue = it },
                         label = { Text("参数值", fontSize = 12.sp) }, singleLine = true,
+                        // v1.28 P2: 格式提示（索引:值，多参数逗号分隔）
+                        placeholder = { Text("如 0:abc,1:123", fontSize = 11.sp) },
+                        supportingText = { Text("格式：索引:值，多个用逗号分隔", fontSize = 10.sp) },
                         modifier = Modifier.fillMaxWidth())
                     MODE_STATIC -> {
                         OutlinedTextField(fieldName, { fieldName = it },

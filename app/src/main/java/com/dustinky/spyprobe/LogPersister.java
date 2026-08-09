@@ -47,17 +47,27 @@ public class LogPersister {
     private static final int QUEUE_CAP = 8192;             // 队列上限，满丢最旧
 
     private final SimpleDateFormat DAY_FMT = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
-    private final SimpleDateFormat TIME_FMT = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
+    // v1.28 P1: log() 被多个 hook 线程并发调用，共享 SimpleDateFormat 数据竞争 → ThreadLocal（LogStore 同款）
+    private static final ThreadLocal<SimpleDateFormat> TIME_FMT = new ThreadLocal<SimpleDateFormat>() {
+        @Override
+        protected SimpleDateFormat initialValue() {
+            return new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
+        }
+    };
     private final ArrayBlockingQueue<String> queue = new ArrayBlockingQueue<>(QUEUE_CAP);
 
     private volatile File dir = null;
     private volatile boolean enabled = true;
+    // v1.28 P1: 清空历史后通知写线程重开文件——否则写线程继续写已删除的 inode（新日志丢失直到滚动/跨天）
+    private volatile boolean resetRequested = false;
 
     /** 初始化（幂等）：由目标 App 进程启动时调用 */
     public synchronized void init(File appFilesDir) {
         if (dir != null) return;
         dir = new File(appFilesDir, "spyprobe_logs");
-        dir.mkdirs();
+        if (!dir.mkdirs() && !dir.isDirectory()) {
+            LogStore.get().log("SpyProbe.Persist", "mkdir fail: " + dir.getAbsolutePath());
+        }
         Thread w = new Thread(this::run, "SpyProbe-Persist");
         w.setDaemon(true);
         w.start();
@@ -71,7 +81,7 @@ public class LogPersister {
     public void log(long seq, String tag, String msg) {
         if (!enabled || dir == null) return;
         String line = "{\"seq\":" + seq
-                + ",\"t\":\"" + esc(TIME_FMT.format(new Date()))
+                + ",\"t\":\"" + esc(TIME_FMT.get().format(new Date()))
                 + "\",\"tag\":\"" + esc(tag)
                 + "\",\"m\":\"" + esc(msg) + "\"}";
         if (!queue.offer(line)) {
@@ -88,6 +98,14 @@ public class LogPersister {
         File f = null;
         while (true) {
             try {
+                // v1.28 P1: 清空历史后写线程重开文件（旧 inode 已被删，继续写会丢新日志）
+                if (resetRequested) {
+                    resetRequested = false;
+                    if (bw != null) { try { bw.flush(); bw.close(); } catch (Throwable t3) { } }
+                    bw = null;
+                    day = null;
+                    continue;
+                }
                 String line = queue.poll(500, TimeUnit.MILLISECONDS);
                 if (line == null) {
                     if (bw != null) bw.flush();
@@ -197,37 +215,36 @@ public class LogPersister {
         return new ArrayList<>(set);
     }
 
-    /** 读某天全部日志（多分片合并按 seq 排序），max<=0 表示不限 */
+    /** 读某天日志（多分片合并按 seq 排序），max>0 时环形保留最新 max 条（避免百万行内存峰值） */
     public List<Entry> readDay(String day, int max) {
         if (dir == null) return Collections.emptyList();
         File[] fs = listDayFiles(day);
         if (fs == null) return Collections.emptyList();
         List<Entry> out = new ArrayList<>();
+        java.util.ArrayDeque<Entry> ring = (max > 0) ? new java.util.ArrayDeque<>(Math.min(max, 4096)) : null;
         for (File f : fs) {
             try (BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(f), StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = r.readLine()) != null) {
                     if (line.trim().isEmpty()) continue;
                     Entry e = parseLine(line);
-                    if (e != null) out.add(e);
+                    if (e != null) {
+                        if (ring != null) {
+                            if (ring.size() >= max) ring.removeFirst();
+                            ring.addLast(e);
+                        } else {
+                            out.add(e);
+                        }
+                    }
                 }
             } catch (Throwable t) { }
         }
+        if (ring != null) out = new ArrayList<>(ring);
         out.sort(Comparator.comparingLong(a -> a.seq));
         if (max > 0 && out.size() > max) {
             return new ArrayList<>(out.subList(out.size() - max, out.size()));
         }
         return out;
-    }
-
-    /** 某天日志总量（字节） */
-    public long daySize(String day) {
-        if (dir == null) return 0;
-        File[] fs = listDayFiles(day);
-        if (fs == null) return 0;
-        long s = 0;
-        for (File f : fs) s += f.length();
-        return s;
     }
 
     /** 删除某天；day==null 删除全部历史 */
@@ -238,6 +255,8 @@ public class LogPersister {
                 : listDayFiles(day);
         if (fs == null) return;
         for (File f : fs) { try { f.delete(); } catch (Throwable t) { } }
+        // v1.28 P1: 若正在写的文件被删，通知写线程重开新文件
+        resetRequested = true;
     }
 
     private Entry parseLine(String line) {
@@ -263,14 +282,28 @@ public class LogPersister {
                         if (c == '\\' && end + 1 < line.length()) {
                             char n = line.charAt(end + 1);
                             switch (n) {
-                                case 'n': sb.append('\n'); break;
-                                case 'r': sb.append('\r'); break;
-                                case 't': sb.append('\t'); break;
-                                case '\\': sb.append('\\'); break;
-                                case '"': sb.append('"'); break;
-                                default: sb.append(n);
+                                case 'n': sb.append('\n'); end += 2; break;
+                                case 'r': sb.append('\r'); end += 2; break;
+                                case 't': sb.append('\t'); end += 2; break;
+                                case '\\': sb.append('\\'); end += 2; break;
+                                case '"': sb.append('"'); end += 2; break;
+                                case 'u': {
+                                    // v1.28 P1: 控制字符 esc 为反斜杠uXXXX 形式，之前未解析 → 乱码
+                                    if (end + 5 < line.length()) {
+                                        try {
+                                            int cp = Integer.parseInt(line.substring(end + 2, end + 6), 16);
+                                            sb.append((char) cp);
+                                            end += 6;
+                                        } catch (Throwable t3) {
+                                            sb.append('u'); end += 2;
+                                        }
+                                    } else {
+                                        sb.append('u'); end += 2;
+                                    }
+                                    break;
+                                }
+                                default: sb.append(n); end += 2;
                             }
-                            end += 2;
                         } else if (c == '"') { end++; break; }
                         else { sb.append(c); end++; }
                     }

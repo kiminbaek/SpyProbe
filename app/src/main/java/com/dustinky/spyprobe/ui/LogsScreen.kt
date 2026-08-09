@@ -66,8 +66,11 @@ enum class LogCategory(val label: String) {
     ALL("全部"), NET("网络"), MTH("方法"), RULE("Hook"), CRYPTO("加密"), CLS("类加载"), SYS("系统")
 }
 
+// v1.28 P2: 正则编译放到顶层常量（此前 categoryOfLine/统计每行都 new Regex，高频路径浪费）
+private val NET_REGEX = Regex(NET_FILTER)
+
 internal fun categoryOfLine(line: String): LogCategory = when {
-    Regex(NET_FILTER).containsMatchIn(line) -> LogCategory.NET
+    NET_REGEX.containsMatchIn(line) -> LogCategory.NET
     line.contains("[Mth") -> LogCategory.MTH
     line.contains("[RULE") -> LogCategory.RULE
     line.contains("[Crypto") || line.contains("[CRYPTO") ||
@@ -130,10 +133,10 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
         }
     }
 
-    // 统计
-    val netCount = displayLines.count { (_, l) -> Regex(NET_FILTER).find(l) != null }
-    val mthCount = displayLines.count { (_, l) -> l.contains("[Mth") }
-    val errCount = displayLines.count { (_, l) -> l.contains("FAIL") || l.contains("ERROR") || l.contains("[ERR]") }
+    // 统计（v1.28 P2: 仅实时模式计算——历史模式展示"历史条数"且可能上万行，全量扫描浪费）
+    val netCount = if (modeHistory) 0 else displayLines.count { (_, l) -> NET_REGEX.find(l) != null }
+    val mthCount = if (modeHistory) 0 else displayLines.count { (_, l) -> l.contains("[Mth") }
+    val errCount = if (modeHistory) 0 else displayLines.count { (_, l) -> l.contains("FAIL") || l.contains("ERROR") || l.contains("[ERR]") }
 
     Column(modifier = modifier.fillMaxSize()) {
 
@@ -365,13 +368,17 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             title = { Text("清空历史日志") },
             text = { Text("已落盘的历史日志删除后不可恢复。\n\n选中的日期：${selectedDay ?: "无"}") },
             confirmButton = {
-                TextButton(onClick = {
-                    showClearDialog = false
-                    vm.clearHistory(selectedDay) { ok ->
-                        android.widget.Toast.makeText(context,
-                            if (ok) "已清空 ${selectedDay}" else "清空失败", android.widget.Toast.LENGTH_SHORT).show()
-                    }
-                }) { Text("清空当天") }
+                // v1.28 P1: 未选中日期时禁用"清空当天"——否则误点会把全部历史删光
+                TextButton(
+                    onClick = {
+                        showClearDialog = false
+                        vm.clearHistory(selectedDay) { ok ->
+                            android.widget.Toast.makeText(context,
+                                if (ok) "已清空 ${selectedDay}" else "清空失败", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    enabled = selectedDay != null
+                ) { Text("清空当天") }
             },
             dismissButton = {
                 Row {

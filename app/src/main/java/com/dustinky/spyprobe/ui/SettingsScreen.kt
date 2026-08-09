@@ -1,5 +1,6 @@
 package com.dustinky.spyprobe.ui
 
+import com.dustinky.spyprobe.BuildConfig
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -403,7 +404,7 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             expanded = expanded.contains("about"),
             onToggle = { toggle("about") }
         ) {
-            AboutRow("版本", "v1.24.1")
+            AboutRow("版本", "v${BuildConfig.VERSION_NAME}")
             Divider()
             AboutRow("作者", "SpyProbe Team")
             Divider()

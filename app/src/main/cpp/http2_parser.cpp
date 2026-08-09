@@ -355,6 +355,14 @@ H2FeedResult h2_feed(std::shared_ptr<Http2Connection> conn, const uint8_t* data,
         uint8_t  flags      = frame_ptr[4];
         int      stream_id  = read_stream_id(frame_ptr);
 
+        // v1.28 P2: 帧长上限保护——声明超大帧（>4MB）视为异常连接，丢弃缓冲防内存无限增长
+        //   （正常 H2 帧默认 16KB、协商后最大 16MB；4MB 足以覆盖 HEADERS 大块+大数据帧）
+        if (frame_len > (4u * 1024 * 1024)) {
+            H2LOG("H2 frame too large (%u), dropping conn buffer", frame_len);
+            buf.clear();
+            return {};
+        }
+
         size_t total = H2_FRAME_HEADER_SIZE + (size_t)frame_len;
         if (buf.size() - offset < total) break;
 

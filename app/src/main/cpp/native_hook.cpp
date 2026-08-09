@@ -392,9 +392,14 @@ ssize_t hook_read(int fd, void *buf, size_t count) {
 int hook_close(int fd) {
     if (g_is_in_hook) return orig_close(fd);
     ScopedHookGuard guard;
-    if (fd >= 0 && fd < 65536) g_fd_cache[fd].store(0, std::memory_order_relaxed);
+    bool was_network = false;
+    if (fd >= 0 && fd < 65536) {
+        // v1.28 P1: 只对已跟踪的网络连接（state==2）通知 Kotlin onConnClosed
+        was_network = g_fd_cache[fd].load(std::memory_order_relaxed) == 2;
+        g_fd_cache[fd].store(0, std::memory_order_relaxed);
+    }
     { std::lock_guard<std::mutex> lock(g_cache_mutex); g_stack_cache.erase((jlong)fd); g_socket_info_cache.erase(fd); }
-    notify_kotlin_close((jlong)fd, false);
+    if (was_network) notify_kotlin_close((jlong)fd, false);
     return orig_close(fd);
 }
 

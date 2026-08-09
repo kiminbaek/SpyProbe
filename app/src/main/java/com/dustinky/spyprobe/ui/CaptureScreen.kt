@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
@@ -54,7 +53,6 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -79,8 +77,6 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
 
     var cfg by remember { mutableStateOf<Map<String, Any>>(emptyMap()) }
     var expanded by remember { mutableStateOf("basic") } // basic/advanced/app
-    // v1.25 P2-5: 端口对话框入口
-    var showPortDialog by remember { mutableStateOf(false) }
 
     // v1.25 P0-2: 统一配置入口——保存到目标 App 覆盖层（本地权威）+ 推送；
     // 未连接时也保存本地（连接恢复后自动补发），不再"未连接就丢弃"
@@ -151,16 +147,13 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
                         else MaterialTheme.colorScheme.error
                     )
                     Spacer(Modifier.weight(1f))
-                    // v1.25 P2-5: 端口文本可点击 → 弹出端口修改对话框（原 PortDialog 死代码接入）
+                    // v1.28 P1: 端口只读展示（手动改端口是误导，server 端口固定 9901 / scanPorts 自动发现）
                     Text(
                         "端口 $port",
                         style = MaterialTheme.typography.bodySmall,
                         fontFamily = FontFamily.Monospace,
                         color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .clickable { showPortDialog = true }
-                            .padding(horizontal = 4.dp, vertical = 2.dp)
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
                     )
                 }
 
@@ -210,10 +203,6 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
                 }
                 if (showPicker) {
                     TargetPickerDialog(vm, onDismiss = { showPicker = false })
-                }
-                // v1.25 P2-5: 端口对话框入口（原为死代码从未被调用）
-                if (showPortDialog) {
-                    PortDialog(vm, port, onDismiss = { showPortDialog = false })
                 }
             }
         }
@@ -610,35 +599,5 @@ private fun ManualPkgDialog(vm: SpyViewModel, onDismiss: () -> Unit) {
     )
 }
 
-// ---------- 端口对话框 ----------
-@Composable
-private fun PortDialog(vm: SpyViewModel, currentPort: Int, onDismiss: () -> Unit) {
-    var portText by remember { mutableStateOf(currentPort.toString()) }
-    val context = LocalContext.current
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Server 端口（默认 9901）", fontWeight = FontWeight.Bold) },
-        text = {
-            OutlinedTextField(
-                value = portText,
-                onValueChange = { portText = it },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier.fillMaxWidth()
-            )
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                val p = portText.trim().toIntOrNull()
-                if (p != null) {
-                    vm.setPort(p)
-                    android.widget.Toast.makeText(context, "端口已改，需重启目标 App 生效", android.widget.Toast.LENGTH_SHORT).show()
-                }
-                onDismiss()
-            }) { Text("确定") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
-        }
-    )
-}
+// ---------- 端口对话框（v1.28 P1: 删除——手动改端口是误导：
+//  server 端口由目标进程固定(9901)/scanPorts 自动发现(9901-9910)，手动设 UI 端口不会让 server 换端口） ----------

@@ -190,7 +190,8 @@ public class MethodProbe {
         int hooked = 0;
         java.util.List<String> candidates = null; // v1.19 P2-3: 0 命中时给候选签名提示
         for (Constructor<?> c : cls.getDeclaredConstructors()) {
-            if (paramTypes != null && !paramTypes.isEmpty() && !matchParams(c.getParameterTypes(), paramTypes)) {
+            // v1.28 P1: paramTypes 语义统一交给 matchParams —— null=全部重载，""=无参精确，签名串=精确匹配
+            if (!matchParams(c.getParameterTypes(), paramTypes)) {
                 if (candidates == null) candidates = new java.util.ArrayList<>();
                 candidates.add("<init>(" + joinParams(c.getParameterTypes()) + ")");
                 continue;
@@ -232,7 +233,8 @@ public class MethodProbe {
         java.util.List<String> candidates = null; // v1.19 P2-3: 0 命中时给候选签名提示
         for (Method m : cls.getDeclaredMethods()) {
             if (!allMethods && !m.getName().equals(methodName)) continue;
-            if (paramTypes != null && !paramTypes.isEmpty() && !matchParams(m.getParameterTypes(), paramTypes)) {
+            // v1.28 P1: 同上，null=全部重载，""=无参精确
+            if (!matchParams(m.getParameterTypes(), paramTypes)) {
                 if (candidates == null) candidates = new java.util.ArrayList<>();
                 candidates.add(m.getName() + "(" + joinParams(m.getParameterTypes()) + ")");
                 continue;
@@ -348,7 +350,10 @@ public class MethodProbe {
         }
     }
 
+    /** v1.28 P1: 参数签名匹配 —— paramTypes==null = 全部重载；"" = 仅无参（精确）；"int,String" = 精确匹配 */
     private static boolean matchParams(Class<?>[] types, String paramTypes) {
+        if (paramTypes == null) return true;               // 全部重载
+        if (paramTypes.isEmpty()) return types.length == 0; // 无参精确
         String[] want = paramTypes.split(",");
         if (want.length != types.length) return false;
         for (int i = 0; i < types.length; i++) {
@@ -389,7 +394,9 @@ public class MethodProbe {
                 if (rule != null) {
                     switch (rule.mode) {
                         case Config.MODE_RETURN: {
-                            Object forced = coerceReturn(m.getReturnType(), rule.returnValue);
+                            // v1.28 P1: RandomReturn 定时刷新缓存 key 按调用点隔离（默认 "rnd" 会导致多个规则互相覆盖缓存）
+                            Object forced = coerceReturn(m.getReturnType(), rule.returnValue,
+                                    m.getDeclaringClass().getName() + "." + m.getName() + "(" + joinParams(m.getParameterTypes()) + ")");
                             String ft = forced == null ? "null" : forced.getClass().getSimpleName();
                             LogStore.get().log(TAG, "[RULE:return] " + m.getDeclaringClass().getName() + "." + m.getName()
                                     + "(" + joinParams(m.getParameterTypes()) + ") -> " + rule.returnValue + " (" + ft + ")");
@@ -596,21 +603,22 @@ public class MethodProbe {
         return null;
     }
 
-    /** v1.4: 按返回类型把字符串强制值转成返回值 */
-    private static Object coerceReturn(Class<?> rt, String val) {
+    /** v1.4: 按返回类型把字符串强制值转成返回值；ctx = 调用点（类#方法签名），用于 RandomReturn 缓存隔离 */
+    private static Object coerceReturn(Class<?> rt, String val, String ctx) {
         if (rt == void.class) return null;
         if (val == null || "null".equalsIgnoreCase(val.trim())) return null;
         String v = val.trim();
         // v1.14: RandomReturn 随机返回值（借鉴 SimpleHook applyRandomReturnRule）——
         //   格式 {"random":"seed","length":10} 生成随机串；可选 "updateTime":秒 定时刷新
         //   v1.16 P2-1: 刷新缓存用进程内 Map（RND_TIME/RND_VAL），不存 SharedPreferences（注释同步）
+        //   v1.28 P1: 缓存 key 默认带调用点上下文，多个规则不指定 key 时互不干扰
         if (rt == String.class && v.startsWith("{") && v.contains("\"random\"")) {
             try {
                 JSONObject jo = new JSONObject(v);
                 String seed = jo.optString("random", "abcdefghijklmnopqrstuvwxyz0123456789");
                 int len = jo.optInt("length", 10);
                 long updateTime = jo.optLong("updateTime", -1L);
-                String key = jo.optString("key", "rnd");
+                String key = (ctx == null ? "" : ctx + "#") + jo.optString("key", "rnd");
                 String defaultValue = jo.optString("defaultValue", "");
                 if (updateTime == -1L) {
                     return randomString(seed, len);

@@ -332,7 +332,8 @@ class SpyApi(private var port: Int = 9901) {
             val o = JSONObject()
             o.put("class", cls)
             o.put("method", method)
-            o.put("params", params)
+            // v1.28 P1: params 留空不写字段（后端 null=全部重载，保持 UI 旧行为）；显式传 "" 才表示无参精确
+            if (params.isNotEmpty()) o.put("params", params)
             httpPost("/api/hook", o.toString())
         } catch (t: Throwable) { null }
     }
@@ -344,7 +345,8 @@ class SpyApi(private var port: Int = 9901) {
             val o = JSONObject()
             o.put("class", cls)
             o.put("method", m)
-            o.put("params", params)
+            // v1.28 P1: 同上——留空=全部重载（null），""=无参精确（显式传）
+            if (params.isNotEmpty()) o.put("params", params)
             httpPost("/api/hook", o.toString())
         } catch (t: Throwable) { null }
     }
@@ -354,7 +356,8 @@ class SpyApi(private var port: Int = 9901) {
             val o = JSONObject()
             o.put("class", cls)
             o.put("method", method)
-            o.put("params", params)
+            // v1.28 P1: 卸载时空串也缺省（后端 null/空=通配卸载全部重载，行为一致）
+            if (params.isNotEmpty()) o.put("params", params)
             httpPost("/api/unhook", o.toString())
         } catch (t: Throwable) { }
     }

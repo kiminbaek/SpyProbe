@@ -219,7 +219,8 @@ public class SpyServer {
                     String day = getQueryParam(query, "day", "");
                     StringBuilder sb = new StringBuilder();
                     if (!day.isEmpty()) {
-                        List<LogPersister.Entry> all = LogPersister.get().readDay(day, 0);
+                        // v1.28 P1: 历史导出同样限制条数（readDay 环形截断保留最新 5000），防止超大日志 OOM/超时
+                        List<LogPersister.Entry> all = LogPersister.get().readDay(day, 5000);
                         for (LogPersister.Entry e : all) {
                             sb.append(e.time).append(" [").append(e.tag).append("] ").append(e.msg).append('\n');
                         }
@@ -267,6 +268,13 @@ public class SpyServer {
                 }
                 case "/api/history/clear": {
                     // POST /api/history/clear?day=YYYY-MM-DD（不带 day = 清全部历史）
+                    // v1.28 P2: GET 浏览器直接访问也会触发删除，强制校验 POST
+                    if (!"POST".equals(method)) {
+                        JSONObject o = new JSONObject();
+                        o.put("ok", false);
+                        o.put("error", "method not allowed");
+                        return o.toString();
+                    }
                     String day = getQueryParam(query, "day", "");
                     LogPersister.get().clear(day.isEmpty() ? null : day);
                     JSONObject o = new JSONObject();
@@ -381,7 +389,8 @@ public class SpyServer {
                     JSONObject c = new JSONObject(body);
                     String cls = c.optString("class", "");
                     String methodName = c.optString("method", "");
-                    String params = c.optString("params", "");
+                    // v1.28 P1: params 缺省(null)=全部重载；""=无参精确；签名串=精确（此前空串恒被当全部重载）
+                    String params = c.has("params") ? c.optString("params", "") : null;
                     // P1-4: hook 成功后写入 Config.hooks（ModuleMain re-hook 依赖它）
                     String resp = mth.hookMethod(cls, methodName, params);
                     JSONObject r = new JSONObject(resp);
@@ -397,7 +406,8 @@ public class SpyServer {
                     JSONObject c = new JSONObject(body);
                     String cls = c.optString("class", "");
                     String methodName = c.optString("method", "");
-                    String params = c.optString("params", "");
+                    // v1.28 P1: 同上语义；卸载时空串仍按通配全部重载（unhookHandles 内部 null/空=通配）
+                    String params = c.has("params") ? c.optString("params", "") : null;
                     // v1.16 P0-1: 先真正 unhook 内存句柄拿真实计数，再清 Config.hooks 记录
                     // （此前 removeHook 先跑把 map 清空，unhookMethod 恒返回 0）
                     int unhooked = 0;

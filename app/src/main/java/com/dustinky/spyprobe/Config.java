@@ -52,7 +52,9 @@ public class Config {
     public static class HookSpec {
         public final String className;
         public final String methodName;
-        public final String paramTypes;   // 如 "java.lang.String,int" 或 ""（全部重载）
+        // v1.28 P1: paramTypes 语义 —— null = 全部重载；"" = 仅无参（精确）；"int,String" = 精确签名
+        //   旧版（v1）持久化里 "" 表示"全部重载"，loadRules 已做 v2 迁移兼容
+        public final String paramTypes;
         public volatile boolean enabled = true;
 
         public HookSpec(String className, String methodName, String paramTypes) {
@@ -263,18 +265,21 @@ public class Config {
     // v1.21 用 getRemotePreferences 远程偏好（走 libxposed service IPC），用户实测重启后仍失效；
     // v1.22 改为写目标 App 自身 data 目录文件（进程内直读直写，零 IPC，100% 可靠）
 
-    /** 保存当前 hooks + hijacks 到目标 App data 目录文件（rulesFile，与 spyprobe_cfg.json 同目录） */
+    /** 保存当前 hooks + hijacks 到目标 App data 目录文件（rulesFile，与 spyprobe_cfg.json 同目录）
+     *  v1.28 P1: 格式升级 v2 —— HookSpec.paramTypes==null（全部重载）不再写 "p" 字段（缺省=null=全部）；
+     *   "p":"" 仅表示"无参精确"。旧 v1 数据 "p":"" 语义=全部重载，loadRules 按版本迁移。 */
     public synchronized void saveRules(java.io.File rulesFile) {
         if (rulesFile == null) return;
         try {
             org.json.JSONObject root = new org.json.JSONObject();
+            root.put("v", 2);
             org.json.JSONArray hArr = new org.json.JSONArray();
             for (HookSpec h : hooks) {
                 if (!h.enabled) continue;
                 org.json.JSONObject o = new org.json.JSONObject();
                 o.put("c", h.className);
                 o.put("m", h.methodName);
-                o.put("p", h.paramTypes == null ? "" : h.paramTypes);
+                if (h.paramTypes != null) o.put("p", h.paramTypes);
                 hArr.put(o);
             }
             org.json.JSONArray jArr = new org.json.JSONArray();
@@ -332,12 +337,16 @@ public class Config {
                 fis.close();
             }
             org.json.JSONObject root = new org.json.JSONObject(new String(buf, "UTF-8"));
+            // v1.28 P1: v1 旧数据 "p":"" 语义=全部重载 → 迁移为 null；v2 缺省 p=null（全部），"p":""=无参精确
+            int ver = root.optInt("v", 1);
             String hStr = root.optString(KEY_HOOKS, "");
             if (!hStr.isEmpty()) {
                 org.json.JSONArray arr = new org.json.JSONArray(hStr);
                 for (int i = 0; i < arr.length(); i++) {
                     org.json.JSONObject o = arr.getJSONObject(i);
-                    HookSpec spec = new HookSpec(o.optString("c"), o.optString("m"), o.optString("p"));
+                    String p = o.has("p") ? o.optString("p") : null;
+                    if (ver < 2 && p != null && p.isEmpty()) p = null; // 旧版空串 = 全部重载
+                    HookSpec spec = new HookSpec(o.optString("c"), o.optString("m"), p);
                     addHook(spec);
                     loaded = true;
                 }
