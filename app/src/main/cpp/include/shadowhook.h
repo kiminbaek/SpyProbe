@@ -1,4 +1,4 @@
-// Copyright (c) 2021-2025 ByteDance Inc.
+// Copyright (c) 2021-2026 ByteDance Inc.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -35,7 +35,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define SHADOWHOOK_VERSION "2.0.0"
+#define SHADOWHOOK_VERSION "2.0.1"
 
 #define SHADOWHOOK_ERRNO_OK                     0
 #define SHADOWHOOK_ERRNO_PENDING                1
@@ -53,7 +53,7 @@
 #define SHADOWHOOK_ERRNO_INIT_HUB               13
 #define SHADOWHOOK_ERRNO_HUB_CREAT              14
 #define SHADOWHOOK_ERRNO_MONITOR_DLOPEN         15
-#define SHADOWHOOK_ERRNO_HOOK_HUB_DUP           16
+#define SHADOWHOOK_ERRNO_HOOK_UNIQUE_DUP        16
 #define SHADOWHOOK_ERRNO_HOOK_DLOPEN_CRASH      17
 #define SHADOWHOOK_ERRNO_HOOK_DLSYM             18
 #define SHADOWHOOK_ERRNO_HOOK_DLSYM_CRASH       19
@@ -198,7 +198,7 @@ void *shadowhook_intercept_sym_name_callback(const char *lib_name, const char *s
 int shadowhook_unintercept(void *stub);
 
 // get operation records
-#define SHADOWHOOK_RECORD_ITEM_ALL             0x7FF  // 0b11111111111
+#define SHADOWHOOK_RECORD_ITEM_ALL             0xFFFFFFFF
 #define SHADOWHOOK_RECORD_ITEM_TIMESTAMP       (1 << 0)
 #define SHADOWHOOK_RECORD_ITEM_CALLER_LIB_NAME (1 << 1)
 #define SHADOWHOOK_RECORD_ITEM_OP              (1 << 2)
@@ -210,6 +210,7 @@ int shadowhook_unintercept(void *stub);
 #define SHADOWHOOK_RECORD_ITEM_ERRNO           (1 << 8)
 #define SHADOWHOOK_RECORD_ITEM_STUB            (1 << 9)
 #define SHADOWHOOK_RECORD_ITEM_FLAGS           (1 << 10)
+#define SHADOWHOOK_RECORD_ITEM_TRACE           (1 << 11)
 char *shadowhook_get_records(uint32_t item_flags);
 void shadowhook_dump_records(int fd, uint32_t item_flags);
 
