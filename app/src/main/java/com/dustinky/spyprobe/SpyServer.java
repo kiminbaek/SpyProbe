@@ -215,17 +215,62 @@ public class SpyServer {
                 }
                 case "/api/logs/all":
                 case "/api/export": {
-                    // v1.26 P0-3: 导出限制最近 3000 条（日志含 body 可能极大，全量拼接超时/OOM）
+                    // v1.27: ?day=YYYY-MM-DD 导出历史某天（不带 day = 内存全量，兼容旧版）
+                    String day = getQueryParam(query, "day", "");
                     StringBuilder sb = new StringBuilder();
-                    List<LogStore.Entry> all = LogStore.get().all();
-                    int from = Math.max(0, all.size() - 3000);
-                    for (int i = from; i < all.size(); i++) {
-                        LogStore.Entry e = all.get(i);
-                        sb.append(e.time).append(" [").append(e.tag).append("] ").append(e.msg).append('\n');
+                    if (!day.isEmpty()) {
+                        List<LogPersister.Entry> all = LogPersister.get().readDay(day, 0);
+                        for (LogPersister.Entry e : all) {
+                            sb.append(e.time).append(" [").append(e.tag).append("] ").append(e.msg).append('\n');
+                        }
+                    } else {
+                        // v1.26 P0-3: 导出限制最近 3000 条（日志含 body 可能极大，全量拼接超时/OOM）
+                        List<LogStore.Entry> all = LogStore.get().all();
+                        int from = Math.max(0, all.size() - 3000);
+                        for (int i = from; i < all.size(); i++) {
+                            LogStore.Entry e = all.get(i);
+                            sb.append(e.time).append(" [").append(e.tag).append("] ").append(e.msg).append('\n');
+                        }
                     }
                     JSONObject o = new JSONObject();
                     o.put("ok", true);
                     o.put("text", sb.toString());
+                    return o.toString();
+                }
+                // v1.27: 历史日志（落盘文件）
+                case "/api/history/days": {
+                    JSONObject o = new JSONObject();
+                    o.put("ok", true);
+                    JSONArray arr = new JSONArray();
+                    for (String d : LogPersister.get().days()) arr.put(d);
+                    o.put("days", arr);
+                    return o.toString();
+                }
+                case "/api/history": {
+                    String day = getQueryParam(query, "day", "");
+                    int max = parseIntSafe(getQueryParam(query, "max", "5000"), 5000);
+                    List<LogPersister.Entry> entries = LogPersister.get().readDay(day, max);
+                    JSONArray arr = new JSONArray();
+                    for (LogPersister.Entry e : entries) {
+                        JSONObject j = new JSONObject();
+                        j.put("seq", e.seq);
+                        j.put("t", e.time);
+                        j.put("tag", e.tag);
+                        j.put("m", e.msg);
+                        arr.put(j);
+                    }
+                    JSONObject o = new JSONObject();
+                    o.put("ok", true);
+                    o.put("day", day);
+                    o.put("logs", arr);
+                    return o.toString();
+                }
+                case "/api/history/clear": {
+                    // POST /api/history/clear?day=YYYY-MM-DD（不带 day = 清全部历史）
+                    String day = getQueryParam(query, "day", "");
+                    LogPersister.get().clear(day.isEmpty() ? null : day);
+                    JSONObject o = new JSONObject();
+                    o.put("ok", true);
                     return o.toString();
                 }
                 case "/api/config": {
@@ -476,5 +521,25 @@ public class SpyServer {
             o.put("error", t.toString());
             return o.toString();
         }
+    }
+
+    // v1.27: query 参数解析（URL 解码）
+    private static String getQueryParam(String query, String key, String def) {
+        if (query == null || query.isEmpty()) return def;
+        for (String kv : query.split("&")) {
+            int eq = kv.indexOf('=');
+            if (eq > 0 && kv.substring(0, eq).equals(key)) {
+                try {
+                    return URLDecoder.decode(kv.substring(eq + 1), "UTF-8");
+                } catch (Throwable t) {
+                    return kv.substring(eq + 1);
+                }
+            }
+        }
+        return def;
+    }
+
+    private static int parseIntSafe(String s, int def) {
+        try { return Integer.parseInt(s); } catch (Throwable t) { return def; }
     }
 }

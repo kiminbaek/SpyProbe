@@ -58,6 +58,17 @@ public class ModuleMain extends XposedModule {
         // v1.22: 抓包开关持久化文件——目标 App 自身 data 目录（零 IPC，重启必恢复）
         // v1.25 P2-9: hook/hijack 规则持久化同目录文件（spyprobe_rules.json），弃用远程偏好
         final java.io.File cfgFile = resolveCfgFile();
+        // v1.27: 日志异步落盘初始化（目标 App 私有目录 files/spyprobe_logs/）
+        try {
+            Class<?> at = Class.forName("android.app.ActivityThread");
+            Object app = at.getMethod("currentApplication").invoke(null);
+            if (app != null) {
+                java.io.File filesDir = (java.io.File) app.getClass().getMethod("getFilesDir").invoke(app);
+                if (filesDir != null) LogPersister.get().init(filesDir);
+            }
+        } catch (Throwable t) {
+            log(Log.ERROR, TAG, "log persister init error: " + t);
+        }
         SpyServer server = new SpyServer(net, mth, clsProbe, pkg, dexKit, cfgFile);
 
         // 立即装网络 hook

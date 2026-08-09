@@ -224,6 +224,56 @@ class SpyApi(private var port: Int = 9901) {
         } catch (t: Throwable) { null }
     }
 
+    // ---------- v1.27: 历史日志（落盘文件） ----------
+    /** 可用的历史日期列表（新日期在前） */
+    fun historyDays(): List<String>? {
+        val resp = httpGet("/api/history/days", 5000) ?: return null
+        return try {
+            val o = JSONObject(resp)
+            if (!o.optBoolean("ok", false)) null
+            else {
+                val arr = o.optJSONArray("days") ?: JSONArray()
+                val out = ArrayList<String>()
+                for (i in 0 until arr.length()) out.add(arr.getString(i))
+                out
+            }
+        } catch (t: Throwable) { null }
+    }
+
+    /** 读某天历史日志（JSON 数组转 LogEntry） */
+    fun history(day: String, max: Int = 10000): List<LogEntry>? {
+        val resp = httpGet("/api/history?day=$day&max=$max", 20000) ?: return null
+        return try {
+            val o = JSONObject(resp)
+            if (!o.optBoolean("ok", false)) null
+            else {
+                val arr = o.optJSONArray("logs") ?: JSONArray()
+                val out = ArrayList<LogEntry>()
+                for (i in 0 until arr.length()) {
+                    val j = arr.getJSONObject(i)
+                    out.add(LogEntry(j.optString("t", ""), j.optString("tag", ""), j.optString("m", "")))
+                }
+                out
+            }
+        } catch (t: Throwable) { null }
+    }
+
+    /** 导出某天历史日志为纯文本 */
+    fun exportDay(day: String): String? {
+        val resp = httpGet("/api/export?day=$day", 30000) ?: return null
+        return try {
+            val o = JSONObject(resp)
+            if (!o.optBoolean("ok", false)) null else o.optString("text")
+        } catch (t: Throwable) { null }
+    }
+
+    /** 清空历史：day=null 清全部，否则清某天 */
+    fun clearHistory(day: String?): Boolean {
+        val path = if (day == null) "/api/history/clear" else "/api/history/clear?day=$day"
+        val resp = httpPost(path, "{}") ?: return false
+        return try { JSONObject(resp).optBoolean("ok", false) } catch (t: Throwable) { false }
+    }
+
     fun scanClass(cls: String): ScanResult {
         val resp = try {
             val o = JSONObject()

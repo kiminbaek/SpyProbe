@@ -48,6 +48,8 @@ public class LogStore {
     public synchronized void log(String tag, String msg) {
         String t = FMT.get().format(new Date());
         entries.addLast(new Entry(++seq, t, tag, msg));
+        // v1.27: 同步异步落盘（JSONL 按天文件，进程死/升级不丢）
+        LogPersister.get().log(seq, tag, msg);
         // v1.12: 容量动态可配置（Config.logLimit）
         int limit = Config.get().logLimit;
         while (entries.size() > limit) entries.pollFirst();

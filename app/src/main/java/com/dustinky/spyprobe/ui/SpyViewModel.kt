@@ -57,6 +57,16 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
     private val _paused = MutableStateFlow(false)
     val paused: StateFlow<Boolean> = _paused.asStateFlow()
 
+    // ---------- v1.27: 历史日志（落盘文件） ----------
+    private val _historyDays = MutableStateFlow<List<String>>(emptyList())
+    val historyDays: StateFlow<List<String>> = _historyDays.asStateFlow()
+
+    private val _historyLogs = MutableStateFlow<List<Pair<Long, String>>>(emptyList())
+    val historyLogs: StateFlow<List<Pair<Long, String>>> = _historyLogs.asStateFlow()
+
+    private val _historyLoading = MutableStateFlow(false)
+    val historyLoading: StateFlow<Boolean> = _historyLoading.asStateFlow()
+
     // 状态栏
     private val _status = MutableStateFlow("未连接（目标 App 需在运行）")
     val status: StateFlow<String> = _status.asStateFlow()
@@ -261,6 +271,36 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
             _logLines.value = emptyList()
             since = 0
             _status.value = if (resp == null) "未连接" else "已清空"
+        }
+    }
+
+    // ---------- v1.27: 历史日志 ----------
+    fun loadHistoryDays() {
+        viewModelScope.launch {
+            val days = withContext(Dispatchers.IO) { api.historyDays() }
+            _historyDays.value = days ?: emptyList()
+        }
+    }
+
+    fun loadHistory(day: String) {
+        viewModelScope.launch {
+            _historyLoading.value = true
+            val logs = withContext(Dispatchers.IO) { api.history(day, 10000) }
+            _historyLogs.value = logs?.mapIndexed { i, it -> Pair(i.toLong() + 1, it.display()) }
+                ?: emptyList()
+            _historyLoading.value = false
+        }
+    }
+
+    /** 清空历史：day=null 清全部 */
+    fun clearHistory(day: String?, onDone: (Boolean) -> Unit = {}) {
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) { api.clearHistory(day) }
+            if (ok) {
+                loadHistoryDays()
+                if (day != null) _historyLogs.value = emptyList()
+            }
+            onDone(ok)
         }
     }
 
