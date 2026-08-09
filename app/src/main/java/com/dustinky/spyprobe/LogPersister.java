@@ -64,6 +64,9 @@ public class LogPersister {
     /** 初始化（幂等）：由目标 App 进程启动时调用 */
     public synchronized void init(File appFilesDir) {
         if (dir != null) return;
+        // v1.29.1: LogPersister 拿到有效 filesDir 时同步给 DebugLog 落盘——
+        // 否则 DebugLog.init 只在早期(null)调过一次，file 永远 null，调试日志永不落盘
+        DebugLog.get().init(appFilesDir);
         dir = new File(appFilesDir, "spyprobe_logs");
         if (!dir.mkdirs() && !dir.isDirectory()) {
             LogStore.get().log("SpyProbe.Persist", "mkdir fail: " + dir.getAbsolutePath());
