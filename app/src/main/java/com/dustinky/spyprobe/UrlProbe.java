@@ -13,6 +13,24 @@ public class UrlProbe {
 
     static final String TAG = "SpyProbe.URL";
 
+    // v1.35 P1-1: URL 去重——URL.<init>/Uri.parse/URI.create/HttpUrl.parse 常对同一字符串
+    //   连环触发（一次请求记 3-4 条 [URL]/[URI]/[HTTPURL]）。最近 3 秒同 URL 只记一次。
+    private static final long URL_DEDUP_MS = 3000;
+    private static final java.util.Map<String, Long> sUrlSeen = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static void logUrlOnce(String url) {
+        if (!Config.get().urlBuildCapture || url == null) return;
+        long now = System.currentTimeMillis();
+        Long prev = sUrlSeen.get(url);
+        if (prev != null && now - prev < URL_DEDUP_MS) return;
+        sUrlSeen.put(url, now);
+        if (sUrlSeen.size() > 1024) {
+            long cutoff = now - URL_DEDUP_MS;
+            sUrlSeen.entrySet().removeIf(e -> now - e.getValue() > cutoff);
+        }
+        LogStore.get().log(TAG, "[URL] " + url);
+    }
+
     private final XposedModule module;
     private final ClassLoader appCl;
 
@@ -30,10 +48,11 @@ public class UrlProbe {
             module.hook(ctor).intercept(chain -> {
                 Object r = chain.proceed();
                 // v1.6: 补开关检查（此前不检查 Config.urlBuildCapture，设置关不掉）
+                // v1.35 P1-1: 去重（URL/Uri/URI/HttpUrl 连环触发只记一次）
                 if (Config.get().urlBuildCapture) {
                     Object s = chain.getArg(0);
                     if (s instanceof String) {
-                        LogStore.get().log(TAG, "[URL] " + s);
+                        logUrlOnce((String) s);
                     }
                 }
                 return r;
@@ -51,7 +70,7 @@ public class UrlProbe {
                 if (Config.get().urlBuildCapture) {
                     Object s = chain.getArg(0);
                     if (s instanceof String) {
-                        LogStore.get().log(TAG, "[URI] " + s);
+                        logUrlOnce((String) s);
                     }
                 }
                 return r;
@@ -69,7 +88,7 @@ public class UrlProbe {
                 if (Config.get().urlBuildCapture) {
                     Object s = chain.getArg(0);
                     if (s instanceof String) {
-                        LogStore.get().log(TAG, "[URI] " + s);
+                        logUrlOnce((String) s);
                     }
                 }
                 return r;
@@ -87,7 +106,7 @@ public class UrlProbe {
                 if (Config.get().urlBuildCapture) {
                     Object s = chain.getArg(0);
                     if (s instanceof String) {
-                        LogStore.get().log(TAG, "[HTTPURL] " + s);
+                        logUrlOnce((String) s);
                     }
                 }
                 return r;

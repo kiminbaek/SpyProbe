@@ -238,13 +238,14 @@ public class SpyServer {
                 case "/api/logs/all":
                 case "/api/export": {
                     // v1.27: ?day=YYYY-MM-DD 导出历史某天（不带 day = 内存全量，兼容旧版）
+                    // v1.35 P2-1: 统一 formatLine（tag 右对齐 + msg 单行）
                     String day = getQueryParam(query, "day", "");
                     StringBuilder sb = new StringBuilder();
                     if (!day.isEmpty()) {
                         // v1.28 P1: 历史导出同样限制条数（readDay 环形截断保留最新 5000），防止超大日志 OOM/超时
                         List<LogPersister.Entry> all = LogPersister.get().readDay(day, 5000);
                         for (LogPersister.Entry e : all) {
-                            sb.append(e.time).append(" [").append(e.tag).append("] ").append(e.msg).append('\n');
+                            sb.append(com.dustinky.spyprobe.util.ShareLogUtil.INSTANCE.formatLine(e.time, e.tag, e.msg)).append('\n');
                         }
                     } else {
                         // v1.26 P0-3: 导出限制最近 3000 条（日志含 body 可能极大，全量拼接超时/OOM）
@@ -252,7 +253,7 @@ public class SpyServer {
                         int from = Math.max(0, all.size() - 3000);
                         for (int i = from; i < all.size(); i++) {
                             LogStore.Entry e = all.get(i);
-                            sb.append(e.time).append(" [").append(e.tag).append("] ").append(e.msg).append('\n');
+                            sb.append(com.dustinky.spyprobe.util.ShareLogUtil.INSTANCE.formatLine(e.time, e.tag, e.msg)).append('\n');
                         }
                     }
                     JSONObject o = new JSONObject();

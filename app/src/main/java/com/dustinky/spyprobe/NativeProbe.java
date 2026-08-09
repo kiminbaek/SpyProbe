@@ -23,7 +23,21 @@ public class NativeProbe {
 
     /** 单次数据最大记录长度（超长截断，防刷爆 4096 环形缓冲） */
     private static final int MAX_TEXT = 2048;
-    private static final int MAX_HEX = 256;
+    // v1.35 P1-2: hex 展示上限 256→64（大块非文本流量只留摘要，见 toReadable）
+    private static final int MAX_HEX = 64;
+    // v1.35 P1-2: 超过此字节的非文本数据不再展开 hex，只记 "[N B hex]" 摘要
+    private static final int HEX_DUMP_MAX = 128;
+
+    /** v1.35 P0-1b: 推送通道自排除——127.0.0.1:9900 是 SpyProbe 自己家日志推送端口，
+     *  native send/recv 会捕获到推送 socket 数据（含全部历史日志的 JSON），必须跳过，
+     *  否则推送体被当日志记录 → 递归爆炸（上次日志 944 条 9900 记录）。 */
+    private static boolean isSelfPush(String socketInfo) {
+        if (socketInfo == null) return false;
+        return socketInfo.startsWith("127.0.0.1:9900")
+                || socketInfo.startsWith("::ffff:127.0.0.1:9900")
+                || socketInfo.startsWith("[::1]:9900")
+                || socketInfo.startsWith("::1:9900");
+    }
 
     private static volatile boolean inited = false;
 
@@ -99,6 +113,8 @@ public class NativeProbe {
             // v1.15 P0-4: native 抓包开关（高频刷屏可关；关时不做任何记录/解析，只放行）
             if (!Config.get().nativeCapture) return false;
             if (buf == null) return false;
+            // v1.35 P0-1b: 跳过自身日志推送（127.0.0.1:9900），根治递归污染
+            if (isSelfPush(socketInfo)) return false;
             String dir = isWrite ? ">>>" : "<<<";
             String proto = isSsl ? "TLS" : "TCP";
             String loc = (socketInfo != null && !socketInfo.isEmpty()) ? socketInfo : ("#" + id);
@@ -182,7 +198,8 @@ public class NativeProbe {
 
     // ================= 工具 =================
 
-    /** 可打印文本直接展示（截断），否则 hex 摘要；total=原始总字节（>data.length 时用于显示实际大小） */
+    /** 可打印文本直接展示（截断），否则 hex 摘要；total=原始总字节（>data.length 时用于显示实际大小）
+     *  v1.35 P1-2: 非文本且 > HEX_DUMP_MAX 字节 → 只记 "[N B hex]" 摘要不再展开（视频/图片流量刷屏根治） */
     private static String toReadable(byte[] data, int total) {
         if (data == null || data.length == 0) return "(empty)";
         boolean printable = true;
@@ -195,6 +212,9 @@ public class NativeProbe {
             String s = new String(data, StandardCharsets.UTF_8).trim();
             if (s.length() > MAX_TEXT) s = s.substring(0, MAX_TEXT) + "...(" + total + "B)";
             return s;
+        }
+        if (total > HEX_DUMP_MAX) {
+            return "[" + total + "B hex] (非文本大块，hex 省略)";
         }
         StringBuilder sb = new StringBuilder();
         sb.append("[").append(total).append("B hex] ");

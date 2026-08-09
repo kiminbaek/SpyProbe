@@ -647,7 +647,8 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                         val sb = StringBuilder()
                                         sb.append("===== 会话 ${session.date} #${session.session}（${local.size} 条）=====\n")
                                         for (e in local) {
-                                            sb.append(e.time).append(" [").append(e.tag).append("] ").append(e.msg).append('\n')
+                                            // v1.35 P2-1: 统一 formatLine（tag 右对齐 + msg 单行）
+                                            sb.append(com.dustinky.spyprobe.util.ShareLogUtil.formatLine(e.time, e.tag, e.msg)).append('\n')
                                         }
                                         sb.toString()
                                     } else if (vm.rootMode.value) {
@@ -708,7 +709,8 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                                 sb.append("===== 会话 ${s.date} #${s.session}（${s.count} 条，${s.firstTime} → ${s.lastTime}）=====\n")
                                                 val entries = com.dustinky.spyprobe.util.HomeLogReader.readSession(appCtx.filesDir, s.date, s.session, 20000)
                                                 for (e in entries) {
-                                                    sb.append(e.time).append(" [").append(e.tag).append("] ").append(e.msg).append('\n')
+                                                    // v1.35 P2-1: 统一 formatLine（tag 右对齐 + msg 单行）
+                                                    sb.append(com.dustinky.spyprobe.util.ShareLogUtil.formatLine(e.time, e.tag, e.msg)).append('\n')
                                                 }
                                             }
                                             sb.toString()

@@ -88,6 +88,12 @@ public class LogStore {
         }
     }
 
+    // v1.35 P0-1: 推送改纯 Socket 直写 HTTP，不经过 HttpURLConnection ——
+    //   旧实现用 HttpURLConnection POST 127.0.0.1:9900，被自己的 NetProbe HUC hook +
+    //   native send/recv hook 捕获 → 推送体（含全部历史日志）被当新日志记录 → 递归爆炸
+    //   （上次日志 944/1258 条是 127.0.0.1:9900 推送记录）。
+    //   改纯 Socket：Java 层无任何 hook 点捕获；native 层在 NativeProbe.onNativeData
+    //   按 127.0.0.1:9900 显式跳过（双保险）。
     private void flushPush(List<String> batch) {
         try {
             StringBuilder sb = new StringBuilder("{\"session\":\"").append(sessionId).append("\",\"entries\":[");
@@ -96,20 +102,29 @@ public class LogStore {
                 sb.append(batch.get(i));
             }
             sb.append("]}");
-            java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
-                    new java.net.URL(HOME_URL).openConnection();
-            conn.setConnectTimeout(500);
-            conn.setReadTimeout(1000);
-            conn.setRequestMethod("POST");
-            conn.setDoOutput(true);
-            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
             byte[] data = sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
-            conn.setRequestProperty("Content-Length", String.valueOf(data.length));
-            try (java.io.OutputStream os = conn.getOutputStream()) {
-                os.write(data);
-            }
-            conn.getInputStream().close();
-            conn.disconnect();
+            java.net.Socket sock = new java.net.Socket();
+            sock.setTcpNoDelay(true);
+            sock.connect(new java.net.InetSocketAddress("127.0.0.1", 9900), 500);
+            // 手写最小 HTTP POST（Content-Length 固定，无 chunked）
+            StringBuilder head = new StringBuilder();
+            head.append("POST /api/push_logs HTTP/1.1\r\n")
+                .append("Host: 127.0.0.1:9900\r\n")
+                .append("Content-Type: application/json; charset=utf-8\r\n")
+                .append("Content-Length: ").append(data.length).append("\r\n")
+                .append("Connection: close\r\n\r\n");
+            java.io.OutputStream os = sock.getOutputStream();
+            os.write(head.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            os.write(data);
+            os.flush();
+            // 读响应直到关闭（Connection: close），避免对端 write 失败
+            java.io.InputStream is = sock.getInputStream();
+            byte[] tmp = new byte[256];
+            long deadline = System.currentTimeMillis() + 1000;
+            while (System.currentTimeMillis() < deadline && is.read(tmp) != -1) { }
+            try { is.close(); } catch (Throwable t2) { }
+            try { os.close(); } catch (Throwable t2) { }
+            try { sock.close(); } catch (Throwable t2) { }
         } catch (Throwable t) {
             // 主进程不在线/推送失败：静默丢弃（内存缓冲仍在，UI 连目标进程时可见）
         }
@@ -134,14 +149,36 @@ public class LogStore {
         return sb.toString();
     }
 
+    // v1.35 P0-2: 单行化——所有日志 msg 在入口统一把换行折叠成 ␤（U+2424）。
+    //   旧实现 msg 内嵌 \n（OkHttp 头/body 多行缩进、native stack 多行）→ 导出 txt
+    //   一行日志跨多行，grep 行号全乱。折叠后保证"一行一条"，导出/UI/grep 都干净。
+    private static String foldLine(String s) {
+        if (s == null) return "";
+        if (s.indexOf('\n') < 0 && s.indexOf('\r') < 0) return s;
+        StringBuilder sb = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '\n' || c == '\r') sb.append('\u2424');
+            else sb.append(c);
+        }
+        return sb.toString();
+    }
+
+    /** v1.35 P1-3: 请求关联 ID——返回下一条即将分配的 seq（供 OkHttp 请求/响应行关联，不消费） */
+    public synchronized long nextSeq() {
+        return seq + 1;
+    }
+
     public synchronized void log(String tag, String msg) {
+        // v1.35 P0-2: 单行化入口（211 处调用全覆盖）
+        String folded = foldLine(msg);
         String t = FMT.get().format(new Date());
-        entries.addLast(new Entry(++seq, t, tag, msg));
+        entries.addLast(new Entry(++seq, t, tag, folded));
         // v1.27: 同步异步落盘（JSONL 按天文件，进程死/升级不丢）
-        LogPersister.get().log(seq, tag, msg);
+        LogPersister.get().log(seq, tag, folded);
         // v1.32: 目标进程日志推回主进程（SpyProbe 自己家）；主进程自身不启用
         if (pushHome) {
-            String line = "{\"t\":\"" + esc(t) + "\",\"tag\":\"" + esc(tag) + "\",\"m\":\"" + esc(msg) + "\"}";
+            String line = "{\"t\":\"" + esc(t) + "\",\"tag\":\"" + esc(tag) + "\",\"m\":\"" + esc(folded) + "\"}";
             if (!pushQueue.offer(line)) {
                 pushQueue.poll();
                 pushQueue.offer(line);

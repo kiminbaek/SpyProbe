@@ -304,6 +304,9 @@ public class NetProbe {
                     if (!Config.get().okhttpCapture) return chainParam.proceed();
                     Object req = chainParam.getArg(0);
                     if (req == null) return chainParam.proceed();
+                    // v1.35 P1-3: 请求关联 ID——LogStore 下一条 seq，请求/响应行共用，
+                    //   同一请求的两条记录可 grep "#123" 关联（轻量方案，不跨层做全链路）
+                    long rid = LogStore.get().nextSeq();
                     // method/url 需在 try 外可见（失败留痕也要用）
                     Object method = null;
                     Object url = null;
@@ -313,7 +316,7 @@ public class NetProbe {
                         method = sReqMethod.invoke(req);
                         Object headers = sReqHeaders.invoke(req);
                         StringBuilder sb = new StringBuilder();
-                        sb.append(">>> ").append(method).append(" ").append(url);
+                        sb.append("[REQ#").append(rid).append("] >>> ").append(method).append(" ").append(url);
                         if (headers != null) {
                             // okhttp Headers.toString() 格式 "Key: value\n..."
                             sb.append("\n    ").append(headers.toString().replace("\n", "\n    "));
@@ -350,7 +353,8 @@ public class NetProbe {
                         resp = chainParam.proceed();
                     } catch (Throwable t) {
                         // v1.2: 失败请求留痕（连接失败/超时/协议错误），rethrow 保持原行为
-                        LogStore.get().log(TAG, "[OkHttp] !!! REQUEST FAILED: " + method + " " + url + " -> " + t);
+                        // v1.35 P1-3: 失败行带关联 ID
+                        LogStore.get().log(TAG, "[REQ#" + rid + "] !!! REQUEST FAILED: " + method + " " + url + " -> " + t);
                         throw t;
                     }
                     try {
@@ -366,7 +370,7 @@ public class NetProbe {
                         String b = bodyStr == null ? "" : bodyStr.toString();
                         if (b.length() > limit) b = b.substring(0, limit) + "...(" + b.length() + "B)";
                         StringBuilder sb = new StringBuilder();
-                        sb.append("<<< ").append(code).append(" ").append(msg);
+                        sb.append("[REQ#").append(rid).append("] <<< ").append(code).append(" ").append(msg);
                         if (respHeaders != null) {
                             // v1.2: 响应头（Set-Cookie / Content-Type / 长度）
                             sb.append("\n    ").append(respHeaders.toString().replace("\n", "\n    "));

@@ -28,6 +28,20 @@ object ShareLogUtil {
         SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
 
     /**
+     * v1.35 P2-1: 统一日志行格式化（导出 txt 用）。
+     * 旧格式 "HH:mm:ss.SSS [tag] msg" 各导出点重复拼、tag 长短不一 → 右对齐到固定宽度，
+     * 输出 "HH:mm:ss.SSS [      tag] msg"，一眼对齐 tag 列，msg 单行（已在 LogStore 折叠）。
+     */
+    private const val TAG_WIDTH = 20
+
+    fun formatLine(time: String, tag: String, msg: String): String {
+        val t = if (time.isEmpty()) "" else time
+        val g = if (tag.isEmpty()) "-" else tag
+        val pad = if (g.length >= TAG_WIDTH) g else g.padStart(TAG_WIDTH)
+        return "$t [$pad] $msg"
+    }
+
+    /**
      * 把日志内容写成 txt 文件并返回可分享的 Uri（content://）。
      * 失败返回 null。
      */
