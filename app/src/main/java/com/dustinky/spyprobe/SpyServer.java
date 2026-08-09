@@ -27,12 +27,22 @@ import io.github.libxposed.api.XposedInterface;
  *   GET  /api/logs?since=N        -> {"next":N,"logs":[...]}
  *   GET  /api/logs/all            -> 全量日志（文本）
  *   GET  /api/export              -> 全量日志文本（UI 导出用）
+ *   GET  /api/history/days        -> 历史日期列表
+ *   GET  /api/history?day=Y-M-D&max=N -> 某天历史日志
+ *   POST /api/history/clear       -> {"day":..|null} 清空历史（null=全清）
+ *   GET  /api/debuglog            -> 目标进程 DebugLog 文本
+ *   GET  /api/classes?filter=..   -> 类加载记录（ClassLoadProbe）
  *   POST /api/config              -> {"sslBypass":..,"okhttp":..,"url":..,"bodyLimit":..}
  *   GET  /api/config              -> 当前配置
  *   POST /api/scan                -> {"class":"com.xxx.Cls"} 枚举方法+字段
  *   POST /api/hook                -> {"class":..,"method":..,"params":..} 动态 hook
  *   POST /api/unhook              -> {"class":..,"method":..,"params":..} 卸载 hook
  *   GET  /api/hooks               -> 当前已 hook 列表
+ *   POST /api/hijack              -> 方法返回劫持
+ *   GET  /api/hijacks             -> 劫持列表
+ *   POST /api/dexdump             -> 导出 DEX
+ *   POST /api/stringfind          -> {"s":..} 字符串反查
+ *   POST /api/dexclose            -> 释放 DexKit
  *   POST /api/clear               -> 清空日志
  */
 public class SpyServer {
@@ -110,9 +120,9 @@ public class SpyServer {
     }
 
     private void handle(Socket s) {
-        try (Socket sock = s;
-             InputStream in = sock.getInputStream();
-             OutputStream out = sock.getOutputStream();
+        // v1.36 P2-9: 去掉冗余 `Socket sock = s`（同一对象重复引用，直接用 s）
+        try (InputStream in = s.getInputStream();
+             OutputStream out = s.getOutputStream();
              BufferedReader r = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
 
             String reqLine = r.readLine();

@@ -3,7 +3,7 @@
 #include <cstring>
 #include <time.h>
 
-#define LOG_TAG "AdClose-H2"
+#define LOG_TAG "SpyProbe-H2"
 
 #if DEBUG
 #define H2LOG(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)

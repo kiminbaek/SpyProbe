@@ -55,46 +55,40 @@ object HomeLogReader {
     /**
      * 会话列表（新会话在前）：扫描全部文件，按 (date, session) 分组，
      * 统计条数 + 首末时间（只读每个文件首/末行，避免大文件全读）。
+     *
+     * v1.36 P0-1: 修复字典序陷阱——旧实现 sortedBy{name} 按字典序排（_10 < _2），
+     *   再用相邻 (date to session) 相等分组，同天会话 ≥10 次时 _2/_3.. 被 _10 拆散
+     *   成独立会话卡片、文件归属错乱。改 groupBy 数值分组，不依赖字典序。
      */
     fun sessions(filesDir: File): List<SessionInfo> {
         val d = logDir(filesDir) ?: return emptyList()
-        val files = d.listFiles { f -> f.isFile && parseName(f.name) != null }
-            ?.sortedBy { it.name } ?: return emptyList()
+        val byKey = d.listFiles { f -> f.isFile && parseName(f.name) != null }
+            ?.groupBy { parseName(it.name)!! } ?: return emptyList()
         val out = ArrayList<SessionInfo>()
-        var idx = 0
-        while (idx < files.size) {
-            val parsed = parseName(files[idx].name)
-            if (parsed != null) {
-                val (date, session) = parsed
-                val filesOf = ArrayList<File>()
-                while (idx < files.size && parseName(files[idx].name) == (date to session)) {
-                    filesOf.add(files[idx]); idx++
-                }
-                var count = 0
-                var firstTime = ""
-                var lastTime = ""
-                for (f in filesOf) {
-                    var f1: String? = null
-                    var l1: String? = null
-                    var n = 0
-                    try {
-                        f.forEachLine { line ->
-                            if (line.isBlank()) return@forEachLine
-                            if (f1 == null) parseTime(line)?.let { f1 = it }
-                            parseTime(line)?.let { l1 = it }
-                            n++
-                        }
-                    } catch (t: Throwable) {
-                        UiLog.log("$TAG session $date/$session ${f.name} error: $t")
+        for ((key, filesOf) in byKey) {
+            val (date, session) = key
+            var count = 0
+            var firstTime = ""
+            var lastTime = ""
+            for (f in filesOf) {
+                var f1: String? = null
+                var l1: String? = null
+                var n = 0
+                try {
+                    f.forEachLine { line ->
+                        if (line.isBlank()) return@forEachLine
+                        if (f1 == null) parseTime(line)?.let { f1 = it }
+                        parseTime(line)?.let { l1 = it }
+                        n++
                     }
-                    count += n
-                    if (f1 != null && (firstTime.isEmpty() || f1!! < firstTime)) firstTime = f1!!
-                    if (l1 != null && (lastTime.isEmpty() || l1!! > lastTime)) lastTime = l1!!
+                } catch (t: Throwable) {
+                    UiLog.log("$TAG session $date/$session ${f.name} error: $t")
                 }
-                out.add(SessionInfo(date, session, filesOf.size, count, firstTime, lastTime))
-            } else {
-                idx++
+                count += n
+                if (f1 != null && (firstTime.isEmpty() || f1!! < firstTime)) firstTime = f1!!
+                if (l1 != null && (lastTime.isEmpty() || l1!! > lastTime)) lastTime = l1!!
             }
+            out.add(SessionInfo(date, session, filesOf.size, count, firstTime, lastTime))
         }
         out.sortWith(compareByDescending<SessionInfo> { it.date }.thenByDescending { it.session })
         return out

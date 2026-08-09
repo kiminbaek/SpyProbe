@@ -407,36 +407,8 @@ public class Config {
         }
         this.cfgFile = file;
         try {
-            org.json.JSONObject o = new org.json.JSONObject();
-            o.put("sslBypass", sslBypass);
-            o.put("okhttp", okhttpCapture);
-            o.put("url", urlCapture);
-            o.put("dns", dnsCapture);
-            o.put("tcp", tcpCapture);
-            o.put("classes", classCapture);
-            o.put("classFilter", classFilter == null ? "" : classFilter);
-            o.put("classLogAll", classLogAll);
-            o.put("bodyLimit", bodyLimit);
-            o.put("logLimit", logLimit);
-            o.put("webView", webViewCapture);
-            o.put("prefs", prefsCapture);
-            o.put("sqlite", sqliteCapture);
-            o.put("urlBuild", urlBuildCapture);
-            o.put("logcat", logcatCapture);
-            o.put("crypto", cryptoCapture);
-            o.put("activity", activityCapture);
-            o.put("json", jsonCapture);
-            o.put("detailMode", detailMode);
-            o.put("env", envCapture);
-            o.put("tls", tlsCapture);
-            o.put("connect", connectCapture);
-            o.put("cronet", cronetCapture);
-            o.put("antiRoot", antiRoot);
-            o.put("antiXposed", antiXposed);
-            o.put("native", nativeCapture);
-            o.put("autoProbe", autoProbe);
-            o.put("autoProbeFilter", autoProbeFilter == null ? "" : autoProbeFilter);
-            o.put("debug", debugEnabled);
+            // v1.36 P2-7: 序列化统一走 toJsonObject()（29 字段单一事实来源，不再手写第二份）
+            org.json.JSONObject o = toJsonObject();
             // v1.22: 原子写（tmp + rename），防写入中断损坏配置
             java.io.File tmp = new java.io.File(file.getAbsolutePath() + ".tmp");
             java.io.FileOutputStream fos = new java.io.FileOutputStream(tmp);
@@ -490,35 +462,8 @@ public class Config {
                 fis.close();
             }
             org.json.JSONObject o = new org.json.JSONObject(new String(buf, "UTF-8"));
-            sslBypass = o.optBoolean("sslBypass", sslBypass);
-            okhttpCapture = o.optBoolean("okhttp", okhttpCapture);
-            urlCapture = o.optBoolean("url", urlCapture);
-            dnsCapture = o.optBoolean("dns", dnsCapture);
-            tcpCapture = o.optBoolean("tcp", tcpCapture);
-            classCapture = o.optBoolean("classes", classCapture);
-            classFilter = o.optString("classFilter", classFilter);
-            classLogAll = o.optBoolean("classLogAll", classLogAll);
-            bodyLimit = o.optInt("bodyLimit", bodyLimit);
-            logLimit = o.optInt("logLimit", logLimit);
-            webViewCapture = o.optBoolean("webView", webViewCapture);
-            prefsCapture = o.optBoolean("prefs", prefsCapture);
-            sqliteCapture = o.optBoolean("sqlite", sqliteCapture);
-            urlBuildCapture = o.optBoolean("urlBuild", urlBuildCapture);
-            logcatCapture = o.optBoolean("logcat", logcatCapture);
-            cryptoCapture = o.optBoolean("crypto", cryptoCapture);
-            activityCapture = o.optBoolean("activity", activityCapture);
-            jsonCapture = o.optBoolean("json", jsonCapture);
-            detailMode = o.optBoolean("detailMode", detailMode);
-            envCapture = o.optBoolean("env", envCapture);
-            tlsCapture = o.optBoolean("tls", tlsCapture);
-            connectCapture = o.optBoolean("connect", connectCapture);
-            cronetCapture = o.optBoolean("cronet", cronetCapture);
-            antiRoot = o.optBoolean("antiRoot", antiRoot);
-            antiXposed = o.optBoolean("antiXposed", antiXposed);
-            nativeCapture = o.optBoolean("native", nativeCapture);
-            autoProbe = o.optBoolean("autoProbe", autoProbe);
-            autoProbeFilter = o.optString("autoProbeFilter", autoProbeFilter);
-            debugEnabled = o.optBoolean("debug", debugEnabled);
+            // v1.36 P2-7: 统一走 applyFromJsonObject（字段集与 saveConfig/toJson/applyJson 单一来源）
+            applyFromJsonObject(o);
             // v1.22: 记录关键开关恢复结果，方便用户反馈日志定位
             debugLog("config restored: prefs=" + prefsCapture + " activity=" + activityCapture
                     + " crypto=" + cryptoCapture + " native=" + nativeCapture + " autoProbe=" + autoProbe);
@@ -538,8 +483,13 @@ public class Config {
         return resolveCfgFile();
     }
 
-    /** 序列化全部抓包开关（与 saveConfig 同字段集） */
+    /** 序列化全部抓包开关（v1.36 P2-7: saveConfig/toJson 共用，29 字段单一事实来源） */
     public org.json.JSONObject toJson() {
+        return toJsonObject();
+    }
+
+    /** v1.36 P2-7: 29 字段统一序列化（唯一事实来源——saveConfig/toJson 都走这里，加字段不会漏） */
+    private org.json.JSONObject toJsonObject() {
         org.json.JSONObject o = new org.json.JSONObject();
         try {
             o.put("sslBypass", sslBypass);
@@ -572,9 +522,42 @@ public class Config {
             o.put("autoProbeFilter", autoProbeFilter == null ? "" : autoProbeFilter);
             o.put("debug", debugEnabled);
         } catch (Throwable t) {
-            debugLog("toJson FAIL: " + t);
+            debugLog("toJsonObject FAIL: " + t);
         }
         return o;
+    }
+
+    /** v1.36 P2-7: 29 字段统一反序列化（唯一事实来源——loadConfig/applyJson 都走这里，加字段不会漏） */
+    private void applyFromJsonObject(org.json.JSONObject o) {
+        sslBypass = o.optBoolean("sslBypass", sslBypass);
+        okhttpCapture = o.optBoolean("okhttp", okhttpCapture);
+        urlCapture = o.optBoolean("url", urlCapture);
+        dnsCapture = o.optBoolean("dns", dnsCapture);
+        tcpCapture = o.optBoolean("tcp", tcpCapture);
+        classCapture = o.optBoolean("classes", classCapture);
+        classFilter = o.optString("classFilter", classFilter);
+        classLogAll = o.optBoolean("classLogAll", classLogAll);
+        bodyLimit = o.optInt("bodyLimit", bodyLimit);
+        logLimit = o.optInt("logLimit", logLimit);
+        webViewCapture = o.optBoolean("webView", webViewCapture);
+        prefsCapture = o.optBoolean("prefs", prefsCapture);
+        sqliteCapture = o.optBoolean("sqlite", sqliteCapture);
+        urlBuildCapture = o.optBoolean("urlBuild", urlBuildCapture);
+        logcatCapture = o.optBoolean("logcat", logcatCapture);
+        cryptoCapture = o.optBoolean("crypto", cryptoCapture);
+        activityCapture = o.optBoolean("activity", activityCapture);
+        jsonCapture = o.optBoolean("json", jsonCapture);
+        detailMode = o.optBoolean("detailMode", detailMode);
+        envCapture = o.optBoolean("env", envCapture);
+        tlsCapture = o.optBoolean("tls", tlsCapture);
+        connectCapture = o.optBoolean("connect", connectCapture);
+        cronetCapture = o.optBoolean("cronet", cronetCapture);
+        antiRoot = o.optBoolean("antiRoot", antiRoot);
+        antiXposed = o.optBoolean("antiXposed", antiXposed);
+        nativeCapture = o.optBoolean("native", nativeCapture);
+        autoProbe = o.optBoolean("autoProbe", autoProbe);
+        autoProbeFilter = o.optString("autoProbeFilter", autoProbeFilter);
+        debugEnabled = o.optBoolean("debug", debugEnabled);
     }
 
     /** 应用远程配置 JSON（主进程 GET /api/config 拉取后调用；字段集与 loadConfig 一致） */
@@ -582,35 +565,8 @@ public class Config {
         if (json == null || json.isEmpty()) return;
         try {
             org.json.JSONObject o = new org.json.JSONObject(json);
-            sslBypass = o.optBoolean("sslBypass", sslBypass);
-            okhttpCapture = o.optBoolean("okhttp", okhttpCapture);
-            urlCapture = o.optBoolean("url", urlCapture);
-            dnsCapture = o.optBoolean("dns", dnsCapture);
-            tcpCapture = o.optBoolean("tcp", tcpCapture);
-            classCapture = o.optBoolean("classes", classCapture);
-            classFilter = o.optString("classFilter", classFilter);
-            classLogAll = o.optBoolean("classLogAll", classLogAll);
-            bodyLimit = o.optInt("bodyLimit", bodyLimit);
-            logLimit = o.optInt("logLimit", logLimit);
-            webViewCapture = o.optBoolean("webView", webViewCapture);
-            prefsCapture = o.optBoolean("prefs", prefsCapture);
-            sqliteCapture = o.optBoolean("sqlite", sqliteCapture);
-            urlBuildCapture = o.optBoolean("urlBuild", urlBuildCapture);
-            logcatCapture = o.optBoolean("logcat", logcatCapture);
-            cryptoCapture = o.optBoolean("crypto", cryptoCapture);
-            activityCapture = o.optBoolean("activity", activityCapture);
-            jsonCapture = o.optBoolean("json", jsonCapture);
-            detailMode = o.optBoolean("detailMode", detailMode);
-            envCapture = o.optBoolean("env", envCapture);
-            tlsCapture = o.optBoolean("tls", tlsCapture);
-            connectCapture = o.optBoolean("connect", connectCapture);
-            cronetCapture = o.optBoolean("cronet", cronetCapture);
-            antiRoot = o.optBoolean("antiRoot", antiRoot);
-            antiXposed = o.optBoolean("antiXposed", antiXposed);
-            nativeCapture = o.optBoolean("native", nativeCapture);
-            autoProbe = o.optBoolean("autoProbe", autoProbe);
-            autoProbeFilter = o.optString("autoProbeFilter", autoProbeFilter);
-            debugEnabled = o.optBoolean("debug", debugEnabled);
+            // v1.36 P2-7: 统一走 applyFromJsonObject（与 loadConfig 同字段集）
+            applyFromJsonObject(o);
             debugLog("config applied from home: native=" + nativeCapture + " prefs=" + prefsCapture
                     + " activity=" + activityCapture + " debug=" + debugEnabled);
         } catch (Throwable t) {

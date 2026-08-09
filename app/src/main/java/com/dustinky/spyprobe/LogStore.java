@@ -175,7 +175,8 @@ public class LogStore {
         String t = FMT.get().format(new Date());
         entries.addLast(new Entry(++seq, t, tag, folded));
         // v1.27: 同步异步落盘（JSONL 按天文件，进程死/升级不丢）
-        LogPersister.get().log(seq, tag, folded);
+        // v1.36 P2-8: 传已格式化时间 t（LogPersister 不再重复 format）
+        LogPersister.get().logAt(seq, t, tag, folded);
         // v1.32: 目标进程日志推回主进程（SpyProbe 自己家）；主进程自身不启用
         if (pushHome) {
             String line = "{\"t\":\"" + esc(t) + "\",\"tag\":\"" + esc(tag) + "\",\"m\":\"" + esc(folded) + "\"}";
@@ -185,6 +186,16 @@ public class LogStore {
             }
         }
         // v1.12: 容量动态可配置（Config.logLimit）
+        int limit = Config.get().logLimit;
+        while (entries.size() > limit) entries.pollFirst();
+    }
+
+    /** v1.36 P2-13: 主进程接收端专用——push_logs 推送的日志用原始时间落盘（保留目标进程 t），
+     *  seq 由主进程分配（跨会话全局唯一，JSONL 排序正确）；不推回 push 队列（接收端） */
+    public synchronized void logAt(String time, String tag, String msg) {
+        String folded = foldLine(msg);
+        entries.addLast(new Entry(++seq, time, tag, folded));
+        LogPersister.get().logAt(seq, time, tag, folded);
         int limit = Config.get().logLimit;
         while (entries.size() > limit) entries.pollFirst();
     }

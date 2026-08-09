@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v1.36 P2-15: 自定义应用图标（替代系统默认 ic_menu_view）
+     深色底 + 荧光绿放大镜 + 青色探针点，呼应 SpyProbe 抓包/探测主题 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 深色圆角背景 -->
+    <path
+        android:fillColor="#FF0B1A2A"
+        android:pathData="M54,4 A50,50 0 1,0 54,104 A50,50 0 1,0 54,4 Z" />
+    <!-- 放大镜外圈（荧光绿） -->
+    <path
+        android:fillColor="#00E676"
+        android:pathData="M44,34 A22,22 0 1,0 44,78 A22,22 0 1,0 44,34 Z" />
+    <!-- 镜片内圈（背景色） -->
+    <path
+        android:fillColor="#FF0B1A2A"
+        android:pathData="M44,41 A15,15 0 1,0 44,71 A15,15 0 1,0 44,41 Z" />
+    <!-- 放大镜手柄（描边） -->
+    <path
+        android:strokeColor="#00E676"
+        android:strokeWidth="9"
+        android:strokeLineCap="round"
+        android:pathData="M63,67 L79,83" />
+    <!-- 中心探针点（青色） -->
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M44,50 A6,6 0 1,0 44,62 A6,6 0 1,0 44,50 Z" />
+</vector>

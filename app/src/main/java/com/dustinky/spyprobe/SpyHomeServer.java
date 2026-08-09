@@ -44,27 +44,28 @@ public class SpyHomeServer {
         acceptThread.start();
     }
 
+    /**
+     * v1.36 P2-19: bind 失败/accept 连续异常不再退出——9900 被占或瞬时异常时每 2s 重试，
+     *   server 永久存活（旧实现 bind 失败直接 return、accept 连错 10 次 break，server 永久死）
+     */
     private void acceptLoop() {
-        try {
-            serverSocket = new ServerSocket();
-            serverSocket.setReuseAddress(true);
-            serverSocket.bind(new InetSocketAddress("127.0.0.1", PORT), 16);
-        } catch (Throwable t) {
-            DebugLog.get().log("Home", "bind FAIL 127.0.0.1:" + PORT + " : " + t);
-            return;
-        }
-        DebugLog.get().log("Home", "listening 127.0.0.1:" + PORT);
-        int failCount = 0;
         while (!Thread.currentThread().isInterrupted()) {
             try {
+                if (serverSocket == null || serverSocket.isClosed()) {
+                    serverSocket = new ServerSocket();
+                    serverSocket.setReuseAddress(true);
+                    serverSocket.bind(new InetSocketAddress("127.0.0.1", PORT), 16);
+                    DebugLog.get().log("Home", "listening 127.0.0.1:" + PORT);
+                }
                 Socket s = serverSocket.accept();
-                failCount = 0;
                 Thread t = new Thread(() -> handle(s), "SpyProbe-HomeConn");
                 t.setDaemon(true);
                 t.start();
             } catch (Throwable t) {
-                if (++failCount >= 10) break;
-                try { Thread.sleep(200); } catch (InterruptedException ie) { break; }
+                DebugLog.get().log("Home", "accept err: " + t);
+                try { if (serverSocket != null) serverSocket.close(); } catch (Throwable t2) { }
+                serverSocket = null;
+                try { Thread.sleep(2000); } catch (InterruptedException ie) { break; }
             }
         }
     }
@@ -149,7 +150,9 @@ public class SpyHomeServer {
                         for (int i = 0; i < arr.length(); i++) {
                             try {
                                 JSONObject e = arr.getJSONObject(i);
-                                LogStore.get().log(e.optString("tag", "?"), e.optString("m", ""));
+                                // v1.36 P2-13: 用原始时间落盘（旧实现走 log() 重新格式化，
+                                //   推送延迟会漂移时间）；seq 仍由主进程分配（跨会话全局唯一）
+                                LogStore.get().logAt(e.optString("t", ""), e.optString("tag", "?"), e.optString("m", ""));
                                 n++;
                             } catch (Throwable t) { }
                         }

@@ -47,13 +47,6 @@ public class LogPersister {
     private static final int QUEUE_CAP = 8192;             // 队列上限，满丢最旧
 
     private final SimpleDateFormat DAY_FMT = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
-    // v1.28 P1: log() 被多个 hook 线程并发调用，共享 SimpleDateFormat 数据竞争 → ThreadLocal（LogStore 同款）
-    private static final ThreadLocal<SimpleDateFormat> TIME_FMT = new ThreadLocal<SimpleDateFormat>() {
-        @Override
-        protected SimpleDateFormat initialValue() {
-            return new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
-        }
-    };
     private final ArrayBlockingQueue<String> queue = new ArrayBlockingQueue<>(QUEUE_CAP);
 
     private volatile File dir = null;
@@ -94,11 +87,13 @@ public class LogPersister {
         sessionRollRequested = true;
     }
 
-    /** hook 线程调用（非阻塞）：入队失败丢最旧一条 */
-    public void log(long seq, String tag, String msg) {
+    /** hook 线程调用（非阻塞）：入队失败丢最旧一条
+     *  v1.36 P2-8: 时间由调用方传入（LogStore.log 已格式化）——旧实现内部重新 format(new Date())，
+     *  与 LogStore 的 t 可能差 1ms 且重复格式化；push_logs 路径还能保留目标进程的原始时间 */
+    public void logAt(long seq, String time, String tag, String msg) {
         if (!enabled || dir == null) return;
         String line = "{\"seq\":" + seq
-                + ",\"t\":\"" + esc(TIME_FMT.get().format(new Date()))
+                + ",\"t\":\"" + esc(time)
                 + "\",\"tag\":\"" + esc(tag)
                 + "\",\"m\":\"" + esc(msg) + "\"}";
         if (!queue.offer(line)) {

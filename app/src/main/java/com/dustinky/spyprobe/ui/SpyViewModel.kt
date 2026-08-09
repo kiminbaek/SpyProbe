@@ -236,7 +236,11 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
     fun setTarget(pkg: String) {
         _targetPkg.value = pkg
         prefs.edit().putString(KEY_TARGET, pkg).apply()
-        com.dustinky.spyprobe.util.UiLog.log("setTarget: $pkg")
+        // v1.36 P1-2: 切换目标后旧 since 失效（新 App 进程 seq 从 1 开始）→ 重置 + 清空旧日志，
+        //   避免新 App 日志前段被旧 since 跳过
+        since = 0
+        _logLines.value = emptyList()
+        com.dustinky.spyprobe.util.UiLog.log("setTarget: $pkg since 重置 0")
         refreshStatus()
     }
 
@@ -258,13 +262,21 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
                 if (resp != null) {
                     if (!wasConnected) {
                         wasConnected = true
-                        com.dustinky.spyprobe.util.UiLog.log("轮询: 连接恢复 target=${_targetPkg.value} port=${api.baseUrl()}")
+                        // v1.36 P1-2: 连接恢复重置 since —— 目标进程重启后新进程 seq 从 1 开始，
+                        //   旧 since（如 1234）轮询返回空且被更新为小值 → seq < since 的新日志永久跳过；
+                        //   重置后全量重拉 + 清空旧列表（旧进程日志已无意义）
+                        since = 0
+                        _logLines.value = emptyList()
+                        com.dustinky.spyprobe.util.UiLog.log("轮询: 连接恢复 target=${_targetPkg.value} port=${api.baseUrl()} since 重置 0")
                         // v1.23: 目标进程连接恢复 → 自动补发该 App 生效配置（本地权威推送到执行端）
                         val pkg = _targetPkg.value
                         if (pkg.isNotEmpty()) {
                             withContext(Dispatchers.IO) { api.sendConfig(effectiveConfig(pkg)) }
                         }
                         refreshStatus()
+                        // v1.36 P1-2: 本轮 resp 是旧 since 拉的结果，跳过本轮追加，
+                        //   下一轮 with since=0 全量重拉（不重复显示）
+                        continue
                     }
                     val (newLogs, next) = resp
                     since = next
@@ -334,7 +346,7 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
                         _historySource.value = "Root 模式：未检测到 root 权限，请确认已主动授权（或改回普通模式）"
                         emptyList()
                     } else {
-                        _historySource.value = "Root 模式：直读 ${pkg} 落盘文件"
+                        _historySource.value = "Root 兜底：直读 ${pkg} 落盘文件（本地无历史时）"
                         // 旧版按天文件 → 包装成"会话 0"兼容展示
                         com.dustinky.spyprobe.util.RootLogReader.days(pkg).map { day ->
                             com.dustinky.spyprobe.util.HomeLogReader.SessionInfo(day, 0, 0, 0, "", "")

@@ -663,13 +663,14 @@ public class MethodProbe {
     /** v1.14: RandomReturn 定时刷新缓存（进程内） */
     private static final java.util.Map<String, Long> RND_TIME = new java.util.concurrent.ConcurrentHashMap<>();
     private static final java.util.Map<String, String> RND_VAL = new java.util.concurrent.ConcurrentHashMap<>();
+    // v1.36 P2-11: 复用类级静态 Random（java.util.Random 线程安全）——旧实现每次调用 new Random()
+    private static final java.util.Random RND = new java.util.Random();
 
     /** v1.14: 从种子字符集生成随机字符串（RandomReturn 用） */
     private static String randomString(String seed, int len) {
-        java.util.Random r = new java.util.Random();
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < len; i++) {
-            sb.append(seed.charAt(r.nextInt(seed.length())));
+            sb.append(seed.charAt(RND.nextInt(seed.length())));
         }
         return sb.toString();
     }

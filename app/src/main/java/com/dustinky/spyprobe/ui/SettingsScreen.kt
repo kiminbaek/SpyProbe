@@ -266,12 +266,14 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             }
 
         // ===== v1.31: 工作模式（普通 / Root）=====
-        // Root 模式：历史日志直读目标 App 沙箱落盘文件（目标 App 可不在线）
+        // Root 模式：本地无历史时兜底直读目标 App 沙箱落盘文件（目标 App 可不在线）
         // 授权模型：本 App 不主动触发 su 授权弹窗（Magisk 默认策略不弹窗），
         //   用户需主动授权；无权限时自动提示并回退普通模式。
+        // v1.36 P1-3: v1.32 起日志已搬回 SpyProbe 自己家（HomeLogReader 免 root 直读），
+        //   Root 模式仅作"本地无历史时"的兜底，文案同步降级避免误导。
         SettingsGroup(
             title = "工作模式",
-            subtitle = "历史日志读取方式",
+            subtitle = "本地优先，Root 兜底",
             expanded = expanded.contains("mode"),
             onToggle = { toggle("mode") }
         ) {
@@ -280,9 +282,9 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                 modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Root 模式", style = MaterialTheme.typography.bodySmall, fontSize = 12.sp)
+                    Text("Root 兜底", style = MaterialTheme.typography.bodySmall, fontSize = 12.sp)
                     Text(
-                        if (rootMode) "直读目标沙箱文件，目标 App 可不在线" else "普通模式：HTTP 读取（目标需在线）",
+                        if (rootMode) "本地无历史时直读目标沙箱（目标 App 可不在线）" else "普通模式：仅读本地日志（v1.32 起免 root）",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 10.sp
@@ -300,7 +302,7 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                 com.dustinky.spyprobe.util.UiLog.log("Settings: 切 Root 模式 checkRoot=$hasRoot")
                                 if (hasRoot) {
                                     vm.setRootMode(true)
-                                    android.widget.Toast.makeText(context, "Root 模式已开启（历史日志直读文件）", android.widget.Toast.LENGTH_SHORT).show()
+                                    android.widget.Toast.makeText(context, "Root 兜底已开启（本地无历史时直读文件）", android.widget.Toast.LENGTH_SHORT).show()
                                 } else {
                                     android.widget.Toast.makeText(context, "未检测到 root 权限：请先完成授权（Magisk/KernelSU）", android.widget.Toast.LENGTH_LONG).show()
                                 }
@@ -370,17 +372,21 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
         Spacer(Modifier.height(8.dp))
 
         // ===== Hook 引擎 =====
-        // v1.25 P0-1: 删除 5 个假开关（wildcardHook/randomReturn/randomRefreshMs/recordParams/recordReturn——
-        //   后端 MethodProbe 无全局随机返回/默认记录模式，通配符 hook 是内置能力无需开关）；保留 autoProbe
+        // v1.36 P1-5: 删除 autoProbe 开关（双入口冗余）——完整入口（开关+过滤器+说明）在
+        //   「探测」页「全自动」Tab，设置页改为提示跳转，避免两处状态不同步/用户困惑。
         SettingsGroup(
             title = "Hook 引擎",
             subtitle = "全自动探测",
             expanded = expanded.contains("hook"),
             onToggle = { toggle("hook") }
         ) {
-            BoolSetting(effective, "autoProbe", "全自动探测", false,
-                inherited = inh("autoProbe"),
-                onSet = { setCfg("autoProbe", it) })
+            Text(
+                "全自动探测开关与过滤关键字在「探测」页「全自动」Tab 中设置",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(vertical = 6.dp)
+            )
         }
 
         Spacer(Modifier.height(8.dp))

@@ -332,10 +332,13 @@ public class NetProbe {
                                         Object bstr = sBufferUtf8.invoke(buffer);
                                         if (bstr != null) {
                                             String bs = bstr.toString();
-                                              if (bs.length() > Config.get().bodyLimit * 1024) { // v1.25 P1-2: bodyLimit 单位 KB
-                                                  bs = bs.substring(0, Config.get().bodyLimit * 1024) + "...(" + bs.length() + "B)";
-                                              }
-
+                                            // v1.36 P2-10: 与响应 peekBody 同下限（Math.max 256）消除不对称；
+                                            //   截断标注显示原始长度（旧实现显示截断后长度误导）
+                                            int reqLimit = Math.max(256, Config.get().bodyLimit * 1024);
+                                            if (bs.length() > reqLimit) {
+                                                int reqRawLen = bs.length();
+                                                bs = bs.substring(0, reqLimit) + "...(" + reqRawLen + "B)";
+                                            }
                                             sb.append("\n    reqBody: ").append(bs.replace("\n", "\n    "));
                                         }
                                     }
@@ -368,7 +371,9 @@ public class NetProbe {
                         Object bodyStr = body != null ? sRespBodyString.invoke(body) : "";
                         // v1.8: toString() 只调一次（每次调用都重新 UTF-8 解码，大 body 重复解码浪费）
                         String b = bodyStr == null ? "" : bodyStr.toString();
-                        if (b.length() > limit) b = b.substring(0, limit) + "...(" + b.length() + "B)";
+                        // v1.36 P2-10: 截断标注显示原始长度（旧实现 b.length() 已是被截断后的值）
+                        int rawLen = b.length();
+                        if (rawLen > limit) b = b.substring(0, limit) + "...(" + rawLen + "B)";
                         StringBuilder sb = new StringBuilder();
                         sb.append("[REQ#").append(rid).append("] <<< ").append(code).append(" ").append(msg);
                         if (respHeaders != null) {

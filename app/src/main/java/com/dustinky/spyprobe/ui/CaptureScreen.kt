@@ -227,7 +227,6 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 SwitchItem("TCP 连接", cfg["tcp"] as? Boolean ?: true) { setSwitch("tcp", it) }
-                SwitchItem("类加载", cfg["classes"] as? Boolean ?: true) { setSwitch("classes", it) }
             }
         }
 
@@ -245,15 +244,24 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 SwitchItem("Cronet", cfg["cronet"] as? Boolean ?: false) { setSwitch("cronet", it) }
-                SwitchItem("native 层", cfg["native"] as? Boolean ?: true) { setSwitch("native", it) }
+                SwitchItem("native 层*", cfg["native"] as? Boolean ?: true) { setSwitch("native", it) }
             }
+            // v1.36 P1-4b: native 是"装不装 native hook"级别的全局开关（重启目标 App 生效），
+            //   加显式提示避免用户以为即时生效
+            Text(
+                "* native 层开关需重启目标 App 后生效（影响 native hook 装载）",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 10.sp,
+                modifier = Modifier.padding(top = 2.dp, bottom = 4.dp)
+            )
         }
 
         // 应用层记录
         Spacer(Modifier.height(8.dp))
         SwitchGroupCard(
             title = "应用层记录",
-            subtitle = "WebView / Log / SQLite / URL构造 / Crypto",
+            subtitle = "WebView / Log / SQLite / URL构造 / Crypto / 类加载",
             expanded = expanded == "app",
             onToggle = { expanded = if (expanded == "app") "" else "app" }
         ) {
@@ -272,6 +280,10 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
             Row(verticalAlignment = Alignment.CenterVertically) {
                 SwitchItem("JSON", cfg["json"] as? Boolean ?: false) { setSwitch("json", it) }
                 SwitchItem("环境检测", cfg["env"] as? Boolean ?: true) { setSwitch("env", it) }
+            }
+            // v1.36 P1-4a: 类加载（ClassLoadProbe 应用层探测）从「基础抓包」移入「应用层记录」
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SwitchItem("类加载", cfg["classes"] as? Boolean ?: true) { setSwitch("classes", it) }
             }
         }
 
