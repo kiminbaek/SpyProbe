@@ -36,6 +36,16 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
     private val _port = MutableStateFlow(prefs.getInt(KEY_PORT, 9901))
     val port: StateFlow<Int> = _port.asStateFlow()
 
+    // v1.31: 工作模式（普通 / Root）——Root 模式历史日志直读目标沙箱文件，目标 App 可不在线
+    private val _rootMode = MutableStateFlow(prefs.getBoolean(KEY_ROOT_MODE, false))
+    val rootMode: StateFlow<Boolean> = _rootMode.asStateFlow()
+
+    fun setRootMode(on: Boolean) {
+        _rootMode.value = on
+        prefs.edit().putBoolean(KEY_ROOT_MODE, on).apply()
+        com.dustinky.spyprobe.util.UiLog.log("setRootMode: $on")
+    }
+
     val api = SpyApi(_port.value)
 
     // 日志（v1.16 P0-2: Pair<seq, 行文本>，seq 自增唯一，LazyColumn key 用它防重复行崩溃）
@@ -58,6 +68,8 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
     val paused: StateFlow<Boolean> = _paused.asStateFlow()
 
     // ---------- v1.27: 历史日志（落盘文件） ----------
+    // v1.31: 数据源双模式——Root 模式直读目标沙箱文件（目标 App 可不在线）；
+    //   普通模式走 HTTP（目标 App 需在线）。UI 层通过 rootMode 自动选择。
     private val _historyDays = MutableStateFlow<List<String>>(emptyList())
     val historyDays: StateFlow<List<String>> = _historyDays.asStateFlow()
 
@@ -66,6 +78,10 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _historyLoading = MutableStateFlow(false)
     val historyLoading: StateFlow<Boolean> = _historyLoading.asStateFlow()
+
+    // v1.31: 历史读取来源说明（UI 显示数据源 + 错误原因）
+    private val _historySource = MutableStateFlow("")
+    val historySource: StateFlow<String> = _historySource.asStateFlow()
 
     // 状态栏
     private val _status = MutableStateFlow("未连接（目标 App 需在运行）")
@@ -87,6 +103,8 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
         const val PREFS = "spyprobe"
         const val KEY_TARGET = "target"
         const val KEY_PORT = "port"
+        const val KEY_ROOT_MODE = "root_mode"
+        const val KEY_FAV_DAYS = "fav_days"
         const val MAX_LOG_LINES = 3000
         // v1.23: 配置库 key（UI 本地为权威：全局默认 + 分应用覆盖）
         const val KEY_GLOBAL_CFG = "global_cfg"
@@ -284,19 +302,46 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------- v1.27: 历史日志 ----------
+    // v1.31: Root 模式直读目标沙箱落盘文件（目标 App 可不在线）
     fun loadHistoryDays() {
         viewModelScope.launch {
-            val days = withContext(Dispatchers.IO) { api.historyDays() }
+            val days = withContext(Dispatchers.IO) {
+                if (_rootMode.value) {
+                    val pkg = _targetPkg.value
+                    if (pkg.isEmpty()) {
+                        _historySource.value = "Root 模式：请先在抓包页选择目标 App"
+                        emptyList()
+                    } else if (!com.dustinky.spyprobe.util.RootLogReader.checkRoot()) {
+                        _historySource.value = "Root 模式：未检测到 root 权限，请确认已主动授权（或改回普通模式）"
+                        emptyList()
+                    } else {
+                        _historySource.value = "Root 模式：直读 ${pkg} 落盘文件"
+                        com.dustinky.spyprobe.util.RootLogReader.days(pkg)
+                    }
+                } else {
+                    _historySource.value = "普通模式：HTTP 读取（目标 App 需在线）"
+                    api.historyDays()
+                }
+            }
             _historyDays.value = days ?: emptyList()
-            com.dustinky.spyprobe.util.UiLog.log("loadHistoryDays: days=${_historyDays.value.size}")
+            com.dustinky.spyprobe.util.UiLog.log("loadHistoryDays: mode=${if (_rootMode.value) "root" else "http"} days=${_historyDays.value.size} src=${_historySource.value}")
         }
     }
 
     fun loadHistory(day: String) {
         viewModelScope.launch {
             _historyLoading.value = true
-            com.dustinky.spyprobe.util.UiLog.log("loadHistory: day=$day")
-            val logs = withContext(Dispatchers.IO) { api.history(day, 10000) }
+            com.dustinky.spyprobe.util.UiLog.log("loadHistory: day=$day mode=${if (_rootMode.value) "root" else "http"}")
+            val logs = withContext(Dispatchers.IO) {
+                if (_rootMode.value) {
+                    val pkg = _targetPkg.value
+                    if (pkg.isEmpty()) null
+                    else com.dustinky.spyprobe.util.RootLogReader.readDay(pkg, day, 10000)
+                        .map { com.dustinky.spyprobe.ui.LogEntry(it.time, it.tag, it.msg) }
+                } else {
+                    api.history(day, 10000)
+                }
+            }
             _historyLogs.value = logs?.mapIndexed { i, it -> Pair(i.toLong() + 1, it.display()) }
                 ?: emptyList()
             com.dustinky.spyprobe.util.UiLog.log("loadHistory: day=$day entries=${logs?.size}")
@@ -304,11 +349,19 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 清空历史：day=null 清全部 */
+    /** 清空历史：day=null 清全部（Root 模式直接删目标沙箱文件；普通模式走 HTTP） */
     fun clearHistory(day: String?, onDone: (Boolean) -> Unit = {}) {
         viewModelScope.launch {
-            com.dustinky.spyprobe.util.UiLog.log("clearHistory: day=${day ?: "(全部)"}")
-            val ok = withContext(Dispatchers.IO) { api.clearHistory(day) }
+            com.dustinky.spyprobe.util.UiLog.log("clearHistory: day=${day ?: "(全部)"} mode=${if (_rootMode.value) "root" else "http"}")
+            val ok = withContext(Dispatchers.IO) {
+                if (_rootMode.value) {
+                    val pkg = _targetPkg.value
+                    if (pkg.isEmpty()) false
+                    else com.dustinky.spyprobe.util.RootLogReader.clear(pkg, day)
+                } else {
+                    api.clearHistory(day)
+                }
+            }
             if (ok) {
                 loadHistoryDays()
                 // v1.28 P1: day==null 清全部时也要清空展示列表（之前只清单天，界面残留旧数据）
@@ -317,6 +370,19 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
             com.dustinky.spyprobe.util.UiLog.log("clearHistory: ok=$ok")
             onDone(ok)
         }
+    }
+
+    // v1.31: 收藏日期（SharedPreferences 字符串集合，本地持久化，不依赖连接）
+    fun favoriteDays(): Set<String> =
+        prefs.getStringSet(KEY_FAV_DAYS, emptySet()) ?: emptySet()
+
+    fun isFavoriteDay(day: String): Boolean = favoriteDays().contains(day)
+
+    fun toggleFavoriteDay(day: String) {
+        val cur = HashSet(prefs.getStringSet(KEY_FAV_DAYS, emptySet()) ?: emptySet())
+        if (!cur.add(day)) cur.remove(day)
+        prefs.edit().putStringSet(KEY_FAV_DAYS, cur).apply()
+        com.dustinky.spyprobe.util.UiLog.log("toggleFavoriteDay: $day fav=${cur.contains(day)}")
     }
 
     // ---------- 状态刷新（含端口自动发现） ----------

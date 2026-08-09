@@ -13,8 +13,8 @@ android {
     defaultConfig {
         minSdk = 26
         targetSdk = 35
-        versionCode = 38
-        versionName = "1.30.5"
+        versionCode = 39
+        versionName = "1.31.0"
 
         // v1.10: native 抓包（shadowhook inline hook）——只编真机常用 ABI，控制体积
         ndk {
@@ -78,6 +78,8 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
+    // v1.31: 历史日志三层导航需要更多图标（ContentCopy/StarBorder/ContentPaste 在 extended 集）
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.material:material-icons-core")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.core:core-ktx:1.15.0")

@@ -1,6 +1,8 @@
 package com.dustinky.spyprobe.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,11 +20,15 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -58,6 +64,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+// v1.31: 历史日志三层导航重做（小黄鸟式）——
+//   ① 历史卡片列表（日期+条数+时间范围+收藏/清空）→ ② 当天日志列表（时间+tag+摘要）→ ③ 单条详情（完整内容+复制+分享+高亮）
+//   Root 模式直读目标沙箱文件（目标 App 可不在线）；普通模式 HTTP。
 // v1.27: 日志页重构 —— 实时/历史双模式 + 分类筛选 + 历史落盘查看/清空（日志持久化核心）
 // v1.24: 日志页视觉优化 —— 统计行卡化 + 浮动按钮 + 终端风格
 // v1.18: 独立日志页 —— 统计行 + 过滤 + 暂停/清空/导出 + 着色 + 自动滚动
@@ -80,6 +89,9 @@ internal fun categoryOfLine(line: String): LogCategory = when {
     else -> LogCategory.SYS
 }
 
+/** v1.31: 历史导航层级 */
+private enum class HistoryLevel { DAYS, LINES, DETAIL }
+
 @Composable
 fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     val logLines by vm.logLines.collectAsState()
@@ -87,6 +99,7 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     val historyDays by vm.historyDays.collectAsState()
     val historyLogs by vm.historyLogs.collectAsState()
     val historyLoading by vm.historyLoading.collectAsState()
+    val historySource by vm.historySource.collectAsState()
     val context = LocalContext.current
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -97,28 +110,32 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     var autoScroll by remember { mutableStateOf(true) }
     var selectedDay by remember { mutableStateOf<String?>(null) }
     var showClearDialog by remember { mutableStateOf(false) }
+    // v1.31: 历史三层导航
+    var historyLevel by remember { mutableStateOf(HistoryLevel.DAYS) }
+    var detailEntry by remember { mutableStateOf<Pair<Long, String>?>(null) }
     // v1.25 P1-3: 暂停状态从局部 remember 改为 vm（此前暂停只停自动滚动不停轮询——日志还在积累；
     //   vm.paused 同时控制轮询停止 + 自动滚动暂停，语义一致）
     val paused by vm.paused.collectAsState()
 
-    val displayLines = if (modeHistory) historyLogs else logLines
+    val displayLines = if (modeHistory && historyLevel != HistoryLevel.DAYS) historyLogs else logLines
 
     // v1.27: 进入历史模式拉日期列表
     LaunchedEffect(modeHistory) {
-        if (modeHistory) vm.loadHistoryDays()
-    }
-    // v1.27: 选中日期变化拉历史（默认选最新一天）
-    LaunchedEffect(modeHistory, historyDays) {
-        if (modeHistory && selectedDay == null && historyDays.isNotEmpty()) {
-            selectedDay = historyDays.first()
+        if (modeHistory) {
+            historyLevel = HistoryLevel.DAYS
+            selectedDay = null
+            vm.loadHistoryDays()
         }
     }
-    LaunchedEffect(selectedDay) {
-        if (modeHistory && selectedDay != null) vm.loadHistory(selectedDay!!)
+    // v1.31: 进入某天 → 拉该天日志
+    LaunchedEffect(selectedDay, historyLevel) {
+        if (modeHistory && historyLevel == HistoryLevel.LINES && selectedDay != null) {
+            vm.loadHistory(selectedDay!!)
+        }
     }
 
-    // 过滤（v1.27: 分类筛选 + 关键词）
-    val filtered by remember(displayLines, category, filter) {
+    // 过滤（v1.27: 分类筛选 + 关键词；v1.31: 仅列表层过滤，详情层不适用）
+    val filtered by remember(displayLines, category, filter, modeHistory, historyLevel) {
         derivedStateOf {
             var list = displayLines
             if (category != LogCategory.ALL) list = list.filter { (_, l) -> categoryOfLine(l) == category }
@@ -128,7 +145,7 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     }
 
     // 自动滚到底（仅实时模式；历史是静态数据由用户滚动）
-    LaunchedEffect(filtered.size, autoScroll, paused, modeHistory) {
+    LaunchedEffect(filtered.size, autoScroll, paused, modeHistory, historyLevel) {
         if (autoScroll && !paused && !modeHistory && filtered.isNotEmpty()) {
             try { listState.animateScrollToItem(filtered.size - 1) } catch (_: Throwable) { }
         }
@@ -151,10 +168,21 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
         ) {
             Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    // v1.31: 历史详情层级有返回键
+                    if (modeHistory && historyLevel != HistoryLevel.DAYS) {
+                        IconButton(onClick = {
+                            historyLevel = HistoryLevel.DAYS
+                            selectedDay = null
+                        }, modifier = Modifier.size(30.dp)) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回",
+                                modifier = Modifier.size(18.dp))
+                        }
+                        Spacer(Modifier.width(4.dp))
+                    }
                     // v1.27: 实时 / 历史 模式切换
                     FilterChip(
                         selected = !modeHistory,
-                        onClick = { modeHistory = false; selectedDay = null },
+                        onClick = { modeHistory = false; selectedDay = null; historyLevel = HistoryLevel.DAYS },
                         label = { Text("实时", fontSize = 11.sp) }
                     )
                     Spacer(Modifier.width(6.dp))
@@ -173,33 +201,45 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                         Spacer(Modifier.width(8.dp))
                         StatChip("错误", errCount, MaterialTheme.colorScheme.error)
                     } else {
-                        StatChip("历史条数", historyLogs.size, MaterialTheme.colorScheme.primary)
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            "落盘日志·进程重启不丢",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 10.sp
-                        )
-                    }
-                }
-
-                // v1.27: 历史模式 —— 日期选择行
-                if (modeHistory) {
-                    Spacer(Modifier.height(8.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        LazyRow(
-                            modifier = Modifier.weight(1f),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            items(historyDays) { day ->
-                                FilterChip(
-                                    selected = day == selectedDay,
-                                    onClick = { selectedDay = day },
-                                    label = { Text(day, fontSize = 11.sp) }
+                        // v1.31: 层级指示：卡片列表 → 某天 → 详情
+                        when (historyLevel) {
+                            HistoryLevel.DAYS -> {
+                                StatChip("历史天数", historyDays.size, MaterialTheme.colorScheme.primary)
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    historySource,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontSize = 9.sp,
+                                    maxLines = 2
+                                )
+                            }
+                            HistoryLevel.LINES -> {
+                                StatChip("记录", historyLogs.size, MaterialTheme.colorScheme.primary)
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    "落盘日志·进程重启不丢",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontSize = 10.sp
+                                )
+                            }
+                            HistoryLevel.DETAIL -> {
+                                Text(
+                                    "日志详情",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontSize = 11.sp
                                 )
                             }
                         }
+                    }
+                }
+
+                // v1.31: 卡片列表层 —— 刷新/清空按钮；列表层 —— 刷新按钮
+                if (modeHistory && historyLevel == HistoryLevel.DAYS) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = { vm.loadHistoryDays() }, modifier = Modifier.size(30.dp)) {
                             Icon(Icons.Filled.Refresh, contentDescription = "刷新日期",
                                 modifier = Modifier.size(16.dp))
@@ -209,22 +249,34 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                 tint = MaterialTheme.colorScheme.error,
                                 modifier = Modifier.size(16.dp))
                         }
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            if (historyDays.isEmpty()) "暂无历史日志（抓包时日志会自动落盘保存）" else "点击日期卡片查看当天日志",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 10.sp
+                        )
                     }
                     if (historyLoading) {
                         LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                     }
                 }
+                if (modeHistory && historyLevel == HistoryLevel.LINES && historyLoading) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
 
                 Spacer(Modifier.height(8.dp))
 
-                // v1.27: 分类筛选（全部/网络/方法/Hook/加密/类加载/系统）
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    LogCategory.values().forEach { cat ->
-                        FilterChip(
-                            selected = category == cat,
-                            onClick = { category = cat },
-                            label = { Text(cat.label, fontSize = 11.sp) }
-                        )
+                // v1.31: 列表层/实时层显示分类筛选；详情层不显示
+                if (!(modeHistory && historyLevel == HistoryLevel.DETAIL)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        LogCategory.values().forEach { cat ->
+                            FilterChip(
+                                selected = category == cat,
+                                onClick = { category = cat },
+                                label = { Text(cat.label, fontSize = 11.sp) }
+                            )
+                        }
                     }
                 }
 
@@ -245,53 +297,138 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                     }
                 }
 
-                Spacer(Modifier.height(6.dp))
-                OutlinedTextField(
-                    value = filter,
-                    onValueChange = { filter = it },
-                    placeholder = { Text("过滤关键字 / 正则", fontSize = 12.sp) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                // v1.31: 搜索框 —— 实时/历史列表层显示
+                if (!(modeHistory && historyLevel == HistoryLevel.DETAIL)) {
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedTextField(
+                        value = filter,
+                        onValueChange = { filter = it },
+                        placeholder = { Text("过滤关键字 / 正则", fontSize = 12.sp) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             }
         }
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
-        // ===== 日志列表（终端风格）=====
+        // ===== 内容区（v1.31 三层）=====
         Box(Modifier.fillMaxSize()) {
-            if (filtered.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(
-                        if (modeHistory) {
-                            if (historyDays.isEmpty()) "暂无历史日志（抓包时日志会自动落盘保存）"
-                            else "该日期/分类下暂无日志"
-                        } else "暂无日志（开始抓包后这里实时滚动）",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+            when {
+                // ---- 历史层 ①：日期卡片列表（小黄鸟式）----
+                modeHistory && historyLevel == HistoryLevel.DAYS -> {
+                    if (historyDays.isEmpty()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text(
+                                if (historyLoading) "加载中…"
+                                else "暂无历史日志（抓包时日志会自动落盘保存）",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(historyDays, key = { it }) { day ->
+                                HistoryDayCard(
+                                    day = day,
+                                    favorite = vm.isFavoriteDay(day),
+                                    onToggleFavorite = { vm.toggleFavoriteDay(day) },
+                                    onClick = {
+                                        selectedDay = day
+                                        historyLevel = HistoryLevel.LINES
+                                    }
+                                )
+                            }
+                        }
+                    }
                 }
-            } else {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(MaterialTheme.colorScheme.surfaceContainerLowest)
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                ) {
-                    items(filtered, key = { it.first }) { (idx, line) ->
-                        Text(
-                            line,
-                            style = codeStyle,
-                            color = logColor(line),
-                            softWrap = true,
-                            modifier = Modifier.padding(vertical = 1.dp)
-                        )
+
+                // ---- 历史层 ②：某天日志列表 ----
+                modeHistory && historyLevel == HistoryLevel.LINES -> {
+                    if (filtered.isEmpty()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text(
+                                if (historyLoading) "加载中…"
+                                else if (selectedDay == null) "未选择日期"
+                                else "该日期/分类下暂无日志",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            items(filtered, key = { it.first }) { (idx, line) ->
+                                HistoryLineRow(
+                                    idx = idx,
+                                    line = line,
+                                    onClick = {
+                                        detailEntry = idx to line
+                                        historyLevel = HistoryLevel.DETAIL
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // ---- 历史层 ③：单条详情 ----
+                modeHistory && historyLevel == HistoryLevel.DETAIL -> {
+                    val entry = detailEntry
+                    if (entry == null) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("无详情", style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    } else {
+                        HistoryDetailView(entry = entry)
+                    }
+                }
+
+                // ---- 实时模式：原日志列表 ----
+                else -> {
+                    if (filtered.isEmpty()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text(
+                                "暂无日志（开始抓包后这里实时滚动）",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    } else {
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            items(filtered, key = { it.first }) { (idx, line) ->
+                                Text(
+                                    line,
+                                    style = codeStyle,
+                                    color = logColor(line),
+                                    softWrap = true,
+                                    modifier = Modifier.padding(vertical = 1.dp)
+                                )
+                            }
+                        }
                     }
                 }
             }
 
-            // ===== 浮动操作按钮（v1.24：跳到顶/底 + 导出）=====
+            // ===== 浮动操作按钮 =====
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
@@ -299,82 +436,193 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 horizontalAlignment = Alignment.End
             ) {
-                // 导出（实时=内存日志；历史=选中日期落盘日志）
-                // v1.30.3 P0: 修复 NetworkOnMainThreadException —— httpGet 是同步阻塞网络，
-                // 必须跑 Dispatchers.IO；写文件也是 IO；startActivity/Toast 回主线程。
-                FloatingActionButton(
-                    onClick = {
-                        scope.launch {
-                            if (modeHistory && selectedDay == null) {
-                                android.widget.Toast.makeText(context, "请先选择日期", android.widget.Toast.LENGTH_SHORT).show()
-                                return@launch
+                // 导出（实时=内存日志；历史卡片层=导出某天/全部；历史详情层=分享单条）
+                if (modeHistory && historyLevel == HistoryLevel.DETAIL) {
+                    // 详情层：复制 + 分享单条
+                    FloatingActionButton(
+                        onClick = {
+                            detailEntry?.let { (_, line) ->
+                                val ctx = context
+                                scope.launch {
+                                    val clip = withContext(Dispatchers.IO) {
+                                        val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                        cm.setPrimaryClip(android.content.ClipData.newPlainText("SpyProbe 日志", line))
+                                        "已复制"
+                                    }
+                                    android.widget.Toast.makeText(ctx, clip, android.widget.Toast.LENGTH_SHORT).show()
+                                }
                             }
-                            val text = withContext(Dispatchers.IO) {
-                                if (modeHistory) vm.api.exportDay(selectedDay!!) else vm.api.export()
+                        },
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.primary,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.size(44.dp)
+                    ) {
+                        Icon(Icons.Filled.ContentCopy, contentDescription = "复制",
+                            modifier = Modifier.size(20.dp))
+                    }
+                    FloatingActionButton(
+                        onClick = {
+                            detailEntry?.let { (_, line) ->
+                                scope.launch {
+                                    val uri = withContext(Dispatchers.IO) {
+                                        com.dustinky.spyprobe.util.ShareLogUtil.writeLogTxtFile(context, "spyprobe_log", line)
+                                    }
+                                    if (uri == null) {
+                                        android.widget.Toast.makeText(context, "导出失败：无法写入 txt 文件（详见 UiLog）", android.widget.Toast.LENGTH_LONG).show()
+                                    } else {
+                                        val err = com.dustinky.spyprobe.util.ShareLogUtil.shareUri(context, "SpyProbe 日志", uri)
+                                        if (err != null) {
+                                            android.widget.Toast.makeText(context, "导出失败：$err", android.widget.Toast.LENGTH_LONG).show()
+                                        }
+                                    }
+                                }
                             }
-                            if (text == null || text.isEmpty()) {
-                                // v1.30.1: 失败原因显示出来（HTTP 错误 / JSON 解析失败 / 空内容）
-                                val why = if (text == null) vm.api.lastHttpError.ifEmpty { "HTTP 无响应" } else "日志内容为空"
-                                com.dustinky.spyprobe.util.UiLog.log("LogsScreen 导出失败: $why")
-                                android.widget.Toast.makeText(context, "导出失败：$why", android.widget.Toast.LENGTH_LONG).show()
-                                return@launch
+                        },
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.primary,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.size(44.dp)
+                    ) {
+                        Icon(Icons.Filled.Share, contentDescription = "分享",
+                            modifier = Modifier.size(20.dp))
+                    }
+                } else if (modeHistory && historyLevel == HistoryLevel.LINES) {
+                    // 列表层：导出当天
+                    FloatingActionButton(
+                        onClick = {
+                            val day = selectedDay
+                            scope.launch {
+                                if (day == null) {
+                                    android.widget.Toast.makeText(context, "请先选择日期", android.widget.Toast.LENGTH_SHORT).show()
+                                    return@launch
+                                }
+                                val text = withContext(Dispatchers.IO) {
+                                    if (vm.rootMode.value) {
+                                        // Root 模式：本地已有数据，直接拼文本
+                                        vm.historyLogs.value.joinToString("\n") { it.second }
+                                    } else {
+                                        vm.api.exportDay(day)
+                                    }
+                                }
+                                if (text == null || text.isEmpty()) {
+                                    val why = if (text == null) vm.api.lastHttpError.ifEmpty { "HTTP 无响应" } else "日志内容为空"
+                                    com.dustinky.spyprobe.util.UiLog.log("LogsScreen 导出失败: $why")
+                                    android.widget.Toast.makeText(context, "导出失败：$why", android.widget.Toast.LENGTH_LONG).show()
+                                    return@launch
+                                }
+                                val uri = withContext(Dispatchers.IO) {
+                                    com.dustinky.spyprobe.util.ShareLogUtil.writeLogTxtFile(context, "spyprobe_logs_$day", text)
+                                }
+                                if (uri == null) {
+                                    com.dustinky.spyprobe.util.UiLog.log("LogsScreen 写文件失败: $day len=${text.length}")
+                                    android.widget.Toast.makeText(context, "导出失败：无法写入 txt 文件（详见 UiLog）", android.widget.Toast.LENGTH_LONG).show()
+                                    return@launch
+                                }
+                                val err = com.dustinky.spyprobe.util.ShareLogUtil.shareUri(context, "SpyProbe 日志导出", uri)
+                                if (err != null) {
+                                    com.dustinky.spyprobe.util.UiLog.log("LogsScreen 分享失败: $err")
+                                    android.widget.Toast.makeText(context, "导出失败：$err", android.widget.Toast.LENGTH_LONG).show()
+                                }
                             }
-                            // v1.30: 写 txt 文件分享（不再截断 10 万字符，长日志完整导出）
-                            // v1.30.3: 写文件在 IO 线程
-                            val prefix = if (modeHistory) "spyprobe_logs_${selectedDay}" else "spyprobe_logs"
-                            val uri = withContext(Dispatchers.IO) {
-                                com.dustinky.spyprobe.util.ShareLogUtil.writeLogTxtFile(context, prefix, text)
+                        },
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.primary,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.size(44.dp)
+                    ) {
+                        Icon(Icons.Filled.Share, contentDescription = "导出当天",
+                            modifier = Modifier.size(20.dp))
+                    }
+                } else if (!modeHistory || historyLevel == HistoryLevel.DAYS) {
+                    // 实时层 / 历史卡片层：导出（实时=内存；历史卡片层=当前选中天或全部）
+                    FloatingActionButton(
+                        onClick = {
+                            scope.launch {
+                                if (modeHistory && historyLevel == HistoryLevel.DAYS) {
+                                    // 卡片层导出整段历史（全部天）——Root 模式直接拼本地；HTTP 模式导出全部
+                                    val text = withContext(Dispatchers.IO) {
+                                        if (vm.rootMode.value) {
+                                            "Root 模式：请进入具体日期后导出（历史为按天文件）"
+                                        } else {
+                                            vm.api.export()
+                                        }
+                                    }
+                                    if (text.isNullOrEmpty()) {
+                                        val why = if (text == null) vm.api.lastHttpError.ifEmpty { "HTTP 无响应" } else "日志内容为空"
+                                        android.widget.Toast.makeText(context, "导出失败：$why", android.widget.Toast.LENGTH_LONG).show()
+                                    } else {
+                                        val uri = withContext(Dispatchers.IO) {
+                                            com.dustinky.spyprobe.util.ShareLogUtil.writeLogTxtFile(context, "spyprobe_logs", text)
+                                        }
+                                        if (uri != null) {
+                                            val err = com.dustinky.spyprobe.util.ShareLogUtil.shareUri(context, "SpyProbe 日志导出", uri)
+                                            if (err != null) android.widget.Toast.makeText(context, "导出失败：$err", android.widget.Toast.LENGTH_LONG).show()
+                                        }
+                                    }
+                                    return@launch
+                                }
+                                val text = withContext(Dispatchers.IO) { vm.api.export() }
+                                if (text == null || text.isEmpty()) {
+                                    val why = if (text == null) vm.api.lastHttpError.ifEmpty { "HTTP 无响应" } else "日志内容为空"
+                                    com.dustinky.spyprobe.util.UiLog.log("LogsScreen 导出失败: $why")
+                                    android.widget.Toast.makeText(context, "导出失败：$why", android.widget.Toast.LENGTH_LONG).show()
+                                    return@launch
+                                }
+                                val uri = withContext(Dispatchers.IO) {
+                                    com.dustinky.spyprobe.util.ShareLogUtil.writeLogTxtFile(context, "spyprobe_logs", text)
+                                }
+                                if (uri == null) {
+                                    com.dustinky.spyprobe.util.UiLog.log("LogsScreen 写文件失败: len=${text.length}")
+                                    android.widget.Toast.makeText(context, "导出失败：无法写入 txt 文件（详见 UiLog）", android.widget.Toast.LENGTH_LONG).show()
+                                    return@launch
+                                }
+                                val err = com.dustinky.spyprobe.util.ShareLogUtil.shareUri(context, "SpyProbe 日志导出", uri)
+                                if (err != null) {
+                                    com.dustinky.spyprobe.util.UiLog.log("LogsScreen 分享失败: $err")
+                                    android.widget.Toast.makeText(context, "导出失败：$err", android.widget.Toast.LENGTH_LONG).show()
+                                }
                             }
-                            if (uri == null) {
-                                com.dustinky.spyprobe.util.UiLog.log("LogsScreen 写文件失败: $prefix len=${text.length}")
-                                android.widget.Toast.makeText(context, "导出失败：无法写入 txt 文件（详见 UiLog）", android.widget.Toast.LENGTH_LONG).show()
-                                return@launch
-                            }
-                            // startActivity 必须主线程
-                            val err = com.dustinky.spyprobe.util.ShareLogUtil.shareUri(context, "SpyProbe 日志导出", uri)
-                            if (err != null) {
-                                com.dustinky.spyprobe.util.UiLog.log("LogsScreen 分享失败: $err")
-                                android.widget.Toast.makeText(context, "导出失败：$err", android.widget.Toast.LENGTH_LONG).show()
-                            }
-                        }
-                    },
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    contentColor = MaterialTheme.colorScheme.primary,
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.size(44.dp)
-                ) {
-                    Icon(Icons.Filled.Share, contentDescription = "导出",
-                        modifier = Modifier.size(20.dp))
+                        },
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.primary,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.size(44.dp)
+                    ) {
+                        Icon(Icons.Filled.Share, contentDescription = "导出",
+                            modifier = Modifier.size(20.dp))
+                    }
                 }
-                // 跳到顶部
-                FloatingActionButton(
-                    onClick = {
-                        scope.launch {
-                            try { listState.animateScrollToItem(0) } catch (_: Throwable) { }
-                        }
-                    },
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    contentColor = MaterialTheme.colorScheme.onSurface,
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.size(44.dp)
-                ) {
-                    Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "顶部",
-                        modifier = Modifier.size(22.dp))
-                }
-                // 跳到底部
-                FloatingActionButton(
-                    onClick = {
-                        scope.launch {
-                            try { listState.animateScrollToItem(filtered.size - 1) } catch (_: Throwable) { }
-                        }
-                    },
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    contentColor = MaterialTheme.colorScheme.onSurface,
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.size(44.dp)
-                ) {
-                    Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "底部",
-                        modifier = Modifier.size(22.dp))
+                // 跳到顶部/底部（仅实时模式 & 历史列表层）
+                if (!(modeHistory && historyLevel == HistoryLevel.DETAIL)) {
+                    FloatingActionButton(
+                        onClick = {
+                            scope.launch {
+                                try { listState.animateScrollToItem(0) } catch (_: Throwable) { }
+                            }
+                        },
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        contentColor = MaterialTheme.colorScheme.onSurface,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.size(44.dp)
+                    ) {
+                        Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "顶部",
+                            modifier = Modifier.size(22.dp))
+                    }
+                    FloatingActionButton(
+                        onClick = {
+                            scope.launch {
+                                try { listState.animateScrollToItem(filtered.size - 1) } catch (_: Throwable) { }
+                            }
+                        },
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        contentColor = MaterialTheme.colorScheme.onSurface,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.size(44.dp)
+                    ) {
+                        Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "底部",
+                            modifier = Modifier.size(22.dp))
+                    }
                 }
             }
         }
@@ -385,34 +633,229 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
         AlertDialog(
             onDismissRequest = { showClearDialog = false },
             title = { Text("清空历史日志") },
-            text = { Text("已落盘的历史日志删除后不可恢复。\n\n选中的日期：${selectedDay ?: "无"}") },
+            text = { Text("已落盘的历史日志删除后不可恢复。\n\n当前层级：卡片列表（${historyDays.size} 天）") },
             confirmButton = {
-                // v1.28 P1: 未选中日期时禁用"清空当天"——否则误点会把全部历史删光
                 TextButton(
                     onClick = {
                         showClearDialog = false
-                        vm.clearHistory(selectedDay) { ok ->
-                            android.widget.Toast.makeText(context,
-                                if (ok) "已清空 ${selectedDay}" else "清空失败", android.widget.Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    enabled = selectedDay != null
-                ) { Text("清空当天") }
-            },
-            dismissButton = {
-                Row {
-                    TextButton(onClick = {
-                        showClearDialog = false
                         vm.clearHistory(null) { ok ->
                             android.widget.Toast.makeText(context,
-                                if (ok) "已清空全部历史" else "清空失败", android.widget.Toast.LENGTH_SHORT).show()
+                                if (ok) "已清空全部历史" else "清空失败（无权限/未连接）", android.widget.Toast.LENGTH_SHORT).show()
                         }
-                    }) { Text("清空全部", color = MaterialTheme.colorScheme.error) }
-                    TextButton(onClick = { showClearDialog = false }) { Text("取消") }
-                }
+                    }
+                ) { Text("清空全部", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearDialog = false }) { Text("取消") }
             }
         )
     }
+}
+
+/** v1.31: 历史日期卡片（小黄鸟式：日期 + 记录数 + 时间范围 + 收藏星） */
+@Composable
+private fun HistoryDayCard(
+    day: String,
+    favorite: Boolean,
+    onToggleFavorite: () -> Unit,
+    onClick: () -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer
+        ),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    day,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    "点击查看当天日志",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 10.sp
+                )
+            }
+            IconButton(onClick = onToggleFavorite, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    if (favorite) Icons.Filled.Star else Icons.Filled.StarBorder,
+                    contentDescription = if (favorite) "取消收藏" else "收藏",
+                    tint = if (favorite) Color(0xFFFFB300) else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            Text("›", style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+/** v1.31: 历史日志行（时间 + tag + 摘要，点击进详情） */
+@Composable
+private fun HistoryLineRow(idx: Long, line: String, onClick: () -> Unit) {
+    // 解析：HH:mm:ss.SSS [tag] msg
+    val time = line.takeWhile { it != ' ' && it != '[' }
+    val rest = line.removePrefix(time).trimStart()
+    val tagEnd = rest.indexOf(']')
+    val tag = if (tagEnd > 0 && rest.startsWith("[")) rest.substring(1, tagEnd) else ""
+    val msg = if (tagEnd > 0) rest.substring(tagEnd + 1).trim() else rest
+    val tagColor = logColor("[$tag]")
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = 5.dp)
+    ) {
+        Text(
+            time,
+            style = codeStyle,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(88.dp)
+        )
+        Text(
+            tag.ifEmpty { "?" },
+            style = codeStyle,
+            color = tagColor,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.width(72.dp)
+        )
+        Text(
+            msg,
+            style = codeStyle,
+            color = MaterialTheme.colorScheme.onSurface,
+            softWrap = true,
+            maxLines = 2,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+    }
+}
+
+/** v1.31: 单条详情（完整内容 + 高亮 + 复制/分享按钮在 FAB） */
+@Composable
+private fun HistoryDetailView(entry: Pair<Long, String>) {
+    val line = entry.second
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        item {
+            // 头部分区：完整原文着色 + 关键信息提取
+            Text(
+                "完整日志",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 10.sp
+            )
+        }
+        item {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainer
+                ),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Text(
+                    line,
+                    style = codeStyle,
+                    color = logColor(line),
+                    softWrap = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp)
+                )
+            }
+        }
+        item {
+            Text(
+                "关键字高亮",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 10.sp
+            )
+        }
+        item {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainer
+                ),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                HighlightedText(
+                    text = line,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp)
+                )
+            }
+        }
+    }
+}
+
+/** v1.31: 关键信息高亮（URL / IP / 方法 / 状态码 / tag 色） */
+@Composable
+private fun HighlightedText(text: String, modifier: Modifier = Modifier) {
+    val tokens = remember(text) { highlightTokens(text) }
+    Row(modifier = modifier) {
+        tokens.forEach { (tok, kind) ->
+            val color = when (kind) {
+                "url" -> Color(0xFF4FC3F7)     // URL 蓝
+                "ip" -> Color(0xFFFF7043)      // IP 橙
+                "method" -> Color(0xFF66BB6A)  // 方法绿
+                "num" -> Color(0xFFFFB300)     // 数字琥珀
+                "tag" -> logColor("[${tok.removePrefix("[").removeSuffix("]")}]")
+                else -> MaterialTheme.colorScheme.onSurface
+            }
+            Text(
+                tok,
+                style = codeStyle,
+                color = color,
+                softWrap = true
+            )
+        }
+    }
+}
+
+/** v1.31: 把日志行切成 (文本, 类型) 列表，用于高亮渲染 */
+private fun highlightTokens(line: String): List<Pair<String, String>> {
+    val out = ArrayList<Pair<String, String>>()
+    // 匹配：URL、IP、HTTP 方法、数字、[tag]
+    val re = Regex("(https?://[^\\s\"]+)|(\\d{1,3}(\\.\\d{1,3}){3})|\\b(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\\b|(\\d{2,4})|(\\[[^\\]]+\\])")
+    var pos = 0
+    for (m in re.findAll(line)) {
+        if (m.range.first > pos) out.add(line.substring(pos, m.range.first) to "plain")
+        val g = m.value
+        val kind = when {
+            m.groups[1] != null -> "url"
+            m.groups[2] != null -> "ip"
+            m.groups[4] != null -> "method"
+            m.groups[5] != null && g.length in 2..4 -> "num"
+            m.groups[6] != null -> "tag"
+            else -> "plain"
+        }
+        out.add(g to kind)
+        pos = m.range.last + 1
+    }
+    if (pos < line.length) out.add(line.substring(pos) to "plain")
+    return out
 }
 
 // ===== 统计徽章 =====

@@ -69,6 +69,7 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val targetPkg by vm.targetPkg.collectAsState()
+    val rootMode by vm.rootMode.collectAsState()
 
     // 0 = 全局默认, 1 = 当前 App 覆盖
     var cfgLevel by remember { mutableIntStateOf(0) }
@@ -261,6 +262,57 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                     }
                 }
             }
+
+        // ===== v1.31: 工作模式（普通 / Root）=====
+        // Root 模式：历史日志直读目标 App 沙箱落盘文件（目标 App 可不在线）
+        // 授权模型：本 App 不主动触发 su 授权弹窗（Magisk 默认策略不弹窗），
+        //   用户需主动授权；无权限时自动提示并回退普通模式。
+        SettingsGroup(
+            title = "工作模式",
+            subtitle = "历史日志读取方式",
+            expanded = expanded.contains("mode"),
+            onToggle = { toggle("mode") }
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Root 模式", style = MaterialTheme.typography.bodySmall, fontSize = 12.sp)
+                    Text(
+                        if (rootMode) "直读目标沙箱文件，目标 App 可不在线" else "普通模式：HTTP 读取（目标需在线）",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 10.sp
+                    )
+                }
+                Switch(
+                    checked = rootMode,
+                    onCheckedChange = { on ->
+                        scope.launch {
+                            if (on) {
+                                // 切 Root 前检测权限（不弹窗）；无权限提示并保持普通模式
+                                val hasRoot = withContext(Dispatchers.IO) {
+                                    com.dustinky.spyprobe.util.RootLogReader.checkRoot()
+                                }
+                                com.dustinky.spyprobe.util.UiLog.log("Settings: 切 Root 模式 checkRoot=$hasRoot")
+                                if (hasRoot) {
+                                    vm.setRootMode(true)
+                                    android.widget.Toast.makeText(context, "Root 模式已开启（历史日志直读文件）", android.widget.Toast.LENGTH_SHORT).show()
+                                } else {
+                                    android.widget.Toast.makeText(context, "未检测到 root 权限：请先完成授权（Magisk/KernelSU）", android.widget.Toast.LENGTH_LONG).show()
+                                }
+                            } else {
+                                vm.setRootMode(false)
+                                android.widget.Toast.makeText(context, "已切回普通模式", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                )
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
 
         // ===== 通用设置 =====
         SettingsGroup(
