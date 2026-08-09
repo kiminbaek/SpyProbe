@@ -18,7 +18,7 @@
 #include <atomic>
 #include <vector>
 #include <cstdlib>
-#include "shadowhook.h"
+#include "xhook.h"
 #include "http2_parser.h"
 
 #define LOG_TAG "SpyProbe-Native"
@@ -531,18 +531,24 @@ static void native_log(const char* msg) {
     if (need_detach) gJvm->DetachCurrentThread();
 }
 
+// v1.34: shadowhook(inline) → xhook(PLT/GOT)。xhook 只改 GOT 表项、不改函数入口指令，
+// 完全免疫 Android 16 PAC（Pointer Authentication Code）导致的 pc=0 崩溃。
+// 注意 xhook 的 old_func 语义：register 后 xh_core 会在 refresh 时把 GOT 原值回填到 orig_func。
 bool hook_func(const char *lib_name, const char *sym_name, void *hook_func, void **orig_func) {
-    void *stub = shadowhook_hook_sym_name(lib_name, sym_name, hook_func, orig_func);
     char buf[256];
-    if (stub != nullptr) {
-        LOGI("ShadowHook SUCCESS: %s in %s", sym_name, lib_name ? lib_name : "global");
-        snprintf(buf, sizeof(buf), "SH hook OK: %s in %s", sym_name, lib_name ? lib_name : "global");
+    // xhook 的 pathname_regex 匹配"调用方 so 的路径"，而不是被 hook 库。
+    // 用 .* 匹配所有已加载 so（PLT/GOT hook 本质是改调用方的 GOT 表项）。
+    // xhook 本身会跳过 libc 内部符号解析（不走 GOT 的直接调用不受影响，这正是 PLT hook 特性）。
+    int ret = xhook_register(".*", sym_name, hook_func, orig_func);
+    if (ret == 0) {
+        LOGI("xHook REGISTER OK: %s (via %s)", sym_name, lib_name ? lib_name : "any");
+        snprintf(buf, sizeof(buf), "XH reg OK: %s", sym_name);
         native_log(buf);
         return true;
     }
-    // v1.25 P0-3: hook 失败（符号不存在）时不写 orig（保持 nullptr），回调里已做空指针保护
-    LOGE("ShadowHook FAIL: %s in %s", sym_name, lib_name ? lib_name : "global");
-    snprintf(buf, sizeof(buf), "SH hook FAIL: %s in %s", sym_name, lib_name ? lib_name : "global");
+    // 注册失败（参数错误/OOM），不写 orig（保持 nullptr），回调里已做空指针保护
+    LOGE("xHook REGISTER FAIL(%d): %s", ret, sym_name);
+    snprintf(buf, sizeof(buf), "XH reg FAIL(%d): %s", ret, sym_name);
     native_log(buf);
     return false;
 }
@@ -564,29 +570,20 @@ Java_com_dustinky_spyprobe_NativeProbe_initNativeHook(JNIEnv *env, jobject thiz,
 
     if (enableNativeHook) {
         char buf[256];
-        // v1.31.2: 诊断①——shadowhook_init 内部需要 dlopen("libshadowhook_nothing.so")，
-        // 若宿主 linker namespace 不含该库则 init 失败(ret=12)。先手动探测，区分
-        // "nothing.so 加载失败" vs "xdl_dsym/linker 符号扫描失败" 两种根因。
-        void *probe = dlopen("libshadowhook_nothing.so", RTLD_NOW);
-        snprintf(buf, sizeof(buf), "diag: dlopen libshadowhook_nothing.so -> %s",
-                 probe != nullptr ? "OK" : (dlerror() ? dlerror() : "unknown"));
-        native_log(buf);
-        if (probe != nullptr) dlclose(probe);
-        // v1.30.4 P0: 检查 shadowhook_init 返回值——此前未检查，失败时后续 hook 全部无效且无迹可查
-        int sh_ret = shadowhook_init(SHADOWHOOK_MODE_UNIQUE, true);
-        snprintf(buf, sizeof(buf), "shadowhook_init ret=%d", sh_ret);
-        native_log(buf);
-        if (sh_ret != 0) {
-            native_log("shadowhook_init FAILED -> hooks disabled (可用 root logcat -s shadowhook_tag 抓内部日志)");
-            return JNI_FALSE;
-        }
-        // v1.30.4 P0: dlopen 强制加载 SSL 库——若宿主进程尚未加载某 so，
-        // shadowhook_hook_sym_name 找不到符号会失败；先 dlopen 确保符号可解析
+        // v1.34: xhook 无需 init，注册后统一 refresh。PLT/GOT hook 只改调用方 GOT 表项，
+        // 不碰函数指令 → Android 16 PAC 免疫（治本：OnePlus/OPPO 空指针崩溃根因）。
+        // xhook 内部用 dl_iterate_phdr 遍历已加载 so，对符号进行 PLT/GOT 改写；
+        // 对尚未加载的 so，后续 dlopen 时 xhook 会自动监控并 hook（xhook 支持 dlopen 回调）。
+        // 先开启 SIGSEGV 保护，xhook 内部改 GOT 时若目标 so 异常可安全跳过
+        xhook_enable_sigsegv_protection(1);
+        xhook_enable_debug(0);
+
+        // v1.30.4 P0 保留：dlopen 强制加载 SSL 库，确保 GOT 里符号可解析
         // v1.31.5 P0-3: 跳过 libflutter.so（Flutter 内部网络栈，默认不 hook）
         for (int i = 0; i < SSL_HOOK_COUNT; i++) {
             const char* lib = g_ssl_hooks[i].lib_name;
             if (strcmp(lib, "libflutter.so") == 0 && !ENABLE_FLUTTER_SSL_HOOK) {
-                native_log("SH skip dlopen libflutter.so (Flutter SSL hook disabled)");
+                native_log("XH skip dlopen libflutter.so (Flutter SSL hook disabled)");
                 continue;
             }
             void* h = dlopen(lib, RTLD_NOW);
@@ -594,6 +591,7 @@ Java_com_dustinky_spyprobe_NativeProbe_initNativeHook(JNIEnv *env, jobject thiz,
             native_log(buf);
             if (h != nullptr) dlclose(h);
         }
+        // v1.34: xhook 按符号注册（对所有已加载 so 的 GOT 生效），lib_name 仅作日志标注
         hook_func("libc.so", "send", (void*)hook_send, (void**)&orig_send);
         hook_func("libc.so", "recv", (void*)hook_recv, (void**)&orig_recv);
         hook_func("libc.so", "sendto", (void*)hook_sendto, (void**)&orig_sendto);
@@ -604,7 +602,7 @@ Java_com_dustinky_spyprobe_NativeProbe_initNativeHook(JNIEnv *env, jobject thiz,
         for (int i = 0; i < SSL_HOOK_COUNT; i++) {
             const char* lib = g_ssl_hooks[i].lib_name;
             if (strcmp(lib, "libflutter.so") == 0 && !ENABLE_FLUTTER_SSL_HOOK) {
-                native_log("SH skip hook libflutter.so (Flutter SSL hook disabled)");
+                native_log("XH skip hook libflutter.so (Flutter SSL hook disabled)");
                 continue;
             }
             // v1.25 P0-3: SSL_* 与 NativeCrypto_* 变体各自独立 orig 指针，不再互相覆盖
@@ -615,6 +613,12 @@ Java_com_dustinky_spyprobe_NativeProbe_initNativeHook(JNIEnv *env, jobject thiz,
             hook_func(lib, "NativeCrypto_SSL_read", (void*)native_read_hooks[i], (void**)&g_ssl_hooks[i].orig_native_read);
             hook_func(lib, "NativeCrypto_SSL_free", (void*)native_free_hooks[i], (void**)&g_ssl_hooks[i].orig_native_free);
         }
+
+        // 同步执行 GOT 改写（async=0 同步，确保返回时 hook 已生效）
+        int xh_ret = xhook_refresh(0);
+        snprintf(buf, sizeof(buf), "xhook_refresh ret=%d (0=OK)", xh_ret);
+        native_log(buf);
+        LOGI("xHook refresh ret=%d", xh_ret);
     }
     return JNI_TRUE;
 }

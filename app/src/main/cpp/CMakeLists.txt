@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.22.1)
+cmake_minimum_required(VERSION 3.22.1)
 
 project("native_hook")
 
@@ -13,15 +13,16 @@ set(NGHTTP2_SOURCES
     nghttp2/sfparse.c
 )
 
-# v1.30.5: shadowhook 2.0.1（修复 Android 15/16 INIT_LINKER=12）+ libshadowhook_nothing.so
-#   shadowhook_init 需要 nothing 库同目录存在，缺它返回 12（Issue #113）
-add_library(shadowhook SHARED IMPORTED)
-set_target_properties(shadowhook PROPERTIES IMPORTED_LOCATION
-        ${CMAKE_SOURCE_DIR}/libs/${ANDROID_ABI}/libshadowhook.so)
-
-add_library(shadowhook_nothing SHARED IMPORTED)
-set_target_properties(shadowhook_nothing PROPERTIES IMPORTED_LOCATION
-        ${CMAKE_SOURCE_DIR}/libs/${ANDROID_ABI}/libshadowhook_nothing.so)
+# v1.34: 弃用 shadowhook（inline hook，Android 16 PAC 设备崩溃），改用 xhook（PLT/GOT hook）
+#   xhook 只改 GOT 表项、不改函数指令 → 完全免疫 PAC 指针认证崩溃（OnePlus/OPPO Android 16 已验证）
+set(XHOOK_SOURCES
+    xhook/xhook.c
+    xhook/xh_core.c
+    xhook/xh_elf.c
+    xhook/xh_util.c
+    xhook/xh_log.c
+    xhook/xh_version.c
+)
 
 add_library(
         native_hook
@@ -29,11 +30,13 @@ add_library(
         native_hook.cpp
         http2_parser.cpp
         ${NGHTTP2_SOURCES}
+        ${XHOOK_SOURCES}
 )
 
 target_include_directories(native_hook PRIVATE
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/nghttp2
+        ${CMAKE_SOURCE_DIR}/xhook
 )
 
 set_source_files_properties(${NGHTTP2_SOURCES} PROPERTIES
@@ -45,11 +48,13 @@ target_compile_options(native_hook PRIVATE
         -Wno-sign-compare
 )
 
+# xhook 源码是 C，需要 C 编译（默认 .c 即 C）
+set_source_files_properties(${XHOOK_SOURCES} PROPERTIES
+        COMPILE_FLAGS "-Wno-unused-parameter -Wno-sign-compare -Wno-format"
+)
+
 target_link_libraries(
         native_hook
         PRIVATE
-        shadowhook
-        shadowhook_nothing
         log
 )
-

@@ -13,8 +13,8 @@ android {
     defaultConfig {
         minSdk = 26
         targetSdk = 35
-        versionCode = 48
-        versionName = "1.33.1"
+        versionCode = 49
+        versionName = "1.34.0"
 
         // v1.10: native 抓包（shadowhook inline hook）——只编真机常用 ABI，控制体积
         ndk {
