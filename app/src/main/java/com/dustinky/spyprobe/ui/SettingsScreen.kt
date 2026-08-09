@@ -1,6 +1,5 @@
 package com.dustinky.spyprobe.ui
 
-import android.content.Intent
 import com.dustinky.spyprobe.BuildConfig
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -427,13 +426,16 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                 append(info.text)
                             }
                         }
-                        // 直接拉起系统分享（QQ/微信/文件），用户一键发回
-                        val send = Intent(Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(Intent.EXTRA_SUBJECT, "SpyProbe 调试日志 v${BuildConfig.VERSION_NAME}")
-                            putExtra(Intent.EXTRA_TEXT, debugMsg)
+                        // v1.30: 写 txt 文件分享（替代 ACTION_SEND 纯文本，长日志不截断、可保存）
+                        val ok = com.dustinky.spyprobe.util.ShareLogUtil.shareTxtFile(
+                            context,
+                            "SpyProbe 调试日志 v${BuildConfig.VERSION_NAME}",
+                            "spyprobe_debuglog",
+                            debugMsg
+                        )
+                        if (!ok) {
+                            android.widget.Toast.makeText(context, "导出失败：无法写入文件", android.widget.Toast.LENGTH_SHORT).show()
                         }
-                        context.startActivity(Intent.createChooser(send, "发送调试日志"))
                     }
                 },
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp)

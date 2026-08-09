@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v1.30: FileProvider 共享日志 txt 文件用 -->
+<paths>
+    <external-files-path name="logs" path="logs/" />
+    <cache-path name="cache" path="." />
+</paths>

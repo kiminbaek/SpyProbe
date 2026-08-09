@@ -1,6 +1,5 @@
 package com.dustinky.spyprobe.ui
 
-import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -312,11 +311,16 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                 android.widget.Toast.makeText(context, "导出失败", android.widget.Toast.LENGTH_SHORT).show()
                                 return@launch
                             }
-                            val share = Intent(Intent.ACTION_SEND).apply {
-                                type = "text/plain"
-                                putExtra(Intent.EXTRA_TEXT, text.substring(0, minOf(text.length, 100000)))
+                            // v1.30: 写 txt 文件分享（不再截断 10 万字符，长日志完整导出）
+                            val ok = com.dustinky.spyprobe.util.ShareLogUtil.shareTxtFile(
+                                context,
+                                "SpyProbe 日志导出",
+                                if (modeHistory) "spyprobe_logs_${selectedDay}" else "spyprobe_logs",
+                                text
+                            )
+                            if (!ok) {
+                                android.widget.Toast.makeText(context, "导出失败：无法写入文件", android.widget.Toast.LENGTH_SHORT).show()
                             }
-                            context.startActivity(Intent.createChooser(share, "导出日志").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                         }
                     },
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
