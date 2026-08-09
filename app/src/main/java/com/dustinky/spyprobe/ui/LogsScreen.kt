@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -18,7 +19,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
@@ -65,6 +68,8 @@ import com.dustinky.spyprobe.ui.theme.codeStyle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 
 // v1.31: 历史日志三层导航重做（小黄鸟式）——
 //   ① 历史卡片列表（日期+条数+时间范围+收藏/清空）→ ② 当天日志列表（时间+tag+摘要）→ ③ 单条详情（完整内容+复制+分享+高亮）
@@ -207,6 +212,8 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     // v1.31: 历史三层导航
     var historyLevel by remember { mutableStateOf(HistoryLevel.DAYS) }
     var detailEntry by remember { mutableStateOf<Pair<Long, String>?>(null) }
+    // v1.39 P3: 实时日志详情对话框（JSON/Hex 双视图）
+    var detailDialog by remember { mutableStateOf<String?>(null) }
     // v1.25 P1-3: 暂停状态从局部 remember 改为 vm（此前暂停只停自动滚动不停轮询——日志还在积累；
     //   vm.paused 同时控制轮询停止 + 自动滚动暂停，语义一致）
     val paused by vm.paused.collectAsState()
@@ -562,12 +569,21 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                     style = codeStyle,
                                     color = logColor(line),
                                     softWrap = true,
-                                    modifier = Modifier.padding(vertical = 1.dp)
+                                    // v1.39 P3: 实时行点击 → JSON/Hex 详情（Reqable 风格双视图）
+                                    modifier = Modifier
+                                        .padding(vertical = 1.dp)
+                                        .clickable { detailDialog = line }
                                 )
                             }
                         }
                     }
                 }
+            }
+
+            // v1.39 P3: 实时日志详情对话框（文本 / JSON / Hex 三视图 + 复制）
+            val dialogLine = detailDialog
+            if (dialogLine != null) {
+                LogDetailDialog(line = dialogLine, onDismiss = { detailDialog = null })
             }
 
             // ===== 浮动操作按钮 =====
@@ -1085,4 +1101,125 @@ private fun StatChip(label: String, count: Int, color: Color) {
             )
         }
     }
+}
+
+// ===== v1.39 P3: 日志详情对话框（Reqable 风格：文本 / JSON / Hex 三视图 + 复制）=====
+@Composable
+private fun LogDetailDialog(line: String, onDismiss: () -> Unit) {
+    var tab by remember { mutableStateOf(0) }
+    val context = LocalContext.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("日志详情", fontSize = 16.sp) },
+        text = {
+            Column {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("文本", "JSON", "Hex").forEachIndexed { i, label ->
+                        FilterChip(
+                            selected = tab == i,
+                            onClick = { tab = i },
+                            label = { Text(label, fontSize = 11.sp) }
+                        )
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 380.dp)
+                        .verticalScroll(rememberScrollState())
+                        .background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(8.dp))
+                        .padding(10.dp)
+                ) {
+                    when (tab) {
+                        0 -> Text(line, style = codeStyle, softWrap = true)
+                        1 -> {
+                            val json = formatJson(line)
+                            if (json != null) {
+                                Text(json, style = codeStyle, softWrap = true)
+                            } else {
+                                Text("（该行不是 JSON 内容）", style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                        else -> Text(hexDump(line), style = codeStyle, softWrap = true,
+                            fontFamily = FontFamily.Monospace)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                // 复制当前视图内容
+                val text = when (tab) {
+                    0 -> line
+                    1 -> formatJson(line) ?: line
+                    else -> hexDump(line)
+                }
+                try {
+                    val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                            as android.content.ClipboardManager
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("spyprobe", text))
+                    android.widget.Toast.makeText(context, "已复制", android.widget.Toast.LENGTH_SHORT).show()
+                } catch (t: Throwable) {
+                    android.widget.Toast.makeText(context, "复制失败: $t", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }) { Text("复制") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("关闭") }
+        }
+    )
+}
+
+/** 提取日志行里的 JSON 片段并格式化（缩进 2 空格）；非 JSON 返回 null */
+private fun formatJson(line: String): String? {
+    val start = line.indexOf('{').takeIf { it >= 0 } ?: line.indexOf('[')
+    if (start < 0) return null
+    val candidate = line.substring(start)
+    return try {
+        when {
+            candidate.startsWith("[") -> JSONArray(candidate).toString(2)
+            else -> JSONObject(candidate).toString(2)
+        }
+    } catch (t: Throwable) {
+        null
+    }
+}
+
+/** hex dump：优先还原日志行里的 "[N B hex] xxxx" 段；否则对整行 UTF-8 字节 dump（最多 256B） */
+private fun hexDump(line: String): String {
+    val bytes = try {
+        val m = Regex("\\[(\\d+)B hex\\]\\s+([0-9a-fA-F ]+)").find(line)
+        if (m != null) hexToBytes(m.groupValues[2])
+        else line.toByteArray(Charsets.UTF_8).take(256).toByteArray()
+    } catch (t: Throwable) {
+        line.toByteArray(Charsets.UTF_8).take(256).toByteArray()
+    }
+    val sb = StringBuilder()
+    var off = 0
+    while (off < bytes.size) {
+        val chunk = minOf(16, bytes.size - off)
+        sb.append(String.format("%04x  ", off))
+        for (i in 0 until chunk) sb.append(String.format("%02x ", bytes[off + i]))
+        for (i in chunk until 16) sb.append("   ")
+        sb.append(" |")
+        for (i in 0 until chunk) {
+            val b = bytes[off + i]
+            sb.append(if (b.toInt() in 0x20..0x7e) b.toInt().toChar() else '.')
+        }
+        sb.append("|")
+        if (off + chunk < bytes.size) sb.append("\n")
+        off += chunk
+    }
+    return sb.toString()
+}
+
+private fun hexToBytes(s: String): ByteArray {
+    val clean = s.replace(" ", "")
+    val out = ByteArray(clean.length / 2)
+    for (i in out.indices) {
+        out[i] = clean.substring(i * 2, i * 2 + 2).toInt(16).toByte()
+    }
+    return out
 }

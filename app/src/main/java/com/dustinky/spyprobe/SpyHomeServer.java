@@ -19,7 +19,6 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
-
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -76,10 +75,11 @@ public class SpyHomeServer {
     private void handle(Socket s) {
         try (Socket sock = s;
              InputStream in = sock.getInputStream();
-             OutputStream out = sock.getOutputStream();
-             BufferedReader r = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
+             OutputStream out = sock.getOutputStream()) {
 
-            String reqLine = r.readLine();
+            // v1.39: 改用原始流手读 header 行——旧实现 BufferedReader 会缓冲 body 字节，
+            //   pcap_chunk 二进制 body（含任意字节）经字符流会损坏。header 行读完再按路径分派。
+            String reqLine = readHeaderLine(in);
             if (reqLine == null) return;
             String[] parts = reqLine.split(" ");
             if (parts.length < 2) return;
@@ -90,7 +90,7 @@ public class SpyHomeServer {
             // v1.37 P0-5: 请求鉴权 token（目标进程推送带 X-Spy-Token）
             String reqToken = "";
             String line;
-            while ((line = r.readLine()) != null && !line.isEmpty()) {
+            while (!(line = readHeaderLine(in)).isEmpty()) {
                 String lower = line.toLowerCase();
                 if (lower.startsWith("content-length:")) {
                     try {
@@ -101,55 +101,83 @@ public class SpyHomeServer {
                     reqToken = line.substring(line.indexOf(':') + 1).trim();
                 }
             }
-            String body = "";
-            if (contentLength > 0) {
-                char[] buf = new char[contentLength];
-                int n = 0;
-                while (n < contentLength) {
-                    int k = r.read(buf, n, contentLength - n);
-                    if (k < 0) break;
-                    n += k;
-                }
-                body = new String(buf, 0, n);
-            }
 
             // v1.37 P0-5: 写操作鉴权——主进程已生成 token 时，push_logs/config POST 必须带匹配 token
-            String resp;
             if (!TokenStore.homeToken().isEmpty()
                     && ("POST".equals(method) || path.startsWith("/api/push_logs"))) {
                 String expected = TokenStore.homeToken();
                 if (!expected.equals(reqToken)) {
                     // 401：token 缺失/不匹配（防其他 App 伪造日志/配置）
-                    resp = "{\"ok\":false,\"err\":\"unauthorized\"}";
-                    try (Socket s2 = sock) {
-                        java.io.OutputStream o2 = s2.getOutputStream();
-                        byte[] d = resp.getBytes(StandardCharsets.UTF_8);
-                        StringBuilder h = new StringBuilder();
-                        h.append("HTTP/1.1 401 Unauthorized\r\n");
-                        h.append("Content-Type: application/json; charset=utf-8\r\n");
-                        h.append("Content-Length: ").append(d.length).append("\r\n");
-                        h.append("Connection: close\r\n\r\n");
-                        o2.write(h.toString().getBytes(StandardCharsets.UTF_8));
-                        o2.write(d);
-                        o2.flush();
-                    } catch (Throwable t2) { }
+                    String resp = "{\"ok\":false,\"err\":\"unauthorized\"}";
+                    writeBytes(out, resp.getBytes(StandardCharsets.UTF_8), "401 Unauthorized", "application/json; charset=utf-8");
                     return;
                 }
             }
-            resp = route(method, path, body);
+
+            // v1.39 P0: pcap_chunk 二进制 body（pcap 记录字节，无全局头）→ 主进程落盘
+            if (path.startsWith("/api/pcap_chunk")) {
+                byte[] body = readFully(in, contentLength);
+                if (body != null && body.length > 0) {
+                    PcapStore.get().append(body);
+                    DebugLog.get().log("Pcap", "chunk +" + body.length + "B (total=" + PcapStore.get().currentSize() + "B)");
+                }
+                writeBytes(out, "{\"ok\":true}".getBytes(StandardCharsets.UTF_8), "200 OK", "application/json; charset=utf-8");
+                return;
+            }
+
+            // 普通文本请求：从 InputStream 继续读 body
+            String body = "";
+            if (contentLength > 0) {
+                byte[] raw = readFully(in, contentLength);
+                if (raw != null) body = new String(raw, StandardCharsets.UTF_8);
+            }
+
+            String resp = route(method, path, body);
             DebugLog.get().log("Home", method + " " + path + " -> " + resp.length() + "B");
-            byte[] data = resp.getBytes(StandardCharsets.UTF_8);
-            StringBuilder head = new StringBuilder();
-            head.append("HTTP/1.1 200 OK\r\n");
-            head.append("Content-Type: application/json; charset=utf-8\r\n");
-            head.append("Content-Length: ").append(data.length).append("\r\n");
-            head.append("Connection: close\r\n\r\n");
-            out.write(head.toString().getBytes(StandardCharsets.UTF_8));
-            out.write(data);
-            out.flush();
+            writeBytes(out, resp.getBytes(StandardCharsets.UTF_8), "200 OK", "application/json; charset=utf-8");
         } catch (Throwable t) {
             DebugLog.get().log("Home", "conn err: " + t);
         }
+    }
+
+    /** 读一行 header（直到 \r\n），返回不含 \r\n 的字符串；流结束返回 null */
+    private String readHeaderLine(InputStream in) throws Exception {
+        java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream(128);
+        int b;
+        while ((b = in.read()) != -1) {
+            if (b == '\n') break;
+            if (b != '\r') buf.write(b);
+        }
+        if (buf.size() == 0 && b == -1) return null;
+        return new String(buf.toByteArray(), StandardCharsets.UTF_8);
+    }
+
+    /** 读满 n 字节（防半包）；n<=0 返回空数组 */
+    private byte[] readFully(InputStream in, int n) throws Exception {
+        if (n <= 0) return new byte[0];
+        byte[] buf = new byte[n];
+        int got = 0;
+        while (got < n) {
+            int k = in.read(buf, got, n - got);
+            if (k < 0) break;
+            got += k;
+        }
+        if (got == 0) return new byte[0];
+        if (got == n) return buf;
+        byte[] out = new byte[got];
+        System.arraycopy(buf, 0, out, 0, got);
+        return out;
+    }
+
+    private void writeBytes(OutputStream out, byte[] data, String status, String contentType) throws Exception {
+        StringBuilder head = new StringBuilder();
+        head.append("HTTP/1.1 ").append(status).append("\r\n");
+        head.append("Content-Type: ").append(contentType).append("\r\n");
+        head.append("Content-Length: ").append(data.length).append("\r\n");
+        head.append("Connection: close\r\n\r\n");
+        out.write(head.toString().getBytes(StandardCharsets.UTF_8));
+        out.write(data);
+        out.flush();
     }
 
     private String route(String method, String path, String body) {
@@ -173,6 +201,8 @@ public class SpyHomeServer {
                     if (!sess.isEmpty() && !sess.equals(lastSession)) {
                         lastSession = sess;
                         LogPersister.get().startSession();
+                        // v1.39 P0: 会话切换 → pcap 归档（新会话新建 current.pcap）
+                        PcapStore.get().onSessionStart();
                         DebugLog.get().log("Home", "new session " + (sess.length() > 8 ? sess.substring(0, 8) : sess));
                     }
                     int n = 0;

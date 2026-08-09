@@ -90,6 +90,14 @@ public class NetProbe {
     }
 
     // ================= SSL 证书锁定绕过 =================
+    // v1.39 P2: pinning 触发定位——证书校验点被命中时标记"哪种 pinning + 调用方栈"。
+    //   一看日志就知道 App 用哪种证书锁定（network_security_config / okhttp pinner / Cronet / 老库…）
+    private void pinningHit(int idx, String desc) {
+        try {
+            LogStore.get().log(TAG, "[Pinning#" + idx + "] " + desc + " | caller: " + StackUtil.getCompact());
+        } catch (Throwable ignored) { }
+    }
+
     private void installSslBypass(String phase) {
         // 1. SSLContext.init → 替换 TrustManager 为信任所有
         try {
@@ -109,6 +117,8 @@ public class NetProbe {
                 args.set(1, new TrustManager[]{new TrustAllX509(origX509)});
                 Object r = chain.proceed(args.toArray());
                 LogStore.get().log(TAG, "[SSL] SSLContext.init bypassed");
+                // v1.39 P2: 标准 TLS 握手入口（每次 TLS 连接都会命中）
+                pinningHit(1, "SSLContext.init (标准 TLS 握手入口)");
                 return r;
             });
             LogStore.get().log(TAG, "[" + phase + "] hooked SSLContext.init");
@@ -124,6 +134,8 @@ public class NetProbe {
                     X509Certificate[].class, String.class);
             module.hook(cst).intercept(chain -> {
                 if (!Config.get().sslBypass) return chain.proceed();
+                // v1.39 P2: 证书链校验点（App 自定义 TrustManager 走这里）
+                pinningHit(2, "X509TrustManager.checkServerTrusted (证书链校验点)");
                 return null; // 不做校验
             });
             LogStore.get().log(TAG, "[" + phase + "] hooked X509TrustManager.checkServerTrusted");
@@ -147,6 +159,8 @@ public class NetProbe {
                 final Method fCheck = check;
                 module.hook(check).intercept(chain -> {
                     if (!Config.get().sslBypass) return chain.proceed();
+                    // v1.39 P2: okhttp CertificatePinner 命中 = App 做了证书固定！
+                    pinningHit(3, "okhttp3.CertificatePinner.check (证书固定 pinner!)");
                     return null;
                 });
                 LogStore.get().log(TAG, "[" + phase + "] hooked CertificatePinner.check");
@@ -185,6 +199,8 @@ public class NetProbe {
             Method m = nstm.getMethod("checkPins", X509Certificate[].class, String.class, String.class);
             module.hook(m).intercept(chain -> {
                 if (!Config.get().sslBypass) return chain.proceed();
+                // v1.39 P2: 系统网络安全配置 pinning（network_security_config.xml 里配了 pin-set）
+                pinningHit(4, "NetworkSecurityTrustManager.checkPins (网络安全配置 pin-set!)");
                 return null;
             });
             ok++;
@@ -200,6 +216,7 @@ public class NetProbe {
                     Method m = tmi.getMethod("checkServerTrusted", X509Certificate[].class, String.class, extra);
                     module.hook(m).intercept(chain -> {
                         if (!Config.get().sslBypass) return chain.proceed();
+                        pinningHit(5, "Conscrypt TrustManagerImpl.checkServerTrusted (直连实现)");
                         return null;
                     });
                     ok++;
@@ -209,6 +226,7 @@ public class NetProbe {
                 Method m = tmi.getMethod("checkServerTrusted", X509Certificate[].class, String.class);
                 module.hook(m).intercept(chain -> {
                     if (!Config.get().sslBypass) return chain.proceed();
+                    pinningHit(5, "Conscrypt TrustManagerImpl.checkServerTrusted");
                     return null;
                 });
                 ok++;
@@ -223,6 +241,7 @@ public class NetProbe {
                 Method m = tmi.getDeclaredMethod("checkTrusted", X509Certificate[].class);
                 module.hook(m).intercept(chain -> {
                     if (!Config.get().sslBypass) return chain.proceed();
+                    pinningHit(6, "Conscrypt checkTrusted (链验证内部)");
                     return null;
                 });
                 ok++;
@@ -231,6 +250,7 @@ public class NetProbe {
                 Method m = tmi.getDeclaredMethod("checkTrusted", X509Certificate[].class, String.class);
                 module.hook(m).intercept(chain -> {
                     if (!Config.get().sslBypass) return chain.proceed();
+                    pinningHit(6, "Conscrypt checkTrusted");
                     return null;
                 });
                 ok++;
@@ -239,6 +259,7 @@ public class NetProbe {
                 Method m = tmi.getDeclaredMethod("checkTrustedRecursive", X509Certificate[].class, java.util.Date.class, String.class, String.class, boolean.class, java.util.Set.class, java.util.Set.class);
                 module.hook(m).intercept(chain -> {
                     if (!Config.get().sslBypass) return chain.proceed();
+                    pinningHit(6, "Conscrypt checkTrustedRecursive");
                     return null;
                 });
                 ok++;
@@ -253,6 +274,7 @@ public class NetProbe {
             Method m = xte.getMethod("checkServerTrusted", X509Certificate[].class, String.class, String.class);
             module.hook(m).intercept(chain -> {
                 if (!Config.get().sslBypass) return chain.proceed();
+                pinningHit(7, "X509TrustManagerExtensions.checkServerTrusted (带 host 校验)");
                 Object a0 = chain.getArg(0);
                 if (a0 instanceof X509Certificate[]) return java.util.Arrays.asList((X509Certificate[]) a0);
                 return null;
@@ -269,6 +291,7 @@ public class NetProbe {
                 Method m = ohv.getMethod("verify", String.class, javax.net.ssl.SSLSession.class);
                 module.hook(m).intercept(chain -> {
                     if (!Config.get().sslBypass) return chain.proceed();
+                    pinningHit(8, "OkHostnameVerifier.verify(SSLSession) (主机名校验)");
                     return Boolean.TRUE;
                 });
                 ok++;
@@ -277,6 +300,7 @@ public class NetProbe {
                 Method m = ohv.getMethod("verify", String.class, X509Certificate.class);
                 module.hook(m).intercept(chain -> {
                     if (!Config.get().sslBypass) return chain.proceed();
+                    pinningHit(8, "OkHostnameVerifier.verify(cert)");
                     return Boolean.TRUE;
                 });
                 ok++;
@@ -285,6 +309,7 @@ public class NetProbe {
                 Method m = ohv.getMethod("verify", X509Certificate.class);
                 module.hook(m).intercept(chain -> {
                     if (!Config.get().sslBypass) return chain.proceed();
+                    pinningHit(8, "OkHostnameVerifier.verify");
                     return Boolean.TRUE;
                 });
                 ok++;
@@ -299,6 +324,8 @@ public class NetProbe {
             module.hook(m).intercept(chain -> {
                 if (Config.get().sslBypass) {
                     LogStore.get().log(TAG, "[SSL] old-okhttp setCertificatePinner intercepted (bypass)");
+                    // v1.39 P2: 老 okhttp (2.x) 证书固定
+                    pinningHit(9, "老 okhttp(2.x) setCertificatePinner (证书固定!)");
                     return chain.getThisObject();
                 }
                 return chain.proceed();
@@ -314,6 +341,7 @@ public class NetProbe {
                 Method m = rp.getMethod("setSslSocketFactory", javax.net.ssl.SSLSocketFactory.class);
                 module.hook(m).intercept(chain -> {
                     LogStore.get().log(TAG, "[SSL] xutils setSslSocketFactory -> trust-all (bypass)");
+                    pinningHit(10, "xutils setSslSocketFactory");
                     return chain.getThisObject();
                 });
                 ok++;
@@ -322,6 +350,7 @@ public class NetProbe {
                 Method m = rp.getMethod("setHostnameVerifier", javax.net.ssl.HostnameVerifier.class);
                 module.hook(m).intercept(chain -> {
                     LogStore.get().log(TAG, "[SSL] xutils setHostnameVerifier -> allow-all (bypass)");
+                    pinningHit(10, "xutils setHostnameVerifier");
                     return chain.getThisObject();
                 });
                 ok++;
@@ -340,6 +369,7 @@ public class NetProbe {
                     Method m = av.getMethod("verify", sig);
                     module.hook(m).intercept(chain -> {
                         if (!Config.get().sslBypass) return chain.proceed();
+                        pinningHit(11, "httpclientandroidlib.AbstractVerifier.verify");
                         return null; // 校验通过（void）
                     });
                     ok++;
@@ -357,6 +387,8 @@ public class NetProbe {
             Method m = wvc.getMethod("onReceivedSslError", Class.forName("android.webkit.WebView"), handler, err);
             module.hook(m).intercept(chain -> {
                 if (!Config.get().sslBypass) return chain.proceed();
+                // v1.39 P2: WebView SSL 错误 = H5 页面证书问题（自签/中间人/pinning）
+                pinningHit(12, "WebViewClient.onReceivedSslError (H5 证书错误)");
                 Object h = chain.getArg(1);
                 if (h != null) {
                     try { handler.getMethod("proceed").invoke(h); } catch (Throwable t) { }
@@ -377,6 +409,8 @@ public class NetProbe {
                     module.hook(m).intercept(chain -> {
                         if (Config.get().sslBypass) {
                             LogStore.get().log(TAG, "[SSL] Cronet addPublicKeyPins intercepted (bypass) host=" + chain.getArg(0));
+                            // v1.39 P2: Cronet 公钥固定（常见于视频/直播类 App）
+                            pinningHit(13, "Cronet addPublicKeyPins (公钥固定!) host=" + chain.getArg(0));
                         }
                         return chain.getThisObject();
                     });
@@ -387,6 +421,7 @@ public class NetProbe {
                     module.hook(m).intercept(chain -> {
                         if (Config.get().sslBypass) {
                             LogStore.get().log(TAG, "[SSL] Cronet enablePinningBypass intercepted");
+                            pinningHit(13, "Cronet enablePinningBypass");
                         }
                         return chain.getThisObject();
                     });
@@ -411,6 +446,7 @@ public class NetProbe {
                     Method m = pf.getDeclaredMethod("checkServerTrusted", X509Certificate[].class, String.class, e);
                     module.hook(m).intercept(chain -> {
                         if (!Config.get().sslBypass) return chain.proceed();
+                        pinningHit(14, "Conscrypt Platform.checkServerTrusted (底层校验)");
                         return null;
                     });
                     n++;

@@ -53,6 +53,9 @@ public class Config {
     public volatile boolean webViewDebug = false;
     // v1.38 (hooker 借鉴 P0-3): native SSL keylog（CLIENT_RANDOM/master_secret，Wireshark 可导，默认关防刷屏）
     public volatile boolean keylogCapture = false;
+    // v1.39 P0 (r0capture 借鉴): pcap 导出——native SSL 明文 + 会话 seq/ack 伪 IP/TCP 头 → 标准 pcap（Wireshark 直开）。
+    //   默认关（pcap 额外内存/推送开销）；开启后目标进程按 SSL 连接组装 pcap 记录推主进程落盘。
+    public volatile boolean pcapCapture = false;
 
     // ===== 方法探测 hook 列表（动态下发）=====
     public static class HookSpec {
@@ -530,6 +533,8 @@ public class Config {
             o.put("keystore", keystoreCapture);
             o.put("webViewDebug", webViewDebug);
             o.put("keylog", keylogCapture);
+            // v1.39: pcap 导出（r0capture 借鉴）
+            o.put("pcap", pcapCapture);
             o.put("debug", debugEnabled);
         } catch (Throwable t) {
             debugLog("toJsonObject FAIL: " + t);
@@ -571,6 +576,8 @@ public class Config {
         keystoreCapture = o.optBoolean("keystore", keystoreCapture);
         webViewDebug = o.optBoolean("webViewDebug", webViewDebug);
         keylogCapture = o.optBoolean("keylog", keylogCapture);
+        // v1.39: pcap 导出（r0capture 借鉴）
+        pcapCapture = o.optBoolean("pcap", pcapCapture);
         debugEnabled = o.optBoolean("debug", debugEnabled);
     }
 

@@ -63,6 +63,9 @@ typedef int (*type_close)(int);
 typedef int (*type_SSL_write)(void *ssl, const void *buf, int num);
 typedef int (*type_SSL_read)(void *ssl, void *buf, int num);
 typedef void (*type_SSL_free)(void *ssl);
+// v1.39 P0: SSL_get_fd —— SSL 数据回调里拿底层 fd 查 socket 四元组（pcap 用）
+typedef int (*type_SSL_get_fd)(const void *ssl);
+static type_SSL_get_fd real_SSL_get_fd = nullptr;
 
 static type_send orig_send;
 static type_recv orig_recv;
@@ -177,24 +180,42 @@ std::string get_cached_stack(jlong id) {
     return stack;
 }
 
-std::string get_cached_socket_info(int fd) {
+// v1.39 P0: socket info 从 "ip:port" 升级为 "src_ip:src_port->dst_ip:dst_port"——
+//   pcap 导出需要完整四元组（本地+远端），日志展示也更完整。
+//   兼容旧逻辑：调用方无需解析，直接展示或交给 PcapWriter 拆解。
+static void sockaddr_to_str(struct sockaddr_storage* addr, char* ip_str, size_t ip_len, int* port) {
+    *port = 0;
+    if (addr->ss_family == AF_INET) {
+        struct sockaddr_in *s = (struct sockaddr_in *)addr;
+        *port = ntohs(s->sin_port); inet_ntop(AF_INET, &s->sin_addr, ip_str, ip_len);
+    } else if (addr->ss_family == AF_INET6) {
+        struct sockaddr_in6 *s = (struct sockaddr_in6 *)addr;
+        *port = ntohs(s->sin6_port); inet_ntop(AF_INET6, &s->sin6_addr, ip_str, ip_len);
+    } else {
+        strncpy(ip_str, "unknown", ip_len - 1);
+    }
+}
+
+static std::string get_cached_socket_info(int fd) {
     if (fd <= 0) return "";
     {
         std::lock_guard<std::mutex> lock(g_cache_mutex);
         auto it = g_socket_info_cache.find(fd);
         if (it != g_socket_info_cache.end()) return it->second;
     }
-    struct sockaddr_storage addr; socklen_t len = sizeof(addr);
-    if (getpeername(fd, (struct sockaddr*)&addr, &len) != 0) return "";
-    char ip_str[INET6_ADDRSTRLEN] = {0}; int port = 0;
-    if (addr.ss_family == AF_INET) {
-        struct sockaddr_in *s = (struct sockaddr_in *)&addr;
-        port = ntohs(s->sin_port); inet_ntop(AF_INET, &s->sin_addr, ip_str, sizeof(ip_str));
-    } else if (addr.ss_family == AF_INET6) {
-        struct sockaddr_in6 *s = (struct sockaddr_in6 *)&addr;
-        port = ntohs(s->sin6_port); inet_ntop(AF_INET6, &s->sin6_addr, ip_str, sizeof(ip_str));
-    } else return "unknown";
-    std::string info = std::string(ip_str) + ":" + std::to_string(port);
+    struct sockaddr_storage local, remote; socklen_t llen = sizeof(local), rlen = sizeof(remote);
+    char lip[INET6_ADDRSTRLEN] = {0}, rip[INET6_ADDRSTRLEN] = {0};
+    int lport = 0, rport = 0;
+    if (getsockname(fd, (struct sockaddr*)&local, &llen) != 0) return "";
+    sockaddr_to_str(&local, lip, sizeof(lip), &lport);
+    if (getpeername(fd, (struct sockaddr*)&remote, &rlen) == 0) {
+        sockaddr_to_str(&remote, rip, sizeof(rip), &rport);
+    } else {
+        strncpy(rip, "0.0.0.0", sizeof(rip) - 1);
+        rport = 0;
+    }
+    std::string info = std::string(lip) + ":" + std::to_string(lport)
+                     + "->" + std::string(rip) + ":" + std::to_string(rport);
     std::lock_guard<std::mutex> lock(g_cache_mutex);
     g_socket_info_cache[fd] = info;
     return info;
@@ -237,14 +258,26 @@ bool callback_kotlin(jlong id, bool is_write, const void *buf, size_t len, bool 
     if (jBuffer == nullptr) return false;
     
     jstring jInfo = nullptr;
-    std::string info = (!is_ssl && id > 0) ? get_cached_socket_info((int)id) : "";
+    std::string info;
+    if (is_ssl) {
+        // v1.39 P0: TLS 明文数据带完整 socket 四元组（pcap 需要本地+远端地址端口）。
+        //   id = ssl 指针，用 SSL_get_fd 拿底层 fd 再查 getsockname/getpeername 缓存。
+        if (real_SSL_get_fd != nullptr) {
+            int fd = real_SSL_get_fd((void*)id);
+            if (fd > 0) info = get_cached_socket_info(fd);
+        }
+    } else if (id > 0) {
+        info = get_cached_socket_info((int)id);
+    }
     if (!info.empty()) {
         jInfo = refGuard.add(env->NewStringUTF(info.c_str()));
         if (check_exception(env)) jInfo = nullptr;
     }
     
+    // v1.39 P1: native SSL 调用栈——TLS 明文数据双向都采样（定位明文来自哪个 so/函数）；
+    //   libc 层保持只有 is_write 采样（读方向高频且诊断价值低）。1/10 采样防刷屏。
     jstring jStack = nullptr;
-    if (is_write) {
+    if (is_write || is_ssl) {
         thread_local int sample_counter = 0;
         if (++sample_counter >= 10) {
             sample_counter = 0;
@@ -713,6 +746,11 @@ Java_com_dustinky_spyprobe_NativeProbe_initNativeHook(JNIEnv *env, jobject thiz,
         real_ctx_set_keylog = (type_SSL_CTX_set_keylog_callback)dlsym(RTLD_DEFAULT, "SSL_CTX_set_keylog_callback");
         if (real_SSL_get_SSL_CTX == nullptr || real_ctx_set_keylog == nullptr) {
             native_log("XH keylog: dlsym SSL_get_SSL_CTX/SSL_CTX_set_keylog_callback FAIL (libssl.so 未加载?)");
+        }
+        // v1.39 P0: pcap 导出需要 SSL_get_fd（SSL 明文 → 底层 fd → socket 四元组）
+        real_SSL_get_fd = (type_SSL_get_fd)dlsym(RTLD_DEFAULT, "SSL_get_fd");
+        if (real_SSL_get_fd == nullptr) {
+            native_log("XH pcap: dlsym SSL_get_fd FAIL (SSL 数据将不带 socket 信息)");
         }
 
         // v1.34: xhook 按符号注册（对所有已加载 so 的 GOT 生效），lib_name 仅作日志标注

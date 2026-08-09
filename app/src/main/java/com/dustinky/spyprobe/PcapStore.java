@@ -1,0 +1,157 @@
+package com.dustinky.spyprobe;
+
+/*
+ * v1.39 P0: 主进程 pcap 落盘（SpyProbe 自己家 files/spyprobe_pcap/）
+ *
+ * - 目标进程 PcapWriter 连接关闭时推 /api/pcap_chunk（pcap 记录字节，无全局头）
+ * - 这里 append 到 current.pcap（首次创建写 24B 全局头）
+ * - 会话切换（目标进程重启，LogPersister.startSession 同步调 onSessionStart）
+ *   → current.pcap 归档为 pcap_<ts>_<n>.pcap，新建 current.pcap
+ * - UI「导出 pcap」读目录所有 pcap 文件合并（全局头一次 + 全部记录）分享
+ *
+ * 由 ModuleMain.onPackageReady 用 ActivityThread.currentApplication().getFilesDir() 初始化。
+ */
+public class PcapStore {
+
+    private static final PcapStore INSTANCE = new PcapStore();
+    public static PcapStore get() { return INSTANCE; }
+
+    // pcap 全局头（24B）：magic 0xa1b2c3d4 / v2.4 / snaplen 65535 / LINKTYPE_IPV4(228)
+    private static final byte[] GLOBAL_HEADER = {
+            (byte) 0xd4, (byte) 0xc3, (byte) 0xb2, (byte) 0xa1,
+            0x02, 0x00, 0x04, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+            (byte) 0xff, (byte) 0xff, 0x00, 0x00,
+            (byte) 0xe4, 0x00, 0x00, 0x00
+    };
+
+    private volatile java.io.File dir = null;
+    private volatile java.io.File current = null;
+    private final Object lock = new Object();
+
+    public synchronized void init(java.io.File appFilesDir) {
+        if (dir != null) return;
+        dir = new java.io.File(appFilesDir, "spyprobe_pcap");
+        if (!dir.exists()) dir.mkdirs();
+        current = new java.io.File(dir, "current.pcap");
+        DebugLog.get().log("Pcap", "init dir=" + dir.getAbsolutePath());
+    }
+
+    public boolean isInitialized() { return dir != null; }
+    public String dirPath() { return dir != null ? dir.getAbsolutePath() : "(null)"; }
+
+    /** 目标进程推送的 pcap 记录（无全局头）→ append current.pcap */
+    public void append(byte[] records) {
+        if (records == null || records.length == 0) return;
+        synchronized (lock) {
+            try {
+                if (dir == null || current == null) return;
+                boolean first = !current.exists() || current.length() == 0;
+                java.io.FileOutputStream fos = new java.io.FileOutputStream(current, true);
+                try {
+                    if (first) fos.write(GLOBAL_HEADER);
+                    fos.write(records);
+                } finally {
+                    try { fos.close(); } catch (Throwable t2) { }
+                }
+            } catch (Throwable t) {
+                DebugLog.get().log("Pcap", "append err: " + t);
+            }
+        }
+    }
+
+    /** 会话切换：current.pcap 归档（避免多会话混一个文件） */
+    public void onSessionStart() {
+        synchronized (lock) {
+            try {
+                if (dir == null || current == null) return;
+                if (current.exists() && current.length() > 24) { // 有内容才归档
+                    java.text.SimpleDateFormat fmt =
+                            new java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US);
+                    String ts = fmt.format(new java.util.Date());
+                    java.io.File archived = new java.io.File(dir, "pcap_" + ts + ".pcap");
+                    if (archived.exists()) archived.delete();
+                    if (!current.renameTo(archived)) {
+                        DebugLog.get().log("Pcap", "archive rename FAIL -> " + archived.getName());
+                    } else {
+                        DebugLog.get().log("Pcap", "archived -> " + archived.getName()
+                                + " (" + archived.length() + "B)");
+                    }
+                }
+                current = new java.io.File(dir, "current.pcap");
+                // 清掉历史过大的归档（保留最近 5 个，防占盘）
+                cleanOld();
+            } catch (Throwable t) {
+                DebugLog.get().log("Pcap", "onSessionStart err: " + t);
+            }
+        }
+    }
+
+    private void cleanOld() {
+        try {
+            java.io.File[] fs = dir.listFiles((d, name) -> name.startsWith("pcap_") && name.endsWith(".pcap"));
+            if (fs == null || fs.length <= 5) return;
+            java.util.Arrays.sort(fs, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
+            for (int i = 5; i < fs.length; i++) {
+                try { fs[i].delete(); } catch (Throwable t2) { }
+            }
+        } catch (Throwable ignored) { }
+    }
+
+    /** 合并全部 pcap 文件为一个完整 pcap（全局头一次 + 各文件去掉自带全局头的记录） */
+    public byte[] exportAllBytes() {
+        synchronized (lock) {
+            try {
+                if (dir == null) return null;
+                java.io.File[] fs = dir.listFiles((d, name) -> name.endsWith(".pcap"));
+                if (fs == null || fs.length == 0) return null;
+                java.util.Arrays.sort(fs, (a, b) -> a.getName().compareTo(b.getName()));
+                java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream(1 << 20);
+                out.write(GLOBAL_HEADER);
+                int files = 0;
+                for (java.io.File f : fs) {
+                    byte[] all = readFile(f);
+                    if (all == null || all.length <= 24) continue;
+                    out.write(all, 24, all.length - 24); // 去掉文件自带全局头
+                    files++;
+                }
+                if (files == 0) return null;
+                return out.toByteArray();
+            } catch (Throwable t) {
+                DebugLog.get().log("Pcap", "export err: " + t);
+                return null;
+            }
+        }
+    }
+
+    private byte[] readFile(java.io.File f) {
+        try {
+            java.io.FileInputStream fis = new java.io.FileInputStream(f);
+            try {
+                byte[] b = new byte[(int) f.length()];
+                int n = 0;
+                while (n < b.length) {
+                    int k = fis.read(b, n, b.length - n);
+                    if (k < 0) break;
+                    n += k;
+                }
+                return b;
+            } finally {
+                try { fis.close(); } catch (Throwable t2) { }
+            }
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** 当前 pcap 文件大小（UI 状态显示） */
+    public long currentSize() {
+        try {
+            if (current == null) return 0;
+            return current.exists() ? current.length() : 0;
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+}

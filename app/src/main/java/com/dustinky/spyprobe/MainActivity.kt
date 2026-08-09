@@ -29,6 +29,12 @@ class MainActivity : ComponentActivity() {
         } catch (t: Throwable) {
             com.dustinky.spyprobe.util.UiLog.log("Home init Config FAIL: $t")
         }
+        // v1.39 P0: pcap 落盘自己家：files/spyprobe_pcap/（目标进程推 pcap 记录写这里）
+        try {
+            com.dustinky.spyprobe.PcapStore.get().init(applicationContext.filesDir)
+        } catch (t: Throwable) {
+            com.dustinky.spyprobe.util.UiLog.log("Home init PcapStore FAIL: $t")
+        }
         // v1.37 P0-5: 生成/加载推送鉴权 token（server 校验 push_logs 用；目标进程经远程偏好读取）
         try {
             com.dustinky.spyprobe.TokenStore.ensureToken(applicationContext)

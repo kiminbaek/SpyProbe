@@ -133,6 +133,18 @@ public class NativeProbe {
             if (buf == null) return false;
             // v1.35 P0-1b: 跳过自身日志推送（127.0.0.1:9900），根治递归污染
             if (isSelfPush(socketInfo)) return false;
+            // v1.39 P0: pcap 导出——TLS 明文完整喂 PcapWriter（独立 duplicate 读取，不影响日志读取）
+            if (isSsl && Config.get().pcapCapture) {
+                try {
+                    ByteBuffer dup = buf.duplicate();
+                    int pcapTotal = dup.remaining();
+                    int pcapN = Math.min(pcapTotal, 65536); // 单条上限 64KB（大块流量只留前段）
+                    byte[] pcapData = new byte[pcapN];
+                    dup.get(pcapData);
+                    PcapWriter.get().feed(id, isWrite, pcapData, socketInfo);
+                } catch (Throwable ignored) {
+                }
+            }
             String dir = isWrite ? ">>>" : "<<<";
             String proto = isSsl ? "TLS" : "TCP";
             String loc = (socketInfo != null && !socketInfo.isEmpty()) ? socketInfo : ("#" + id);
@@ -145,6 +157,7 @@ public class NativeProbe {
             LogStore.get().log(TAG, "[" + proto + " " + dir + " " + loc + (total > n ? " " + total + "B" : "") + "] " + toReadable(data, total));
             if (stack != null && !stack.isEmpty()) {
                 // v1.16 P2-6: 只对小包记录调用栈（大块传输高频刷屏；短包=握手/协议帧，栈有诊断价值）
+                // v1.39 P1: SSL 明文也记录（native 调用栈标注明文来源 so/函数），同样限小包
                 if (data.length <= 64) {
                     LogStore.get().log(TAG, stack);
                 }
@@ -209,6 +222,13 @@ public class NativeProbe {
         try {
             // v1.15 P0-4: native 抓包开关
             if (!Config.get().nativeCapture) return;
+            // v1.39 P0: TLS 连接关闭 → pcap 会话记录推主进程
+            if (isSsl && Config.get().pcapCapture) {
+                try {
+                    PcapWriter.get().onConnClosed(id);
+                } catch (Throwable ignored) {
+                }
+            }
             LogStore.get().log(TAG, "[conn closed " + (isSsl ? "TLS" : "TCP") + " #" + id + "]");
         } catch (Throwable ignored) {
         }

@@ -184,8 +184,14 @@ public class SpyServer {
             String query = path.contains("?") ? path.substring(path.indexOf('?') + 1) : "";
 
             switch (p) {
-                case "/api/ping": {
+                // v1.39 P0: 目标进程把活跃 pcap 会话 flush 到主进程（UI「导出 pcap」先调这个，在线时兜底）
+                case "/api/flush_pcap": {
+                    PcapWriter.get().flushAll();
                     JSONObject o = new JSONObject();
+                    o.put("ok", true);
+                    return o.toString();
+                }
+                case "/api/ping": {                    JSONObject o = new JSONObject();
                     o.put("ok", true);
                     o.put("pkg", pkg);
                     o.put("port", actualPort);

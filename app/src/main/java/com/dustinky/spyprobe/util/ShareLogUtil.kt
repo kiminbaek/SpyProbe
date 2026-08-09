@@ -20,6 +20,7 @@ import java.util.Locale
  *  - Android 10+（API 29+）：写公共 Download/SpyProbe/ 目录（MediaStore 免权限），用户文件管理器直接可见、可拷出
  *  - Android 9-（API 26-28）：写 app 专属外部目录 logs/，经 FileProvider 分享出去（QQ/微信保存为 txt）
  * v1.30.1: 失败时返回具体错误信息（string）+ UiLog 记录，UI 能显示根因。
+ * v1.39: 新增 pcap 二进制导出（writePcapFile），同样走公共 Download + FileProvider 兜底。
  */
 object ShareLogUtil {
 
@@ -97,6 +98,66 @@ object ShareLogUtil {
             FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
         } catch (e: Exception) {
             UiLog.log("writeAppExternal fail: ${e.javaClass.simpleName}: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * v1.39 P0: pcap 文件写公共 Download/SpyProbe/（Android 10+ MediaStore 免权限；老系统 FileProvider 兜底）。
+     * @return 可分享 Uri；null=失败（UiLog 有原因）
+     */
+    fun writePcapFile(context: Context, bytes: ByteArray): Uri? {
+        val filename = "spyprobe_pcap_${timestamp()}.pcap"
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                writePublicDownloadBytes(context, filename, bytes) ?: writeAppExternalBytes(context, filename, bytes)
+            } else {
+                writeAppExternalBytes(context, filename, bytes)
+            }
+        } catch (e: Exception) {
+            UiLog.log("writePcapFile failed: ${e.javaClass.simpleName}: ${e.message}")
+            null
+        }
+    }
+
+    /** 公共 Download/SpyProbe/ 写二进制（Android 10+ MediaStore，免权限） */
+    private fun writePublicDownloadBytes(context: Context, filename: String, bytes: ByteArray): Uri? {
+        return try {
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, filename)
+                put(MediaStore.Downloads.MIME_TYPE, "application/vnd.tcpdump.pcap")
+                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/SpyProbe")
+            }
+            val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            if (uri == null) {
+                UiLog.log("writePublicDownloadBytes: MediaStore insert null")
+                return null
+            }
+            context.contentResolver.openOutputStream(uri)?.use { out ->
+                out.write(bytes)
+            } ?: run {
+                UiLog.log("writePublicDownloadBytes: openOutputStream null")
+                return null
+            }
+            UiLog.log("writePublicDownloadBytes OK: $filename len=${bytes.size}")
+            uri
+        } catch (e: Exception) {
+            UiLog.log("writePublicDownloadBytes fail: ${e.javaClass.simpleName}: ${e.message}")
+            null
+        }
+    }
+
+    /** app 专属外部目录写二进制（老系统 / 公共目录失败兜底，经 FileProvider 分享） */
+    private fun writeAppExternalBytes(context: Context, filename: String, bytes: ByteArray): Uri? {
+        return try {
+            val dir = File(context.getExternalFilesDir(null), "logs")
+            if (!dir.exists()) dir.mkdirs()
+            val file = File(dir, filename)
+            file.writeBytes(bytes)
+            UiLog.log("writeAppExternalBytes OK: $filename len=${bytes.size}")
+            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        } catch (e: Exception) {
+            UiLog.log("writeAppExternalBytes fail: ${e.javaClass.simpleName}: ${e.message}")
             null
         }
     }
