@@ -377,9 +377,35 @@ public class Config {
     // v1.22: 模块自身调试日志开关（默认关；开启后 LogStore 输出 [DBG] 前缀行，排查持久化/IPC 等问题用）
     public volatile boolean debugEnabled = false;
 
+    // v1.31.6 P0-1: cfgFile 动态解析——ModuleMain 在 handleLoadPackage 最早期（currentApplication()=null）
+    //   解析 cfgFile 得到 null，导致 saveConfig(null)/loadConfig(null) 全部空转、用户开关永不持久化
+    //   （每次启动 loadConfig 全用默认值 → native 永远 true → 用户关 native 无效）。现在读写时动态重解析。
+    private java.io.File cfgFile; // 最近一次成功解析/写入的 spyprobe_cfg.json（v1.31.6）
+
+    /** 动态解析目标 App files/spyprobe_cfg.json（反射 ActivityThread.currentApplication，此时必非 null） */
+    public static java.io.File resolveCfgFile() {
+        try {
+            Class<?> at = Class.forName("android.app.ActivityThread");
+            Object app = at.getMethod("currentApplication").invoke(null);
+            if (app != null) {
+                java.io.File filesDir = (java.io.File) app.getClass().getMethod("getFilesDir").invoke(app);
+                if (filesDir != null) return new java.io.File(filesDir, "spyprobe_cfg.json");
+            }
+        } catch (Throwable t) {
+            debugLog("resolveCfgFile error: " + t);
+        }
+        return null;
+    }
+
     /** 保存全部抓包开关到目标 App data 目录文件（每次 UI 下发配置后调用） */
     public synchronized void saveConfig(java.io.File file) {
-        if (file == null) return;
+        // v1.31.6 P0-1: 传入 null（ModuleMain 早期解析失败）时用缓存/动态重解析——此时 currentApplication() 必非 null
+        if (file == null) file = (this.cfgFile != null) ? this.cfgFile : resolveCfgFile();
+        if (file == null) {
+            debugLog("config save: file null (resolveCfgFile also null)");
+            return;
+        }
+        this.cfgFile = file;
         try {
             org.json.JSONObject o = new org.json.JSONObject();
             o.put("sslBypass", sslBypass);
@@ -438,10 +464,15 @@ public class Config {
 
     /** 进程启动后从目标 App data 目录文件恢复抓包开关（未保存过则保持默认值） */
     public synchronized void loadConfig(java.io.File file) {
+        // v1.31.6 P0-1: 早期解析为 null 时动态重解析——此时 currentApplication() 必非 null，配置才能真正恢复
         if (file == null) {
-            debugLog("config load: file null");
-            return;
+            file = resolveCfgFile();
+            if (file == null) {
+                debugLog("config load: file null (resolveCfgFile also null), keep defaults");
+                return;
+            }
         }
+        this.cfgFile = file;
         try {
             if (!file.exists()) {
                 debugLog("config load: no file " + file.getAbsolutePath() + ", keep defaults");

@@ -59,7 +59,9 @@ public class ModuleMain extends XposedModule {
         AntiDetectProbe anti = new AntiDetectProbe(this, cl);
         // v1.22: 抓包开关持久化文件——目标 App 自身 data 目录（零 IPC，重启必恢复）
         // v1.25 P2-9: hook/hijack 规则持久化同目录文件（spyprobe_rules.json），弃用远程偏好
-        final java.io.File cfgFile = resolveCfgFile();
+        // v1.31.6 P0-1: 早期 currentApplication() 可能为 null → cfgFile 可能解析为 null；
+        //   Config.loadConfig/saveConfig 已支持 file==null 时动态重解析，这里仅作日志与 rulesFile 参考
+        final java.io.File cfgFile = Config.get().resolveCfgFile();
         DebugLog.get().log("ModuleMain", "cfgFile=" + (cfgFile != null ? cfgFile.getAbsolutePath() : "null"));
         // v1.29: 日志持久化初始化（DebugLog 三保险：内存环形 + 落盘 + logcat）
         // v1.29 修复：原实现 currentApplication() 返回 null 时静默跳过 → dir=null 一行不写盘且无痕迹。
@@ -192,19 +194,6 @@ public class ModuleMain extends XposedModule {
 
         log(Log.INFO, TAG, "SpyProbe ready for " + pkg);
         DebugLog.get().log("ModuleMain", "onPackageReady 流程编排完成 pkg=" + pkg);
-    }
-
-    /** v1.22: 目标 App data 目录下的抓包开关持久化文件（files/spyprobe_cfg.json）；失败返回 null */
-    private static java.io.File resolveCfgFile() {
-        try {
-            Class<?> at = Class.forName("android.app.ActivityThread");
-            Object app = at.getMethod("currentApplication").invoke(null);
-            if (app != null) {
-                java.io.File filesDir = (java.io.File) app.getClass().getMethod("getFilesDir").invoke(app);
-                if (filesDir != null) return new java.io.File(filesDir, "spyprobe_cfg.json");
-            }
-        } catch (Throwable t) { }
-        return null;
     }
 
     /** v1.29: 反射拿目标 App filesDir；失败返回 null（不静默，写 DebugLog） */
