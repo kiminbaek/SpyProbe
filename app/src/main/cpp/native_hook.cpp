@@ -556,12 +556,12 @@ bool hook_func(const char *lib_name, const char *sym_name, void *hook_func, void
     return false;
 }
 
-extern "C" JNIEXPORT void JNICALL
+extern "C" JNIEXPORT jboolean JNICALL
 Java_com_dustinky_spyprobe_NativeProbe_initNativeHook(JNIEnv *env, jobject thiz, jboolean enableNativeHook) {
     env->GetJavaVM(&gJvm);
     pthread_key_create(&g_thread_key, detach_current_thread);
     jclass clazz = env->FindClass("com/dustinky/spyprobe/NativeProbe");
-    if (!clazz) return;
+    if (!clazz) return JNI_FALSE;
     gNativeRequestHookClass = (jclass) env->NewGlobalRef(clazz);
     
     gOnNativeDataMethod = env->GetStaticMethodID(clazz, "onNativeData", "(JZLjava/nio/ByteBuffer;Ljava/lang/String;Ljava/lang/String;Z)Z");
@@ -573,13 +573,21 @@ Java_com_dustinky_spyprobe_NativeProbe_initNativeHook(JNIEnv *env, jobject thiz,
 
     if (enableNativeHook) {
         char buf[256];
+        // v1.31.2: 诊断①——shadowhook_init 内部需要 dlopen("libshadowhook_nothing.so")，
+        // 若宿主 linker namespace 不含该库则 init 失败(ret=12)。先手动探测，区分
+        // "nothing.so 加载失败" vs "xdl_dsym/linker 符号扫描失败" 两种根因。
+        void *probe = dlopen("libshadowhook_nothing.so", RTLD_NOW);
+        snprintf(buf, sizeof(buf), "diag: dlopen libshadowhook_nothing.so -> %s",
+                 probe != nullptr ? "OK" : (dlerror() ? dlerror() : "unknown"));
+        native_log(buf);
+        if (probe != nullptr) dlclose(probe);
         // v1.30.4 P0: 检查 shadowhook_init 返回值——此前未检查，失败时后续 hook 全部无效且无迹可查
         int sh_ret = shadowhook_init(SHADOWHOOK_MODE_UNIQUE, true);
         snprintf(buf, sizeof(buf), "shadowhook_init ret=%d", sh_ret);
         native_log(buf);
         if (sh_ret != 0) {
-            native_log("shadowhook_init FAILED -> hooks disabled");
-            return;
+            native_log("shadowhook_init FAILED -> hooks disabled (可用 root logcat -s shadowhook_tag 抓内部日志)");
+            return JNI_FALSE;
         }
         // v1.30.4 P0: dlopen 强制加载 SSL 库——若宿主进程尚未加载某 so，
         // shadowhook_hook_sym_name 找不到符号会失败；先 dlopen 确保符号可解析
@@ -608,6 +616,7 @@ Java_com_dustinky_spyprobe_NativeProbe_initNativeHook(JNIEnv *env, jobject thiz,
             hook_func(lib, "NativeCrypto_SSL_free", (void*)native_free_hooks[i], (void**)&g_ssl_hooks[i].orig_native_free);
         }
     }
+    return JNI_TRUE;
 }
 
 // v1.20 P0-1: 补 JNI_OnLoad —— 之前缺此函数，System.loadLibrary("native_hook") 时
