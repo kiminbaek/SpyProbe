@@ -81,7 +81,7 @@ fun MainScreen(vm: SpyViewModel = viewModel()) {
                             Icon(
                                 tab.icon,
                                 contentDescription = tab.title,
-                                modifier = Modifier.size(22.dp)
+                                modifier = Modifier.size(26.dp) // v1.25 P2-1: 22dp → 26dp（底部导航图标过小）
                             )
                         },
                         label = {

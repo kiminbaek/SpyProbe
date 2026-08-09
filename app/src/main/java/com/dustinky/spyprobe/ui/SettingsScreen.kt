@@ -143,6 +143,10 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     val effective: Map<String, Any> = if (cfgLevel == 0) displayCfg
     else globalCfg + displayCfg
 
+    // v1.25 P2-2: 「当前 App」Tab 中未覆盖的项显示"继承全局默认"标记
+    // （cfgLevel==0 全局 Tab 恒为 false；cfgLevel==1 时 displayCfg 是该 App 覆盖项，不在其中=继承）
+    fun inh(key: String): Boolean = cfgLevel == 1 && !displayCfg.containsKey(key)
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -265,83 +269,62 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             onToggle = { toggle("basic") }
         ) {
             IntSetting(effective, "logLimit", "日志上限(条)", 4096, 100..20000,
+                inherited = inh("logLimit"),
                 onSet = { setCfg("logLimit", it) })
             Divider()
-            IntSetting(effective, "bodyLimit", "Body 限制(KB)", 32, 1..1024,
+            IntSetting(effective, "bodyLimit", "Body 限制(KB)", 2, 1..1024,
+                inherited = inh("bodyLimit"),
                 onSet = { setCfg("bodyLimit", it) })
             Divider()
-            BoolSetting(effective, "verboseDetail", "详细模式", false,
-                onSet = { setCfg("verboseDetail", it) })
+            // v1.25 P0-1: verboseDetail 是假字段（后端只有 detailMode），修正键名
+            BoolSetting(effective, "detailMode", "详细模式", true,
+                inherited = inh("detailMode"),
+                onSet = { setCfg("detailMode", it) })
+            Divider()
+            // v1.25 P0-1: sslBypass 是真实字段（SSL 绕过），从反检测组移入通用组
+            BoolSetting(effective, "sslBypass", "SSL 绕过", true,
+                inherited = inh("sslBypass"),
+                onSet = { setCfg("sslBypass", it) })
+            Divider()
+            // v1.25 P1-5: 补 debug 开关（此前设置页无入口，后端 debugEnabled 只能抓包页/手动下发）
+            BoolSetting(effective, "debug", "调试日志", false,
+                inherited = inh("debug"),
+                onSet = { setCfg("debug", it) })
         }
 
         Spacer(Modifier.height(8.dp))
 
         // ===== 反检测 =====
+        // v1.25 P0-1: 删除 8 个假开关（antiDetect/antiEmulator/antiFrida/antiDebug/fakeDevice/fakeLocation/
+        //   pinBypass/rootCloak——后端无对应字段，下发无效且误导用户）；保留真实字段 antiRoot/antiXposed
         SettingsGroup(
             title = "反检测",
-            subtitle = "隐藏 root / Xposed / 调试",
+            subtitle = "隐藏 root / Xposed",
             expanded = expanded.contains("anti"),
             onToggle = { toggle("anti") }
         ) {
-            BoolSetting(effective, "antiDetect", "反检测总开关", true,
-                onSet = { setCfg("antiDetect", it) })
-            Divider()
-            BoolSetting(effective, "antiRoot", "隐藏 Root", true,
+            BoolSetting(effective, "antiRoot", "隐藏 Root", false,
+                inherited = inh("antiRoot"),
                 onSet = { setCfg("antiRoot", it) })
             Divider()
-            BoolSetting(effective, "antiXposed", "隐藏 Xposed", true,
+            BoolSetting(effective, "antiXposed", "隐藏 Xposed", false,
+                inherited = inh("antiXposed"),
                 onSet = { setCfg("antiXposed", it) })
-            Divider()
-            BoolSetting(effective, "antiEmulator", "隐藏模拟器", true,
-                onSet = { setCfg("antiEmulator", it) })
-            Divider()
-            BoolSetting(effective, "antiFrida", "隐藏 Frida", false,
-                onSet = { setCfg("antiFrida", it) })
-            Divider()
-            BoolSetting(effective, "antiDebug", "隐藏调试", true,
-                onSet = { setCfg("antiDebug", it) })
-            Divider()
-            BoolSetting(effective, "fakeDevice", "设备伪装", false,
-                onSet = { setCfg("fakeDevice", it) })
-            Divider()
-            BoolSetting(effective, "fakeLocation", "伪定位", false,
-                onSet = { setCfg("fakeLocation", it) })
-            Divider()
-            BoolSetting(effective, "sslBypass", "SSL 绕过", true,
-                onSet = { setCfg("sslBypass", it) })
-            Divider()
-            BoolSetting(effective, "pinBypass", "证书锁定绕过", true,
-                onSet = { setCfg("pinBypass", it) })
-            Divider()
-            BoolSetting(effective, "rootCloak", "Root 隐藏(增强)", false,
-                onSet = { setCfg("rootCloak", it) })
         }
 
         Spacer(Modifier.height(8.dp))
 
         // ===== Hook 引擎 =====
+        // v1.25 P0-1: 删除 5 个假开关（wildcardHook/randomReturn/randomRefreshMs/recordParams/recordReturn——
+        //   后端 MethodProbe 无全局随机返回/默认记录模式，通配符 hook 是内置能力无需开关）；保留 autoProbe
         SettingsGroup(
             title = "Hook 引擎",
-            subtitle = "通配符 / 随机返回 / 记录模式",
+            subtitle = "全自动探测",
             expanded = expanded.contains("hook"),
             onToggle = { toggle("hook") }
         ) {
-            BoolSetting(effective, "wildcardHook", "通配符 Hook", true,
-                onSet = { setCfg("wildcardHook", it) })
-            Divider()
-            BoolSetting(effective, "randomReturn", "随机返回值", false,
-                onSet = { setCfg("randomReturn", it) })
-            Divider()
-            IntSetting(effective, "randomRefreshMs", "随机刷新(ms)", 5000, 100..60000,
-                onSet = { setCfg("randomRefreshMs", it) })
-            Divider()
-            BoolSetting(effective, "recordParams", "默认记录参数", false,
-                onSet = { setCfg("recordParams", it) })
-            Divider()
-            BoolSetting(effective, "recordReturn", "默认记录返回", false,
-                onSet = { setCfg("recordReturn", it) })
-            Divider()
             BoolSetting(effective, "autoProbe", "全自动探测", false,
+                inherited = inh("autoProbe"),
                 onSet = { setCfg("autoProbe", it) })
         }
 
@@ -518,7 +501,8 @@ private fun IntSetting(cfg: Map<String, Any>?, key: String, label: String, defau
                        range: IntRange, inherited: Boolean = false,
                        onSet: (Int) -> Unit) {
     val value = cfg?.get(key) as? Int ?: default
-    var text by remember(key) { mutableStateOf(value.toString()) }
+    // v1.25 P2-3: key+value 双 key——切换 Tab（全局→当前App）后 value 变化时输入框刷新
+    var text by remember(key, value) { mutableStateOf(value.toString()) }
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -538,11 +522,17 @@ private fun IntSetting(cfg: Map<String, Any>?, key: String, label: String, defau
         OutlinedTextField(
             value = text,
             onValueChange = {
-                text = it
+                // v1.25 P2-3: 越界输入不生效（保持合法值），避免显示无效配置误导；空输入允许（方便重输）
                 val v = it.toIntOrNull()
-                if (v != null && v in range) onSet(v)
+                if (it.isEmpty()) {
+                    text = it
+                } else if (v != null && v in range) {
+                    text = it
+                    onSet(v)
+                }
             },
             singleLine = true,
+            isError = text.isNotEmpty() && (text.toIntOrNull() == null || text.toIntOrNull() !in range),
             modifier = Modifier.width(80.dp)
         )
     }

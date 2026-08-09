@@ -62,18 +62,25 @@ static type_write orig_write;
 static type_read orig_read;
 static type_close orig_close;
 
+// v1.25 P0-3: SSL_write/SSL_read/SSL_free 与 NativeCrypto_* 变体各自独立 orig 指针。
+// 此前共用一个 orig 指针：第二个 hook（NativeCrypto_*）会覆盖第一个（SSL_*）写入的 orig，
+// 且符号缺失时 hook_func 失败不写 orig（保持 nullptr），回调里调 nullptr 会 segfault。
+// 现在分开记录 + hook 成功才写 orig + 回调里 orig==nullptr 时安全返回。
 struct SslHookEntry {
     const char* lib_name;
     type_SSL_write orig_ssl_write;
     type_SSL_read  orig_ssl_read;
     type_SSL_free  orig_ssl_free;
+    type_SSL_write orig_native_write;
+    type_SSL_read  orig_native_read;
+    type_SSL_free  orig_native_free;
 };
 
 static SslHookEntry g_ssl_hooks[] = {
-    { "libssl.so",             nullptr, nullptr, nullptr },
-    { "libconscrypt_jni.so",   nullptr, nullptr, nullptr },
-    { "libttboringssl.so",     nullptr, nullptr, nullptr },
-    { "libflutter.so",         nullptr, nullptr, nullptr },
+    { "libssl.so",             nullptr, nullptr, nullptr, nullptr, nullptr, nullptr },
+    { "libconscrypt_jni.so",   nullptr, nullptr, nullptr, nullptr, nullptr, nullptr },
+    { "libttboringssl.so",     nullptr, nullptr, nullptr, nullptr, nullptr, nullptr },
+    { "libflutter.so",         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr },
 };
 static const int SSL_HOOK_COUNT = sizeof(g_ssl_hooks) / sizeof(g_ssl_hooks[0]);
 
@@ -391,9 +398,11 @@ int hook_close(int fd) {
     return orig_close(fd);
 }
 
+// v1.25 P0-3: 公共写逻辑（orig 由调用方传入，SSL_* 与 NativeCrypto_* 各用各的指针）
 template<int IDX>
-int hook_SSL_write_t(void *ssl, const void *buf, int num) {
-    if (g_is_in_hook) return g_ssl_hooks[IDX].orig_ssl_write(ssl, buf, num);
+int do_ssl_write_common(void *ssl, const void *buf, int num, type_SSL_write orig) {
+    if (orig == nullptr) return -1; // 符号未 hook 成功，绝不应发生（hook 成功才写 orig）
+    if (g_is_in_hook) return orig(ssl, buf, num);
     ScopedHookGuard guard;
     uintptr_t conn_id = reinterpret_cast<uintptr_t>(ssl);
     std::shared_ptr<Http2Connection> h2conn = h2_get_or_create(conn_id);
@@ -413,10 +422,10 @@ int hook_SSL_write_t(void *ssl, const void *buf, int num) {
         }
         
         if (h2conn->is_h2) {
-            int ret = g_ssl_hooks[IDX].orig_ssl_write(ssl, buf, num);
+            int ret = orig(ssl, buf, num);
             if (ret > 0 && !local_rst_queue.empty()) {
                 for (const auto& frame : local_rst_queue) {
-                    g_ssl_hooks[IDX].orig_ssl_write(ssl, frame.data(), (int)frame.size());
+                    orig(ssl, frame.data(), (int)frame.size());
                 }
             }
             return ret;
@@ -429,14 +438,26 @@ int hook_SSL_write_t(void *ssl, const void *buf, int num) {
         }
     }
     
-    return g_ssl_hooks[IDX].orig_ssl_write(ssl, buf, num);
+    return orig(ssl, buf, num);
 }
 
 template<int IDX>
-int hook_SSL_read_t(void *ssl, void *buf, int num) {
-    if (g_is_in_hook) return g_ssl_hooks[IDX].orig_ssl_read(ssl, buf, num);
+int hook_SSL_write_t(void *ssl, const void *buf, int num) {
+    return do_ssl_write_common<IDX>(ssl, buf, num, g_ssl_hooks[IDX].orig_ssl_write);
+}
+
+template<int IDX>
+int hook_NativeCrypto_SSL_write_t(void *ssl, const void *buf, int num) {
+    return do_ssl_write_common<IDX>(ssl, buf, num, g_ssl_hooks[IDX].orig_native_write);
+}
+
+// v1.25 P0-3: 公共读逻辑（orig 由调用方传入）
+template<int IDX>
+int do_ssl_read_common(void *ssl, void *buf, int num, type_SSL_read orig) {
+    if (orig == nullptr) return -1;
+    if (g_is_in_hook) return orig(ssl, buf, num);
     ScopedHookGuard guard;
-    int ret = g_ssl_hooks[IDX].orig_ssl_read(ssl, buf, num);
+    int ret = orig(ssl, buf, num);
     if (ret > 0 && buf != nullptr) {
         uintptr_t conn_id = reinterpret_cast<uintptr_t>(ssl);
         if (h2_is_http2(conn_id)) {
@@ -454,46 +475,53 @@ int hook_SSL_read_t(void *ssl, void *buf, int num) {
 }
 
 template<int IDX>
-void hook_SSL_free_t(void *ssl) {
-    if (g_is_in_hook) { g_ssl_hooks[IDX].orig_ssl_free(ssl); return; }
+int hook_SSL_read_t(void *ssl, void *buf, int num) {
+    return do_ssl_read_common<IDX>(ssl, buf, num, g_ssl_hooks[IDX].orig_ssl_read);
+}
+
+template<int IDX>
+int hook_NativeCrypto_SSL_read_t(void *ssl, void *buf, int num) {
+    return do_ssl_read_common<IDX>(ssl, buf, num, g_ssl_hooks[IDX].orig_native_read);
+}
+
+// v1.25 P0-3: 公共释放逻辑（orig 由调用方传入）
+template<int IDX>
+void do_ssl_free_common(void *ssl, type_SSL_free orig) {
+    if (orig == nullptr) return;
+    if (g_is_in_hook) { orig(ssl); return; }
     ScopedHookGuard guard;
     { std::lock_guard<std::mutex> lock(g_cache_mutex); g_stack_cache.erase(reinterpret_cast<jlong>(ssl)); }
     h2_free(reinterpret_cast<uintptr_t>(ssl));
     notify_kotlin_close(reinterpret_cast<jlong>(ssl), true);
-    g_ssl_hooks[IDX].orig_ssl_free(ssl);
+    orig(ssl);
+}
+
+template<int IDX>
+void hook_SSL_free_t(void *ssl) {
+    do_ssl_free_common<IDX>(ssl, g_ssl_hooks[IDX].orig_ssl_free);
+}
+
+template<int IDX>
+void hook_NativeCrypto_SSL_free_t(void *ssl) {
+    do_ssl_free_common<IDX>(ssl, g_ssl_hooks[IDX].orig_native_free);
 }
 
 static type_SSL_write ssl_write_hooks[] = { hook_SSL_write_t<0>, hook_SSL_write_t<1>, hook_SSL_write_t<2>, hook_SSL_write_t<3> };
 static type_SSL_read ssl_read_hooks[] = { hook_SSL_read_t<0>, hook_SSL_read_t<1>, hook_SSL_read_t<2>, hook_SSL_read_t<3> };
 static type_SSL_free ssl_free_hooks[] = { hook_SSL_free_t<0>, hook_SSL_free_t<1>, hook_SSL_free_t<2>, hook_SSL_free_t<3> };
+static type_SSL_write native_write_hooks[] = { hook_NativeCrypto_SSL_write_t<0>, hook_NativeCrypto_SSL_write_t<1>, hook_NativeCrypto_SSL_write_t<2>, hook_NativeCrypto_SSL_write_t<3> };
+static type_SSL_read native_read_hooks[] = { hook_NativeCrypto_SSL_read_t<0>, hook_NativeCrypto_SSL_read_t<1>, hook_NativeCrypto_SSL_read_t<2>, hook_NativeCrypto_SSL_read_t<3> };
+static type_SSL_free native_free_hooks[] = { hook_NativeCrypto_SSL_free_t<0>, hook_NativeCrypto_SSL_free_t<1>, hook_NativeCrypto_SSL_free_t<2>, hook_NativeCrypto_SSL_free_t<3> };
 
-void hook_func(const char *lib_name, const char *sym_name, void *hook_func, void **orig_func) {
+bool hook_func(const char *lib_name, const char *sym_name, void *hook_func, void **orig_func) {
     void *stub = shadowhook_hook_sym_name(lib_name, sym_name, hook_func, orig_func);
-    if (stub != nullptr) LOGI("ShadowHook SUCCESS: %s in %s", sym_name, lib_name ? lib_name : "global");
-}
-
-extern "C" JNIEXPORT jint JNICALL
-Java_com_dustinky_spyprobe_NativeProbe_feedH2Data(
-    JNIEnv *env, jclass clazz, jlong connId, jboolean isLocal, jbyteArray data, jint offset, jint length, jboolean collectRespBody) {
-    if (data == nullptr || length <= 0) return 0;
-    jbyte* buf = env->GetByteArrayElements(data, nullptr);
-    if (buf == nullptr) return 0;
-    std::shared_ptr<Http2Connection> conn = h2_get_or_create((uintptr_t)connId);
-    bool should_block = false;
-    if (conn != nullptr) {
-        auto feed_res = h2_feed(conn, (const uint8_t*)(buf + offset), (size_t)length, (bool)isLocal, (bool)collectRespBody);
-        if (!feed_res.early_checks.empty() || !feed_res.data_chunks.empty() || !feed_res.completed.empty()) {
-            should_block = callback_kotlin_h2((uintptr_t)connId, feed_res);
-        }
+    if (stub != nullptr) {
+        LOGI("ShadowHook SUCCESS: %s in %s", sym_name, lib_name ? lib_name : "global");
+        return true;
     }
-    env->ReleaseByteArrayElements(data, buf, JNI_ABORT);
-    if (conn != nullptr && conn->is_h2) return should_block ? 2 : 1;
-    return 0;
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_dustinky_spyprobe_NativeProbe_freeH2Conn(JNIEnv *env, jclass clazz, jlong connId) {
-    h2_free((uintptr_t)connId);
+    // v1.25 P0-3: hook 失败（符号不存在）时不写 orig（保持 nullptr），回调里已做空指针保护
+    LOGE("ShadowHook FAIL: %s in %s", sym_name, lib_name ? lib_name : "global");
+    return false;
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -521,12 +549,13 @@ Java_com_dustinky_spyprobe_NativeProbe_initNativeHook(JNIEnv *env, jobject thiz,
         hook_func("libc.so", "close", (void*)hook_close, (void**)&orig_close);
         for (int i = 0; i < SSL_HOOK_COUNT; i++) {
             const char* lib = g_ssl_hooks[i].lib_name;
+            // v1.25 P0-3: SSL_* 与 NativeCrypto_* 变体各自独立 orig 指针，不再互相覆盖
             hook_func(lib, "SSL_write", (void*)ssl_write_hooks[i], (void**)&g_ssl_hooks[i].orig_ssl_write);
             hook_func(lib, "SSL_read", (void*)ssl_read_hooks[i], (void**)&g_ssl_hooks[i].orig_ssl_read);
-            hook_func(lib, "NativeCrypto_SSL_write", (void*)ssl_write_hooks[i], (void**)&g_ssl_hooks[i].orig_ssl_write);
-            hook_func(lib, "NativeCrypto_SSL_read", (void*)ssl_read_hooks[i], (void**)&g_ssl_hooks[i].orig_ssl_read);
             hook_func(lib, "SSL_free", (void*)ssl_free_hooks[i], (void**)&g_ssl_hooks[i].orig_ssl_free);
-            hook_func(lib, "NativeCrypto_SSL_free", (void*)ssl_free_hooks[i], (void**)&g_ssl_hooks[i].orig_ssl_free);
+            hook_func(lib, "NativeCrypto_SSL_write", (void*)native_write_hooks[i], (void**)&g_ssl_hooks[i].orig_native_write);
+            hook_func(lib, "NativeCrypto_SSL_read", (void*)native_read_hooks[i], (void**)&g_ssl_hooks[i].orig_native_read);
+            hook_func(lib, "NativeCrypto_SSL_free", (void*)native_free_hooks[i], (void**)&g_ssl_hooks[i].orig_native_free);
         }
     }
 }

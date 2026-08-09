@@ -79,12 +79,16 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
 
     var cfg by remember { mutableStateOf<Map<String, Any>>(emptyMap()) }
     var expanded by remember { mutableStateOf("basic") } // basic/advanced/app
+    // v1.25 P2-5: 端口对话框入口
+    var showPortDialog by remember { mutableStateOf(false) }
 
+    // v1.25 P0-2: 统一配置入口——保存到目标 App 覆盖层（本地权威）+ 推送；
+    // 未连接时也保存本地（连接恢复后自动补发），不再"未连接就丢弃"
     fun setSwitch(key: String, value: Boolean) {
-        if (vm.sendConfig(mapOf(key to value))) {
-            cfg = cfg + (key to value)
-        } else {
-            android.widget.Toast.makeText(context, "未连接，开关未生效", android.widget.Toast.LENGTH_SHORT).show()
+        val ok = vm.setEffectiveSwitch(key, value)
+        cfg = cfg + (key to value)
+        if (!ok) {
+            android.widget.Toast.makeText(context, "未连接，已保存本地，连接后自动生效", android.widget.Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -92,6 +96,14 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
         vm.refreshStatus()
         val c = withContext(Dispatchers.IO) { vm.api.fetchConfig() }
         if (c != null) cfg = c
+    }
+
+    // v1.25 P2-7: 连接恢复时重新拉取后端配置（轮询断线→重连后 UI 快照与后端对齐）
+    LaunchedEffect(connected) {
+        if (connected) {
+            val c = withContext(Dispatchers.IO) { vm.api.fetchConfig() }
+            if (c != null) cfg = c
+        }
     }
 
     // 日志预览（最后 3 条）
@@ -139,11 +151,16 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
                         else MaterialTheme.colorScheme.error
                     )
                     Spacer(Modifier.weight(1f))
+                    // v1.25 P2-5: 端口文本可点击 → 弹出端口修改对话框（原 PortDialog 死代码接入）
                     Text(
                         "端口 $port",
                         style = MaterialTheme.typography.bodySmall,
                         fontFamily = FontFamily.Monospace,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable { showPortDialog = true }
+                            .padding(horizontal = 4.dp, vertical = 2.dp)
                     )
                 }
 
@@ -193,6 +210,10 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
                 }
                 if (showPicker) {
                     TargetPickerDialog(vm, onDismiss = { showPicker = false })
+                }
+                // v1.25 P2-5: 端口对话框入口（原为死代码从未被调用）
+                if (showPortDialog) {
+                    PortDialog(vm, port, onDismiss = { showPortDialog = false })
                 }
             }
         }

@@ -45,23 +45,24 @@ public class SpyServer {
     private final MethodProbe mth;
     private final ClassLoadProbe clsProbe;
     private final String pkg;
-    private final android.content.SharedPreferences rulesPrefs; // v1.6: 规则持久化
     private final java.io.File cfgFile; // v1.22: 抓包开关持久化文件（目标 App data 目录）
+    private final java.io.File rulesFile; // v1.25 P2-9: 规则持久化文件（与 cfgFile 同目录，零 IPC）
     private final DexKitProbe dexKit; // v1.9: DexKit（导出 dex / 字符串反查）
     private volatile ServerSocket serverSocket;
     private volatile Thread acceptThread;
     private volatile int actualPort = PORT; // v1.3: 实际绑定端口（多进程 app 时可能偏移）
 
     public SpyServer(NetProbe net, MethodProbe mth, ClassLoadProbe clsProbe, String pkg,
-                     android.content.SharedPreferences rulesPrefs, DexKitProbe dexKit,
-                     java.io.File cfgFile) {
+                     DexKitProbe dexKit, java.io.File cfgFile) {
         this.net = net;
         this.mth = mth;
         this.clsProbe = clsProbe;
         this.pkg = pkg;
-        this.rulesPrefs = rulesPrefs;
         this.dexKit = dexKit; // v1.9
         this.cfgFile = cfgFile; // v1.22
+        // v1.25 P2-9: 规则文件与抓包开关同目录（files/spyprobe_rules.json）
+        this.rulesFile = (cfgFile != null && cfgFile.getParentFile() != null)
+                ? new java.io.File(cfgFile.getParentFile(), "spyprobe_rules.json") : null;
     }
 
     public void start() {
@@ -235,7 +236,7 @@ public class SpyServer {
                         if (c.has("classes")) cfg.classCapture = c.getBoolean("classes");
                         if (c.has("classFilter")) cfg.classFilter = c.optString("classFilter", "");
                         if (c.has("classLogAll")) cfg.classLogAll = c.getBoolean("classLogAll");
-                        if (c.has("bodyLimit")) cfg.bodyLimit = Math.max(0, Math.min(1 << 20, c.getInt("bodyLimit")));
+                          if (c.has("bodyLimit")) cfg.bodyLimit = Math.max(1, Math.min(1024, c.getInt("bodyLimit"))); // v1.25 P1-2: 单位 KB（1-1024）
                         // v1.12: 日志环形缓冲容量可配置（100-20000）
                         if (c.has("logLimit")) cfg.logLimit = Math.max(100, Math.min(20000, c.getInt("logLimit")));
                         if (c.has("webView")) cfg.webViewCapture = c.getBoolean("webView");
@@ -339,7 +340,7 @@ public class SpyServer {
                         Config.HookSpec spec = new Config.HookSpec(cls, methodName, params);
                         Config.get().addHook(spec);
                         // v1.6: 持久化规则（进程重启自动重挂）
-                        if (rulesPrefs != null) Config.get().saveRules(rulesPrefs);
+                        if (rulesFile != null) Config.get().saveRules(rulesFile);
                     }
                     return resp;
                 }
@@ -358,7 +359,7 @@ public class SpyServer {
                     boolean removed = Config.get().removeHook(cls, methodName, params);
 
                     // v1.6: 持久化（卸载后规则同步落盘）
-                    if (rulesPrefs != null) Config.get().saveRules(rulesPrefs);
+                    if (rulesFile != null) Config.get().saveRules(rulesFile);
                     JSONObject o = new JSONObject();
                     o.put("ok", true);
                     o.put("removedFromConfig", removed);
@@ -392,7 +393,7 @@ public class SpyServer {
                     if (c.isNull("value")) {
                         boolean removed = Config.get().removeHijack(cls, methodName, params);
                         LogStore.get().log(TAG, "[hijack] removed " + cls + "." + methodName + " removed=" + removed);
-                        if (rulesPrefs != null) Config.get().saveRules(rulesPrefs); // v1.6
+                        if (rulesFile != null) Config.get().saveRules(rulesFile); // v1.6
                         JSONObject ro = new JSONObject();
                         ro.put("ok", true);
                         ro.put("removed", removed);
@@ -407,7 +408,7 @@ public class SpyServer {
                     Config.get().addRule(cls, methodName, params, mode, value, paramValue, fieldName, fieldType, fieldValue);
                     LogStore.get().log(TAG, "[hijack] " + cls + "." + methodName + "(" + params + ") mode=" + mode
                             + " value=" + value + " pv=" + paramValue + " f=" + fieldName + ":" + fieldType + "=" + fieldValue);
-                    if (rulesPrefs != null) Config.get().saveRules(rulesPrefs); // v1.6
+                    if (rulesFile != null) Config.get().saveRules(rulesFile); // v1.6
                     JSONObject o = new JSONObject();
                     o.put("ok", true);
                     o.put("class", cls);

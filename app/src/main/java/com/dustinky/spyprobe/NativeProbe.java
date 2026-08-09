@@ -45,8 +45,8 @@ public class NativeProbe {
     // ================= JNI native 方法（与 native_hook.cpp 对应）=================
 
     private static native void initNativeHook(boolean enableNativeHook);
-    private static native int feedH2Data(long connId, boolean isLocal, byte[] data, int offset, int length, boolean collectRespBody);
-    private static native void freeH2Conn(long connId);
+    // v1.25 P2-10: 删除 feedH2Data/freeH2Conn 死代码（Java 声明 + C++ 实现从未被调用，
+    //   native 层 HTTP/2 数据回调走 onH2DataChunk/onH2Request，Java→native 方向无调用者）
 
     // ================= 静态回调（native → Java，全部写 LogStore，不拦截）=================
 
@@ -60,9 +60,13 @@ public class NativeProbe {
             String dir = isWrite ? ">>>" : "<<<";
             String proto = isSsl ? "TLS" : "TCP";
             String loc = (socketInfo != null && !socketInfo.isEmpty()) ? socketInfo : ("#" + id);
-            byte[] data = new byte[buf.remaining()];
+            // v1.25 P1-6: 部分拷贝——大块传输（文件/视频）时 buf.remaining() 可达数 MB，
+            // 全量拷贝 + toReadable 扫描会分配大数组/遍历，高频下 OOM 风险；只拷贝展示上限并记录总长
+            int total = buf.remaining();
+            int n = Math.min(total, MAX_TEXT);
+            byte[] data = new byte[n];
             buf.get(data);
-            LogStore.get().log(TAG, "[" + proto + " " + dir + " " + loc + "] " + toReadable(data));
+            LogStore.get().log(TAG, "[" + proto + " " + dir + " " + loc + (total > n ? " " + total + "B" : "") + "] " + toReadable(data, total));
             if (stack != null && !stack.isEmpty()) {
                 // v1.16 P2-6: 只对小包记录调用栈（大块传输高频刷屏；短包=握手/协议帧，栈有诊断价值）
                 if (data.length <= 64) {
@@ -106,10 +110,13 @@ public class NativeProbe {
             // v1.15 P0-4: native 抓包开关
             if (!Config.get().nativeCapture) return;
             if (buf == null) return;
-            byte[] data = new byte[buf.remaining()];
+            // v1.25 P1-6: 部分拷贝防 OOM（同 onNativeData）
+            int total = buf.remaining();
+            int n = Math.min(total, MAX_TEXT);
+            byte[] data = new byte[n];
             buf.get(data);
             String dir = isRequest ? ">>>" : "<<<";
-            LogStore.get().log(TAG, "[H2 DATA " + dir + " #" + streamId + "] " + toReadable(data));
+            LogStore.get().log(TAG, "[H2 DATA " + dir + " #" + streamId + (total > n ? " " + total + "B" : "") + "] " + toReadable(data, total));
         } catch (Throwable ignored) {
         }
     }
@@ -133,8 +140,8 @@ public class NativeProbe {
 
     // ================= 工具 =================
 
-    /** 可打印文本直接展示（截断），否则 hex 摘要 */
-    private static String toReadable(byte[] data) {
+    /** 可打印文本直接展示（截断），否则 hex 摘要；total=原始总字节（>data.length 时用于显示实际大小） */
+    private static String toReadable(byte[] data, int total) {
         if (data == null || data.length == 0) return "(empty)";
         boolean printable = true;
         for (int i = 0; i < data.length && i < 256; i++) {
@@ -144,16 +151,16 @@ public class NativeProbe {
         }
         if (printable) {
             String s = new String(data, StandardCharsets.UTF_8).trim();
-            if (s.length() > MAX_TEXT) s = s.substring(0, MAX_TEXT) + "...(" + data.length + "B)";
+            if (s.length() > MAX_TEXT) s = s.substring(0, MAX_TEXT) + "...(" + total + "B)";
             return s;
         }
         StringBuilder sb = new StringBuilder();
-        sb.append("[").append(data.length).append("B hex] ");
+        sb.append("[").append(total).append("B hex] ");
         for (int i = 0; i < data.length && i < MAX_HEX; i++) {
             sb.append(String.format("%02x", data[i]));
             if ((i & 1) == 1) sb.append(' ');
         }
-        if (data.length > MAX_HEX) sb.append("...");
+        if (total > MAX_HEX) sb.append("...");
         return sb.toString();
     }
 }

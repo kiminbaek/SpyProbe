@@ -36,7 +36,7 @@ public class Config {
     public volatile boolean cronetCapture = false; // Cronet 网络栈记录（默认关：与 HttpURLConnection 记录重复度高）
     public volatile String classFilter = "";       // 类加载关键字过滤（空=全部入库不刷屏）
     public volatile boolean classLogAll = false;   // 匹配类是否刷屏输出到日志
-    public volatile int bodyLimit = 2048;          // 记录响应体最大字节
+    public volatile int bodyLimit = 2;              // v1.25 P1-2: 记录响应体最大 KB（此前误用字节，UI 发 KB 后端当字节用导致截断 32 字节）
     // v1.12: 日志环形缓冲容量（LogStore 动态读取，防日志无限增长；借鉴 Guise 日志归档容量思想）
     public volatile int logLimit = 4096;
     // v1.13: 反检测开关（隐藏 root/Xposed 痕迹，防目标 App 检测；fckvip hook_hide_root 借鉴）
@@ -159,8 +159,10 @@ public class Config {
         return removed;
     }
 
-    /** 查找命中劫持规则（精确匹配 class#method(params)，paramTypes 为空=匹配任一重载）；v1.15 P1-2: 走 className 索引 */
-    public synchronized HijackRule findHijack(String className, String methodName, String paramTypes) {
+    /** 查找命中劫持规则（精确匹配 class#method(params)，paramTypes 为空=匹配任一重载）；v1.15 P1-2: 走 className 索引
+     *  v1.25 P2-8: 去掉 synchronized —— hijackIndex 是 ConcurrentHashMap + CopyOnWriteArrayList（读线程安全），
+     *  MethodProbe.onInvoke 热路径每方法调用都会进 findHijack，此前整方法加锁造成不必要竞争 */
+    public HijackRule findHijack(String className, String methodName, String paramTypes) {
         List<HijackRule> idx = hijackIndex.get(className);
         if (idx == null) return null;
         for (HijackRule h : idx) {
@@ -251,7 +253,9 @@ public class Config {
     }
 
     // ===== v1.6: hook/hijack 规则持久化（进程重启自动重挂）=====
-    private static final String PREFS_NAME = "spyprobe_rules";
+    // v1.25 P2-9: 存储从模块远程偏好改为目标 App data 目录文件（与抓包开关 spyprobe_cfg.json 同目录）。
+    //   远程偏好走 libxposed service IPC，规则变更后目标进程重启偶发拉不回（与 v1.21 开关失效同根因）；
+    //   文件方式进程内直读直写，零 IPC，重启必恢复。
     private static final String KEY_HOOKS = "hooks";
     private static final String KEY_HIJACKS = "hijacks";
 
@@ -259,9 +263,11 @@ public class Config {
     // v1.21 用 getRemotePreferences 远程偏好（走 libxposed service IPC），用户实测重启后仍失效；
     // v1.22 改为写目标 App 自身 data 目录文件（进程内直读直写，零 IPC，100% 可靠）
 
-    /** 保存当前 hooks + hijacks 到模块远程偏好（不污染目标 app 数据） */
-    public synchronized void saveRules(android.content.SharedPreferences prefs) {
+    /** 保存当前 hooks + hijacks 到目标 App data 目录文件（rulesFile，与 spyprobe_cfg.json 同目录） */
+    public synchronized void saveRules(java.io.File rulesFile) {
+        if (rulesFile == null) return;
         try {
+            org.json.JSONObject root = new org.json.JSONObject();
             org.json.JSONArray hArr = new org.json.JSONArray();
             for (HookSpec h : hooks) {
                 if (!h.enabled) continue;
@@ -285,15 +291,48 @@ public class Config {
                 o.put("fv", h.fieldValue);
                 jArr.put(o);
             }
-            prefs.edit().putString(KEY_HOOKS, hArr.toString()).putString(KEY_HIJACKS, jArr.toString()).apply();
-        } catch (Throwable t) { }
+            root.put(KEY_HOOKS, hArr);
+            root.put(KEY_HIJACKS, jArr);
+            // 原子写（tmp + rename），防写入中断损坏规则
+            java.io.File tmp = new java.io.File(rulesFile.getAbsolutePath() + ".tmp");
+            java.io.FileOutputStream fos = new java.io.FileOutputStream(tmp);
+            try {
+                fos.write(root.toString().getBytes("UTF-8"));
+            } finally {
+                fos.close();
+            }
+            if (!tmp.renameTo(rulesFile)) {
+                java.io.FileOutputStream fos2 = new java.io.FileOutputStream(rulesFile);
+                try {
+                    fos2.write(root.toString().getBytes("UTF-8"));
+                } finally {
+                    fos2.close();
+                }
+            }
+            debugLog("rules saved -> " + rulesFile.getAbsolutePath());
+        } catch (Throwable t) {
+            debugLog("rules save FAIL: " + t);
+        }
     }
 
     /** 读取持久化规则（进程启动后调用，返回是否加载到内容） */
-    public synchronized boolean loadRules(android.content.SharedPreferences prefs) {
+    public synchronized boolean loadRules(java.io.File rulesFile) {
+        if (rulesFile == null || !rulesFile.exists()) return false;
         boolean loaded = false;
         try {
-            String hStr = prefs.getString(KEY_HOOKS, "");
+            java.io.FileInputStream fis = new java.io.FileInputStream(rulesFile);
+            byte[] buf;
+            try {
+                java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+                byte[] chunk = new byte[4096];
+                int n;
+                while ((n = fis.read(chunk)) > 0) bos.write(chunk, 0, n);
+                buf = bos.toByteArray();
+            } finally {
+                fis.close();
+            }
+            org.json.JSONObject root = new org.json.JSONObject(new String(buf, "UTF-8"));
+            String hStr = root.optString(KEY_HOOKS, "");
             if (!hStr.isEmpty()) {
                 org.json.JSONArray arr = new org.json.JSONArray(hStr);
                 for (int i = 0; i < arr.length(); i++) {
@@ -303,7 +342,7 @@ public class Config {
                     loaded = true;
                 }
             }
-            String jStr = prefs.getString(KEY_HIJACKS, "");
+            String jStr = root.optString(KEY_HIJACKS, "");
             if (!jStr.isEmpty()) {
                 org.json.JSONArray arr = new org.json.JSONArray(jStr);
                 for (int i = 0; i < arr.length(); i++) {
@@ -315,7 +354,10 @@ public class Config {
                     loaded = true;
                 }
             }
-        } catch (Throwable t) { }
+            debugLog("rules loaded from " + rulesFile.getAbsolutePath() + " loaded=" + loaded);
+        } catch (Throwable t) {
+            debugLog("rules load FAIL: " + t);
+        }
         return loaded;
     }
 

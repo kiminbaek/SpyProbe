@@ -70,8 +70,10 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     var filter by remember { mutableStateOf("") }
     var onlyNet by remember { mutableStateOf(false) }
     var onlyMth by remember { mutableStateOf(false) }
-    var paused by remember { mutableStateOf(false) }
     var autoScroll by remember { mutableStateOf(true) }
+    // v1.25 P1-3: 暂停状态从局部 remember 改为 vm（此前暂停只停自动滚动不停轮询——日志还在积累；
+    //   vm.paused 同时控制轮询停止 + 自动滚动暂停，语义一致）
+    val paused by vm.paused.collectAsState()
 
     // 过滤
     val filtered by remember {
@@ -133,7 +135,7 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                     )
                     FilterChip(
                         selected = paused,
-                        onClick = { paused = !paused },
+                        onClick = { vm.togglePaused() },
                         label = { Text(if (paused) "▶ 继续" else "⏸ 暂停", fontSize = 11.sp) }
                     )
                     FilterChip(

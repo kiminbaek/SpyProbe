@@ -55,11 +55,10 @@ public class ModuleMain extends XposedModule {
         DexKitProbe dexKit = new DexKitProbe(this, cl, pkg);
         // v1.13: 反检测 hook 集（隐藏 root/Xposed，防目标 App 检测）
         AntiDetectProbe anti = new AntiDetectProbe(this, cl);
-        // v1.6: 规则持久化偏好（模块远程偏好，不污染目标 app 数据）
-        android.content.SharedPreferences rulesPrefs = getRemotePreferences("spyprobe_rules");
         // v1.22: 抓包开关持久化文件——目标 App 自身 data 目录（零 IPC，重启必恢复）
+        // v1.25 P2-9: hook/hijack 规则持久化同目录文件（spyprobe_rules.json），弃用远程偏好
         final java.io.File cfgFile = resolveCfgFile();
-        SpyServer server = new SpyServer(net, mth, clsProbe, pkg, rulesPrefs, dexKit, cfgFile);
+        SpyServer server = new SpyServer(net, mth, clsProbe, pkg, dexKit, cfgFile);
 
         // 立即装网络 hook
         net.install("early");
@@ -135,8 +134,10 @@ public class ModuleMain extends XposedModule {
             try {
                 Thread.sleep(2500);
                 dexKit.init();
-                android.content.SharedPreferences sp = getRemotePreferences("spyprobe_rules");
-                boolean loaded = Config.get().loadRules(sp);
+                // v1.25 P2-9: 规则从文件加载（与 cfgFile 同目录，零 IPC）
+                java.io.File rulesFile = (cfgFile != null && cfgFile.getParentFile() != null)
+                        ? new java.io.File(cfgFile.getParentFile(), "spyprobe_rules.json") : null;
+                boolean loaded = Config.get().loadRules(rulesFile);
                 if (loaded) log(Log.INFO, TAG, "loaded persisted hook rules, re-hooking...");
                 for (Config.HookSpec spec : Config.get().hooks) {
                     if (!spec.enabled) continue;

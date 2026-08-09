@@ -31,7 +31,7 @@ public class LogCatProbe {
             "Instrumentation", "WindowManager", "PackageManager", "ContextImpl", "Binder",
             "GraphicsEnvironment", "Looper", "MessageQueue", "View", "WifiService", "ConnectivityService",
             "NetworkMonitor", "DnsResolver", "Resolv", "TrafficStats", "libc", "SurfaceFlinger",
-            "InputMethodManager", "InsetsController", "ViewRootImpl", "DecorView", "PhoneWindow",
+            "InputMethodManager", "InsetsController", "DecorView", "PhoneWindow",
             "AlarmManager", "JobScheduler", "DropBoxManager", "MediaCodec", "AudioTrack", "AudioFlinger",
             "OMXClient", "libprocessgroup", "SELinux", "AppOps", "Activity", "FragmentManager",
             "ResourcesManager", "Bitmap", "Skia", "skia", "Gralloc", "Vulkan", "EGL_emulation"

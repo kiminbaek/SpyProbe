@@ -36,6 +36,7 @@ import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -374,13 +375,13 @@ private fun AutoProbeTab(vm: SpyViewModel, modifier: Modifier = Modifier) {
     var autoFilter by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val targetPkg by vm.targetPkg.collectAsState()
 
-    LaunchedEffect(Unit) {
-        val c = withContext(Dispatchers.IO) { vm.api.fetchConfig() }
-        if (c != null) {
-            autoProbe = c["autoProbe"] as? Boolean ?: false
-            autoFilter = c["autoProbeFilter"] as? String ?: ""
-        }
+    // v1.25 P2-6: 从配置库读取（本地权威），不再依赖远程 fetchConfig（未连接时也能显示真实生效值）
+    LaunchedEffect(Unit, targetPkg) {
+        val c = vm.effectiveConfig(targetPkg)
+        autoProbe = c["autoProbe"] as? Boolean ?: false
+        autoFilter = c["autoProbeFilter"] as? String ?: ""
     }
 
     Column(modifier = modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
@@ -397,7 +398,11 @@ private fun AutoProbeTab(vm: SpyViewModel, modifier: Modifier = Modifier) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Switch(checked = autoProbe, onCheckedChange = { v ->
                         autoProbe = v
-                        vm.sendConfig(mapOf("autoProbe" to v))
+                        // v1.25 P0-2: 统一配置入口（保存本地覆盖层 + 推送；未连接也保存，连接后自动生效）
+                        val ok = vm.setEffectiveSwitch("autoProbe", v)
+                        if (!ok) {
+                            android.widget.Toast.makeText(context, "未连接，已保存本地", android.widget.Toast.LENGTH_SHORT).show()
+                        }
                     })
                     Spacer(Modifier.width(8.dp))
                     Column(Modifier.weight(1f)) {
@@ -428,8 +433,10 @@ private fun AutoProbeTab(vm: SpyViewModel, modifier: Modifier = Modifier) {
                     )
                     Button(
                         onClick = {
-                            vm.sendConfig(mapOf("autoProbeFilter" to autoFilter.trim()))
-                            android.widget.Toast.makeText(context, "已应用", android.widget.Toast.LENGTH_SHORT).show()
+                            // v1.25 P0-2: 统一配置入口
+                            val ok = vm.setEffectiveSwitch("autoProbeFilter", autoFilter.trim())
+                            android.widget.Toast.makeText(context,
+                                if (ok) "已应用" else "未连接，已保存本地", android.widget.Toast.LENGTH_SHORT).show()
                         },
                         enabled = autoProbe
                     ) { Text("应用", fontSize = 12.sp) }

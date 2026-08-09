@@ -314,9 +314,10 @@ public class NetProbe {
                                         Object bstr = sBufferUtf8.invoke(buffer);
                                         if (bstr != null) {
                                             String bs = bstr.toString();
-                                            if (bs.length() > Config.get().bodyLimit) {
-                                                bs = bs.substring(0, Config.get().bodyLimit) + "...(" + bs.length() + "B)";
-                                            }
+                                              if (bs.length() > Config.get().bodyLimit * 1024) { // v1.25 P1-2: bodyLimit 单位 KB
+                                                  bs = bs.substring(0, Config.get().bodyLimit * 1024) + "...(" + bs.length() + "B)";
+                                              }
+
                                             sb.append("\n    reqBody: ").append(bs.replace("\n", "\n    "));
                                         }
                                     }
@@ -338,7 +339,7 @@ public class NetProbe {
                         throw t;
                     }
                     try {
-                        int limit = Math.max(256, Config.get().bodyLimit);
+                        int limit = Math.max(256, Config.get().bodyLimit * 1024); // v1.25 P1-2: bodyLimit 单位 KB
                         ensureRespMethods(resp);
                         // okhttp Response.peekBody(long) 不消费原流
                         Object body = sRespPeek.invoke(resp, (long) limit);

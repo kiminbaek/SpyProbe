@@ -90,7 +90,9 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
     //   生效值 effective(pkg) = 全局 + 该 App 覆盖项
     //   保存永远在本地（不依赖连接）；连接后自动推送 effective 到目标进程
 
-    /** 内置默认（与后端 Config 默认一致） */
+    /** 内置默认（与后端 Config 默认一致）
+     *  v1.25 P1-1: 补 8 个缺失 key（sslBypass/okhttp/url/dns/tcp/classes/classFilter/classLogAll）——
+     *  此前缺 key 导致「当前 App」Tab 里这些项读不到 effective 值、设置页继承逻辑失真 */
     fun defaultConfig(): Map<String, Any> = mapOf(
         "webView" to true,
         "prefs" to false,
@@ -110,7 +112,15 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
         "native" to true,
         "autoProbe" to false,
         "autoProbeFilter" to "",
-        "bodyLimit" to 2048,
+        "sslBypass" to true,
+        "okhttp" to true,
+        "url" to true,
+        "dns" to true,
+        "tcp" to true,
+        "classes" to true,
+        "classFilter" to "",
+        "classLogAll" to false,
+        "bodyLimit" to 2, // v1.25 P1-2: 单位统一 KB（此前 2048=字节，与 UI KB 语义不一致）
         "logLimit" to 4096,
         "debug" to false
     )
@@ -156,6 +166,24 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
         return try {
             sendConfig(effectiveConfig(pkg))
         } catch (t: Throwable) { false }
+    }
+
+    /**
+     * v1.25 P0-2: 统一配置修改入口——抓包页/探测页/设置页当前 App Tab 都走这里。
+     * 语义（UI 本地为权威）：把 key 设为 value → 保存到当前目标 App 的覆盖层（只存与全局不同的差异项）
+     * → 推送 effective 到目标进程。
+     * 返回是否成功下发：成功=true；未连接/false（配置已保存本地，连接后自动补发）。
+     */
+    fun setEffectiveSwitch(key: String, value: Any): Boolean {
+        val pkg = _targetPkg.value
+        if (pkg.isEmpty()) return false
+        val global = loadGlobalConfig()
+        val effective = global + loadAppConfig(pkg) + (key to value)
+        // 只存差异项（与全局相同的不占位，避免覆盖项冗余）
+        val overrides = HashMap<String, Any>()
+        effective.forEach { (k, v) -> if (global[k] != v) overrides[k] = v }
+        saveAppConfig(pkg, overrides)
+        return pushConfig(pkg)
     }
 
     // ---------- 目标/端口 ----------

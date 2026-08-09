@@ -19,18 +19,22 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+// v1.25 P2-4: 用 M3 官方 menuAnchor API（material3 1.3.1 是 MenuAnchorType；ExposedDropdownMenuAnchorType 需 1.4+）
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
@@ -221,6 +225,7 @@ private fun HooksList(vm: SpyViewModel, hooks: List<HookEntry>, onRefresh: () ->
 @Composable
 private fun RulesList(vm: SpyViewModel, rules: List<HijackEntry>, onRefresh: () -> Unit,
                       modifier: Modifier = Modifier) {
+    val scope = rememberCoroutineScope()
     if (rules.isEmpty()) {
         EmptyState(Icons.Filled.Build, "暂无 Hook 规则", "点击右下角 + 添加自定义规则")
     } else {
@@ -259,6 +264,25 @@ private fun RulesList(vm: SpyViewModel, rules: List<HijackEntry>, onRefresh: () 
                                 modifier = Modifier.weight(1f),
                                 fontSize = 11.sp
                             )
+                            // v1.25 P1-4: 删除规则按钮（value=null 取消，与后端 removeHijack 契约一致）
+                            IconButton(
+                                onClick = {
+                                    scope.launch {
+                                        withContext(Dispatchers.IO) {
+                                            vm.api.setHijack(r.cls, r.method, r.params, r.mode, null)
+                                        }
+                                        withContext(Dispatchers.Main) { onRefresh() }
+                                    }
+                                },
+                                modifier = Modifier.size(30.dp)
+                            ) {
+                                Icon(
+                                    Icons.Filled.Delete,
+                                    contentDescription = "删除规则",
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
                         }
                         if (r.cls.isNotEmpty() && r.method.isNotEmpty()) {
                             Text(
@@ -399,7 +423,8 @@ private fun AddRuleDialog(vm: SpyViewModel, onDismiss: () -> Unit, onSaved: () -
                         readOnly = true,
                         label = { Text("模式", fontSize = 12.sp) },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                        modifier = Modifier.fillMaxWidth().menuAnchor()
+                        modifier = Modifier.fillMaxWidth()
+                            .menuAnchor(MenuAnchorType.PrimaryNotEditable) // v1.25 P2-4
                     )
                     ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                         modes.forEachIndexed { i, (_, label) ->
@@ -455,6 +480,4 @@ private fun AddRuleDialog(vm: SpyViewModel, onDismiss: () -> Unit, onSaved: () -
     )
 }
 
-// MenuAnchor 扩展（避免导入冲突）
-private fun Modifier.menuAnchor(): Modifier =
-    this.then(androidx.compose.ui.Modifier)
+// v1.25 P2-4: 用 M3 官方 menuAnchor API（此前自定义 no-op 扩展导致下拉菜单锚点不对/不展开）
