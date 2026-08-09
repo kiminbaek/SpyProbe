@@ -50,6 +50,14 @@ public class NativeProbe {
 
     // ================= 静态回调（native → Java，全部写 LogStore，不拦截）=================
 
+    /** v1.30.4: native→Java 日志桥——shadowhook_init/hook 结果可见于 LogStore（任意 native 线程调用） */
+    @SuppressWarnings("unused")
+    private static void nativeLog(String msg) {
+        if (msg != null && !msg.isEmpty()) {
+            LogStore.get().log(TAG, "[native] " + msg);
+        }
+    }
+
     /** libc / SSL 数据：id=socket fd 或 ssl 指针；isWrite=true 上行；isSsl=true TLS 解密明文 */
     @SuppressWarnings("unused")
     private static boolean onNativeData(long id, boolean isWrite, ByteBuffer buf, String socketInfo, String stack, boolean isSsl) {

@@ -34,6 +34,8 @@ static jmethodID gOnH2RequestMethod     = nullptr;
 static jmethodID gOnH2DataChunkMethod   = nullptr;
 static jmethodID gCollectRespBodyMethod = nullptr;
 static jmethodID gOnConnClosedMethod    = nullptr;
+// v1.30.4: native→Java 日志桥（shadowhook_init / hook 结果写 LogStore，任意线程可调）
+static jmethodID gNativeLogMethod       = nullptr;
 
 static pthread_key_t g_thread_key;
 thread_local bool g_is_in_hook = false;
@@ -518,14 +520,39 @@ static type_SSL_write native_write_hooks[] = { hook_NativeCrypto_SSL_write_t<0>,
 static type_SSL_read native_read_hooks[] = { hook_NativeCrypto_SSL_read_t<0>, hook_NativeCrypto_SSL_read_t<1>, hook_NativeCrypto_SSL_read_t<2>, hook_NativeCrypto_SSL_read_t<3> };
 static type_SSL_free native_free_hooks[] = { hook_NativeCrypto_SSL_free_t<0>, hook_NativeCrypto_SSL_free_t<1>, hook_NativeCrypto_SSL_free_t<2>, hook_NativeCrypto_SSL_free_t<3> };
 
+// v1.30.4: native→Java 日志桥——shadowhook init/hook 结果写 LogStore，任意线程可调
+static void native_log(const char* msg) {
+    if (msg == nullptr) return;
+    if (gNativeRequestHookClass == nullptr || gNativeLogMethod == nullptr) return;
+    JNIEnv* env = nullptr;
+    bool need_detach = false;
+    jint attach = gJvm->GetEnv((void**)&env, JNI_VERSION_1_6);
+    if (attach == JNI_EDETACHED) {
+        if (gJvm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
+        need_detach = true;
+    }
+    if (env == nullptr) return;
+    jstring jmsg = env->NewStringUTF(msg);
+    if (jmsg != nullptr) {
+        env->CallStaticVoidMethod(gNativeRequestHookClass, gNativeLogMethod, jmsg);
+        env->DeleteLocalRef(jmsg);
+    }
+    if (need_detach) gJvm->DetachCurrentThread();
+}
+
 bool hook_func(const char *lib_name, const char *sym_name, void *hook_func, void **orig_func) {
     void *stub = shadowhook_hook_sym_name(lib_name, sym_name, hook_func, orig_func);
+    char buf[256];
     if (stub != nullptr) {
         LOGI("ShadowHook SUCCESS: %s in %s", sym_name, lib_name ? lib_name : "global");
+        snprintf(buf, sizeof(buf), "SH hook OK: %s in %s", sym_name, lib_name ? lib_name : "global");
+        native_log(buf);
         return true;
     }
     // v1.25 P0-3: hook 失败（符号不存在）时不写 orig（保持 nullptr），回调里已做空指针保护
     LOGE("ShadowHook FAIL: %s in %s", sym_name, lib_name ? lib_name : "global");
+    snprintf(buf, sizeof(buf), "SH hook FAIL: %s in %s", sym_name, lib_name ? lib_name : "global");
+    native_log(buf);
     return false;
 }
 
@@ -542,9 +569,27 @@ Java_com_dustinky_spyprobe_NativeProbe_initNativeHook(JNIEnv *env, jobject thiz,
     gOnH2DataChunkMethod = env->GetStaticMethodID(clazz, "onH2DataChunk", "(JIZLjava/nio/ByteBuffer;)V");
     gCollectRespBodyMethod = env->GetStaticMethodID(clazz, "getCollectResponseBody", "()Z");
     gOnConnClosedMethod = env->GetStaticMethodID(clazz, "onConnectionClosed", "(JZ)V");
+    gNativeLogMethod = env->GetStaticMethodID(clazz, "nativeLog", "(Ljava/lang/String;)V");
 
     if (enableNativeHook) {
-        shadowhook_init(SHADOWHOOK_MODE_UNIQUE, true);
+        char buf[256];
+        // v1.30.4 P0: 检查 shadowhook_init 返回值——此前未检查，失败时后续 hook 全部无效且无迹可查
+        int sh_ret = shadowhook_init(SHADOWHOOK_MODE_UNIQUE, true);
+        snprintf(buf, sizeof(buf), "shadowhook_init ret=%d", sh_ret);
+        native_log(buf);
+        if (sh_ret != 0) {
+            native_log("shadowhook_init FAILED -> hooks disabled");
+            return;
+        }
+        // v1.30.4 P0: dlopen 强制加载 SSL 库——若宿主进程尚未加载某 so，
+        // shadowhook_hook_sym_name 找不到符号会失败；先 dlopen 确保符号可解析
+        for (int i = 0; i < SSL_HOOK_COUNT; i++) {
+            const char* lib = g_ssl_hooks[i].lib_name;
+            void* h = dlopen(lib, RTLD_NOW);
+            snprintf(buf, sizeof(buf), "dlopen %s -> %s", lib, h != nullptr ? "OK" : (dlerror() ? dlerror() : "unknown error"));
+            native_log(buf);
+            if (h != nullptr) dlclose(h);
+        }
         hook_func("libc.so", "send", (void*)hook_send, (void**)&orig_send);
         hook_func("libc.so", "recv", (void*)hook_recv, (void**)&orig_recv);
         hook_func("libc.so", "sendto", (void*)hook_sendto, (void**)&orig_sendto);
