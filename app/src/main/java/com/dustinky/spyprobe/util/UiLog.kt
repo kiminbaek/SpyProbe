@@ -47,7 +47,29 @@ object UiLog {
         } catch (t: Throwable) { }
     }
 
-    fun dump(): String = synchronized(ring) { ring.joinToString("\n") }
+    /**
+     * v1.30.2: dump 返回 内存环形 + 落盘文件全文（合并去重）。
+     * 背景：重启后环形缓冲清空（只有文件还有历史），用户要"越详细越好"——文件不能丢。
+     */
+    fun dump(): String {
+        val mem = synchronized(ring) { ring.joinToString("\n") }
+        val sb = StringBuilder(mem)
+        val f = file
+        if (f != null && f.exists()) {
+            sb.append("\n---- file: ").append(f.absolutePath).append(" size=").append(f.length())
+            if (mem.isEmpty()) {
+                // 环形已清空（重启过），直接读文件全文
+                try {
+                    sb.append('\n').append(f.readText())
+                } catch (t: Throwable) {
+                    sb.append("\n(read file fail: ").append(t).append(')')
+                }
+            }
+        } else {
+            sb.append("\n---- no ui log file yet")
+        }
+        return sb.toString()
+    }
 
     fun logFile(): File? = file
 

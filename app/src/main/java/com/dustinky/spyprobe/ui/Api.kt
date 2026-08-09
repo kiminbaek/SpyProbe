@@ -80,9 +80,22 @@ data class HijackEntry(val cls: String, val method: String, val params: String, 
 
 class SpyApi(private var port: Int = 9901) {
 
-    // v1.30.1: 最近一次 HTTP 失败原因（UI 导出失败时 Toast/日志可显示具体错误）
+    // v1.30.2: 最近一次 HTTP 失败原因（UI 导出失败时 Toast/日志可显示具体错误）
     var lastHttpError: String = ""
         private set
+
+    // v1.30.2: 高频轮询（ping/logs 每 1.5s 一次）成功日志降噪——同一 path 5 秒内只记 1 条成功
+    private val lastOkLog = HashMap<String, Long>()
+
+    private fun maybeLogOk(path: String, detail: String) {
+        val now = System.currentTimeMillis()
+        synchronized(lastOkLog) {
+            val last = lastOkLog[path]
+            if (last != null && now - last < 5000) return
+            lastOkLog[path] = now
+        }
+        com.dustinky.spyprobe.util.UiLog.log(detail)
+    }
 
     fun setPort(p: Int) { port = p }
     fun port(): Int = port
@@ -91,6 +104,7 @@ class SpyApi(private var port: Int = 9901) {
 
     // ---------- HTTP ----------
     fun httpGet(path: String, readTimeoutMs: Int = 1500): String? {
+        val t0 = System.currentTimeMillis() // v1.30.2: 耗时统计
         return try {
             val u = URL(baseUrl() + path)
             val c = u.openConnection() as HttpURLConnection
@@ -104,15 +118,17 @@ class SpyApi(private var port: Int = 9901) {
             r.close()
             c.disconnect()
             lastHttpError = ""
+            maybeLogOk(path, "GET $path OK ${sb.length}B ${System.currentTimeMillis() - t0}ms")
             sb.toString()
         } catch (t: Throwable) {
             lastHttpError = "GET $path: ${t.javaClass.simpleName}: ${t.message}"
-            com.dustinky.spyprobe.util.UiLog.log("httpGet fail: $lastHttpError")
+            com.dustinky.spyprobe.util.UiLog.log("httpGet fail: $lastHttpError (${System.currentTimeMillis() - t0}ms)")
             null
         }
     }
 
     fun httpPost(path: String, json: String): String? {
+        val t0 = System.currentTimeMillis() // v1.30.2: 耗时统计
         return try {
             val u = URL(baseUrl() + path)
             val c = u.openConnection() as HttpURLConnection
@@ -133,10 +149,11 @@ class SpyApi(private var port: Int = 9901) {
             r.close()
             c.disconnect()
             lastHttpError = ""
+            com.dustinky.spyprobe.util.UiLog.log("POST $path OK ${sb.length}B ${System.currentTimeMillis() - t0}ms")
             sb.toString()
         } catch (t: Throwable) {
             lastHttpError = "POST $path: ${t.javaClass.simpleName}: ${t.message}"
-            com.dustinky.spyprobe.util.UiLog.log("httpPost fail: $lastHttpError")
+            com.dustinky.spyprobe.util.UiLog.log("httpPost fail: $lastHttpError (${System.currentTimeMillis() - t0}ms)")
             null
         }
     }

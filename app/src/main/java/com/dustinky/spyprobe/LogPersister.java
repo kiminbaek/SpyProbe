@@ -127,6 +127,8 @@ public class LogPersister {
                     part = nextPart(day);
                     f = fileOf(day, part);
                     bw = open(f);
+                    // v1.30.2: 写线程打开文件 DebugLog（能看到实际落盘文件名）
+                    DebugLog.get().log("Persist", "open " + f.getName());
                     // v1.27: 跨天时顺带清理过期历史（长期运行场景）
                     cleanupOld();
                 }
@@ -138,6 +140,7 @@ public class LogPersister {
                     part++;
                     f = fileOf(day, part);
                     bw = open(f);
+                    DebugLog.get().log("Persist", "rolled -> " + f.getName());
                 }
             } catch (InterruptedException ie) {
                 break;
@@ -227,9 +230,16 @@ public class LogPersister {
 
     /** 读某天日志（多分片合并按 seq 排序），max>0 时环形保留最新 max 条（避免百万行内存峰值） */
     public List<Entry> readDay(String day, int max) {
-        if (dir == null) return Collections.emptyList();
+        if (dir == null) {
+            DebugLog.get().log("Persist", "readDay(" + day + ") dir=null，无历史");
+            return Collections.emptyList();
+        }
         File[] fs = listDayFiles(day);
-        if (fs == null) return Collections.emptyList();
+        if (fs == null || fs.length == 0) {
+            DebugLog.get().log("Persist", "readDay(" + day + ") 无文件");
+            return Collections.emptyList();
+        }
+        // v1.30.2: 读取结果数量 DebugLog（能看到历史页/导出拿到了多少条）
         List<Entry> out = new ArrayList<>();
         java.util.ArrayDeque<Entry> ring = (max > 0) ? new java.util.ArrayDeque<>(Math.min(max, 4096)) : null;
         for (File f : fs) {
@@ -247,24 +257,40 @@ public class LogPersister {
                         }
                     }
                 }
-            } catch (Throwable t) { }
+            } catch (Throwable t) {
+                DebugLog.get().log("Persist", "readDay(" + day + ") file " + f.getName() + " read error: " + t);
+            }
         }
         if (ring != null) out = new ArrayList<>(ring);
         out.sort(Comparator.comparingLong(a -> a.seq));
         if (max > 0 && out.size() > max) {
-            return new ArrayList<>(out.subList(out.size() - max, out.size()));
+            out = new ArrayList<>(out.subList(out.size() - max, out.size()));
         }
+        DebugLog.get().log("Persist", "readDay(" + day + ") files=" + fs.length + " entries=" + out.size());
         return out;
     }
 
     /** 删除某天；day==null 删除全部历史 */
     public void clear(String day) {
-        if (dir == null) return;
+        if (dir == null) {
+            DebugLog.get().log("Persist", "clear(" + day + ") dir=null");
+            return;
+        }
         File[] fs = (day == null)
                 ? dir.listFiles((d, name) -> name.startsWith(PREFIX) && name.endsWith(".log"))
                 : listDayFiles(day);
-        if (fs == null) return;
-        for (File f : fs) { try { f.delete(); } catch (Throwable t) { } }
+        if (fs == null || fs.length == 0) {
+            DebugLog.get().log("Persist", "clear(" + day + ") 无文件可删");
+            return;
+        }
+        // v1.30.2: 清空历史 DebugLog（能看到删除文件数）
+        for (File f : fs) {
+            try {
+                if (f.delete()) DebugLog.get().log("Persist", "clear deleted " + f.getName());
+            } catch (Throwable t) {
+                DebugLog.get().log("Persist", "clear delete fail " + f.getName() + ": " + t);
+            }
+        }
         // v1.28 P1: 若正在写的文件被删，通知写线程重开新文件
         resetRequested = true;
     }

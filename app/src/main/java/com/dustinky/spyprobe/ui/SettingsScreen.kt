@@ -415,6 +415,8 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             var debugMsg by remember { mutableStateOf("") }
             Button(
                 onClick = {
+                    // v1.30.2: 点击本身留痕（用户说"每一步都要日志"）
+                    com.dustinky.spyprobe.util.UiLog.log("Settings: 点击「发送调试日志」")
                     scope.launch {
                         debugMsg = withContext(Dispatchers.IO) {
                             val info = vm.api.debugLog()
@@ -440,7 +442,10 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                             debugMsg
                         )
                         if (err != null) {
+                            com.dustinky.spyprobe.util.UiLog.log("Settings: 调试日志导出失败 $err")
                             android.widget.Toast.makeText(context, "导出失败：$err", android.widget.Toast.LENGTH_LONG).show()
+                        } else {
+                            com.dustinky.spyprobe.util.UiLog.log("Settings: 调试日志导出成功 len=${debugMsg.length}")
                         }
                     }
                 },

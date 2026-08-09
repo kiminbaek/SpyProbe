@@ -35,6 +35,8 @@ public class ModuleMain extends XposedModule {
     @Override
     public void onPackageReady(PackageReadyParam param) {
         log(Log.INFO, TAG, "onPackageReady: " + param.getPackageName());
+        DebugLog.get().log("ModuleMain", "onPackageReady pkg=" + param.getPackageName()
+                + " cl=" + (param.getClassLoader() != null ? "ok" : "null"));
         final String pkg = param.getPackageName();
         final ClassLoader cl = param.getClassLoader();
 
@@ -58,6 +60,7 @@ public class ModuleMain extends XposedModule {
         // v1.22: 抓包开关持久化文件——目标 App 自身 data 目录（零 IPC，重启必恢复）
         // v1.25 P2-9: hook/hijack 规则持久化同目录文件（spyprobe_rules.json），弃用远程偏好
         final java.io.File cfgFile = resolveCfgFile();
+        DebugLog.get().log("ModuleMain", "cfgFile=" + (cfgFile != null ? cfgFile.getAbsolutePath() : "null"));
         // v1.29: 日志持久化初始化（DebugLog 三保险：内存环形 + 落盘 + logcat）
         // v1.29 修复：原实现 currentApplication() 返回 null 时静默跳过 → dir=null 一行不写盘且无痕迹。
         // 现在：立即尝试 + 延迟重试（1s/3s/10s），任何失败写 DebugLog。
@@ -69,7 +72,9 @@ public class ModuleMain extends XposedModule {
         SpyServer server = new SpyServer(net, mth, clsProbe, pkg, dexKit, cfgFile);
 
         // 立即装网络 hook
+        DebugLog.get().log("ModuleMain", "installing net.install(early)");
         net.install("early");
+        DebugLog.get().log("ModuleMain", "net.install(early) done");
 
         // v1.5: URL 构造捕捉（尽早装，URL 在启动期就大量构造）
         try {
@@ -91,9 +96,11 @@ public class ModuleMain extends XposedModule {
             // t=1500ms: 类加载探测（延迟确保类加载器稳定）
             try {
                 Thread.sleep(1500);
+                DebugLog.get().log("ModuleMain", "installing clsProbe.install(late)");
                 clsProbe.install("late");
             } catch (Throwable t) {
                 log(Log.ERROR, TAG, "class probe install error: " + t);
+                DebugLog.get().log("ModuleMain", "clsProbe.install FAIL: " + t);
             }
 
             // t=2000ms: 加密/Activity/JSON/SharedPreferences + 环境检测 + server
@@ -102,67 +109,89 @@ public class ModuleMain extends XposedModule {
                 // v1.22: 恢复用户抓包开关——必须在所有延迟探测安装 + server.start() 之前，
                 // 否则 UI 连上 server 先拿到默认配置、probe 也按默认开关记录
                 Config.get().loadConfig(cfgFile);
+                DebugLog.get().log("ModuleMain", "loadConfig done ssl=" + Config.get().sslBypass
+                        + " native=" + Config.get().nativeCapture + " debug=" + Config.get().debugEnabled);
                 // v1.10: native 层抓包（libc + SSL_write/SSL_read + HTTP/2），越早装越好
                 try {
+                    DebugLog.get().log("ModuleMain", "installing NativeProbe.init()");
                     NativeProbe.init();
                 } catch (Throwable t) {
                     log(Log.ERROR, TAG, "native probe init error: " + t);
+                    DebugLog.get().log("ModuleMain", "NativeProbe.init FAIL: " + t);
                 }
                 // v1.23: 每个延迟探测单独 try-catch——任何一个装失败不能拖垮 server 启动
-                try { crypto.install("late"); } catch (Throwable t) { log(Log.ERROR, TAG, "crypto probe install error: " + t); }
-                try { act.install("late"); } catch (Throwable t) { log(Log.ERROR, TAG, "activity probe install error: " + t); }
-                try { json.install("late"); } catch (Throwable t) { log(Log.ERROR, TAG, "json probe install error: " + t); }
-                try { prefs.install("late"); } catch (Throwable t) { log(Log.ERROR, TAG, "prefs probe install error: " + t); }
-                try { env.install("late"); } catch (Throwable t) { log(Log.ERROR, TAG, "env probe install error: " + t); }
+                try { DebugLog.get().log("ModuleMain", "installing crypto"); crypto.install("late"); } catch (Throwable t) { log(Log.ERROR, TAG, "crypto probe install error: " + t); DebugLog.get().log("ModuleMain", "crypto FAIL: " + t); }
+                try { DebugLog.get().log("ModuleMain", "installing act"); act.install("late"); } catch (Throwable t) { log(Log.ERROR, TAG, "activity probe install error: " + t); DebugLog.get().log("ModuleMain", "act FAIL: " + t); }
+                try { DebugLog.get().log("ModuleMain", "installing json"); json.install("late"); } catch (Throwable t) { log(Log.ERROR, TAG, "json probe install error: " + t); DebugLog.get().log("ModuleMain", "json FAIL: " + t); }
+                try { DebugLog.get().log("ModuleMain", "installing prefs"); prefs.install("late"); } catch (Throwable t) { log(Log.ERROR, TAG, "prefs probe install error: " + t); DebugLog.get().log("ModuleMain", "prefs FAIL: " + t); }
+                try { DebugLog.get().log("ModuleMain", "installing env"); env.install("late"); } catch (Throwable t) { log(Log.ERROR, TAG, "env probe install error: " + t); DebugLog.get().log("ModuleMain", "env FAIL: " + t); }
                 // v1.13: 反检测 hook 集（延迟装；hook File/Runtime 等高频类，避开启动风暴）
                 try {
+                    DebugLog.get().log("ModuleMain", "installing anti.install()");
                     anti.install();
                 } catch (Throwable t) {
                     log(Log.ERROR, TAG, "anti-detect install error: " + t);
+                    DebugLog.get().log("ModuleMain", "anti FAIL: " + t);
                 }
             } catch (Throwable t) {
                 log(Log.ERROR, TAG, "deferred probe install error: " + t);
+                DebugLog.get().log("ModuleMain", "deferred install FAIL: " + t);
             }
             // v1.23: server 启动独立 try-catch——无论探测装没装上，server 必须起来（UI 才能连）
             try {
+                DebugLog.get().log("ModuleMain", "installing server.start()");
                 server.start();
             } catch (Throwable t) {
                 log(Log.ERROR, TAG, "server start error: " + t);
+                DebugLog.get().log("ModuleMain", "server.start FAIL: " + t);
             }
 
             // t=2500ms: SQLite 记录
             try {
                 Thread.sleep(500);
+                DebugLog.get().log("ModuleMain", "installing sqlite");
                 sqlite.install("late");
             } catch (Throwable t) {
                 log(Log.ERROR, TAG, "sqlite probe install error: " + t);
+                DebugLog.get().log("ModuleMain", "sqlite FAIL: " + t);
             }
 
             // t=5000ms: DexKit 初始化（导出 dex / 字符串反查，等类加载稳定）+ 持久化 hook/hijack 规则重挂
             try {
                 Thread.sleep(2500);
+                DebugLog.get().log("ModuleMain", "installing dexKit.init()");
                 dexKit.init();
                 // v1.25 P2-9: 规则从文件加载（与 cfgFile 同目录，零 IPC）
                 java.io.File rulesFile = (cfgFile != null && cfgFile.getParentFile() != null)
                         ? new java.io.File(cfgFile.getParentFile(), "spyprobe_rules.json") : null;
                 boolean loaded = Config.get().loadRules(rulesFile);
-                if (loaded) log(Log.INFO, TAG, "loaded persisted hook rules, re-hooking...");
+                if (loaded) {
+                    log(Log.INFO, TAG, "loaded persisted hook rules, re-hooking...");
+                    DebugLog.get().log("ModuleMain", "rules loaded, re-hooking " + Config.get().hooks.size());
+                } else {
+                    DebugLog.get().log("ModuleMain", "no rules loaded (first run?)");
+                }
                 for (Config.HookSpec spec : Config.get().hooks) {
                     if (!spec.enabled) continue;
                     try {
                         mth.hookMethod(spec.className, spec.methodName, spec.paramTypes);
                     } catch (Throwable t) {
                         LogStore.get().log(TAG, "re-hook fail: " + spec.className + "." + spec.methodName + " : " + t);
+                        DebugLog.get().log("ModuleMain", "re-hook FAIL " + spec.className + "." + spec.methodName + ": " + t);
                     }
                 }
                 if (loaded) LogStore.get().log(TAG, "re-hook done, rules=" + Config.get().hooks.size()
                         + " hijacks=" + Config.get().hijacks.size());
+                DebugLog.get().log("ModuleMain", "re-hook done rules=" + Config.get().hooks.size()
+                        + " hijacks=" + Config.get().hijacks.size());
             } catch (Throwable t) {
                 log(Log.ERROR, TAG, "re-hook error: " + t);
+                DebugLog.get().log("ModuleMain", "re-hook error: " + t);
             }
         }, "SpyProbe-Scheduler").start();
 
         log(Log.INFO, TAG, "SpyProbe ready for " + pkg);
+        DebugLog.get().log("ModuleMain", "onPackageReady 流程编排完成 pkg=" + pkg);
     }
 
     /** v1.22: 目标 App data 目录下的抓包开关持久化文件（files/spyprobe_cfg.json）；失败返回 null */

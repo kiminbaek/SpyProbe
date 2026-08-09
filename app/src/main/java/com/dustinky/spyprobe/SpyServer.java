@@ -67,6 +67,7 @@ public class SpyServer {
 
     public void start() {
         // v1.3: 多进程 app / 多目标勾选时 9901 可能被占用 → 依次尝试 9901-9910
+        // v1.30.2: 每次绑定尝试都写 DebugLog（端口被占/绑定失败原因直接可见）
         for (int attempt = 0; attempt < 10; attempt++) {
             int p = PORT + attempt;
             try {
@@ -76,12 +77,15 @@ public class SpyServer {
                 acceptThread.setDaemon(true);
                 acceptThread.start();
                 LogStore.get().log(TAG, "server started on 127.0.0.1:" + p + " pkg=" + pkg);
+                DebugLog.get().log("Srv", "start OK 127.0.0.1:" + p + " pkg=" + pkg);
                 return;
             } catch (Throwable t) {
                 LogStore.get().log(TAG, "port " + p + " busy, try next");
+                DebugLog.get().log("Srv", "port " + p + " bind fail: " + t);
             }
         }
         LogStore.get().log(TAG, "server start fail: all ports 9901-9910 busy");
+        DebugLog.get().log("Srv", "start FAIL: all ports 9901-9910 busy");
     }
 
     private void acceptLoop() {
@@ -113,6 +117,7 @@ public class SpyServer {
             if (parts.length < 2) return;
             String method = parts[0];
             String path = parts[1];
+            long t0 = System.currentTimeMillis(); // v1.30.2: 请求耗时统计
 
             // 读 headers 找 Content-Length（P1-13: 限制 1MB 防 OOM）
             int contentLength = 0;
@@ -139,6 +144,11 @@ public class SpyServer {
             }
 
             String resp = route(method, path, body);
+            // v1.30.2: 每个 API 请求都写 DebugLog（方法/路径/耗时/响应大小/是否 ok），定位前端问题最直接
+            long ms = System.currentTimeMillis() - t0;
+            boolean okFlag = resp.contains("\"ok\":true");
+            DebugLog.get().log("Srv", method + " " + path + " -> " + resp.length() + "B " + ms + "ms ok=" + okFlag
+                    + (okFlag ? "" : " resp=" + resp.substring(0, Math.min(resp.length(), 300))));
             byte[] data = resp.getBytes(StandardCharsets.UTF_8);
             StringBuilder head = new StringBuilder();
             head.append("HTTP/1.1 200 OK\r\n");

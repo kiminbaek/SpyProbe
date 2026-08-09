@@ -22,4 +22,30 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    // v1.30.2: 生命周期每步留痕（用户要"每一步都写日志"；后台恢复/锁屏重连问题能定位）
+    override fun onStart() {
+        super.onStart()
+        com.dustinky.spyprobe.util.UiLog.log("MainActivity onStart")
+    }
+
+    override fun onResume() {
+        super.onResume()
+        com.dustinky.spyprobe.util.UiLog.log("MainActivity onResume")
+    }
+
+    override fun onPause() {
+        super.onPause()
+        com.dustinky.spyprobe.util.UiLog.log("MainActivity onPause")
+    }
+
+    override fun onStop() {
+        super.onStop()
+        com.dustinky.spyprobe.util.UiLog.log("MainActivity onStop")
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        com.dustinky.spyprobe.util.UiLog.log("MainActivity onDestroy")
+    }
 }

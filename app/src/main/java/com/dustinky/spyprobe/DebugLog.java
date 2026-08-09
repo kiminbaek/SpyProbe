@@ -111,7 +111,10 @@ public class DebugLog {
         }
     }
 
-    /** 导出当前调试日志全文（内存环形 + 已落盘文件尾，去重按 seq 行号截断） */
+    /**
+     * v1.30.2: 导出当前调试日志全文（内存环形 + 已落盘文件全文，重启后文件仍在）。
+     * 背景：目标进程重启后环形清空，但 files/spyprobe_debug.log 保留——"越详细越好"不能丢。
+     */
     public String dump() {
         synchronized (lock) {
             StringBuilder sb = new StringBuilder();
@@ -122,6 +125,18 @@ public class DebugLog {
             if (f != null && f.exists()) {
                 sb.append("---- file: ").append(f.getAbsolutePath())
                   .append(" size=").append(f.length()).append('\n');
+                // 环形被清空（进程重启过）或文件内容比环形多时，合并文件全文
+                if (ring.isEmpty() || f.length() > ring.size() * 48L) {
+                    try (java.io.BufferedReader r = new java.io.BufferedReader(
+                            new java.io.InputStreamReader(new java.io.FileInputStream(f), StandardCharsets.UTF_8))) {
+                        String line;
+                        while ((line = r.readLine()) != null) {
+                            sb.append(line).append('\n');
+                        }
+                    } catch (Throwable t) {
+                        sb.append("(read debug file fail: ").append(t).append(")\n");
+                    }
+                }
             } else {
                 sb.append("---- no debug file yet (filesDir 未拿到)\n");
             }

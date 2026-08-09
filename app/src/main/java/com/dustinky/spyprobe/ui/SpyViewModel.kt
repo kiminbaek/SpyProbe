@@ -186,20 +186,26 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun setEffectiveSwitch(key: String, value: Any): Boolean {
         val pkg = _targetPkg.value
-        if (pkg.isEmpty()) return false
+        if (pkg.isEmpty()) {
+            com.dustinky.spyprobe.util.UiLog.log("setEffectiveSwitch: $key=$value 但 target 为空，跳过")
+            return false
+        }
         val global = loadGlobalConfig()
         val effective = global + loadAppConfig(pkg) + (key to value)
         // 只存差异项（与全局相同的不占位，避免覆盖项冗余）
         val overrides = HashMap<String, Any>()
         effective.forEach { (k, v) -> if (global[k] != v) overrides[k] = v }
         saveAppConfig(pkg, overrides)
-        return pushConfig(pkg)
+        val pushed = pushConfig(pkg)
+        com.dustinky.spyprobe.util.UiLog.log("setEffectiveSwitch: $key=$value pushed=$pushed")
+        return pushed
     }
 
     // ---------- 目标/端口 ----------
     fun setTarget(pkg: String) {
         _targetPkg.value = pkg
         prefs.edit().putString(KEY_TARGET, pkg).apply()
+        com.dustinky.spyprobe.util.UiLog.log("setTarget: $pkg")
         refreshStatus()
     }
 
@@ -207,6 +213,7 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
         _port.value = p
         api.setPort(p)
         prefs.edit().putInt(KEY_PORT, p).apply()
+        com.dustinky.spyprobe.util.UiLog.log("setPort: $p")
     }
 
     // ---------- 轮询 ----------
@@ -220,6 +227,7 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
                 if (resp != null) {
                     if (!wasConnected) {
                         wasConnected = true
+                        com.dustinky.spyprobe.util.UiLog.log("轮询: 连接恢复 target=$_targetPkg.value port=${api.baseUrl()}")
                         // v1.23: 目标进程连接恢复 → 自动补发该 App 生效配置（本地权威推送到执行端）
                         val pkg = _targetPkg.value
                         if (pkg.isNotEmpty()) {
@@ -267,6 +275,7 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearLogs() {
         viewModelScope.launch {
+            com.dustinky.spyprobe.util.UiLog.log("clearLogs: 清空内存日志")
             val resp = withContext(Dispatchers.IO) { api.clear() }
             _logLines.value = emptyList()
             since = 0
@@ -279,15 +288,18 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val days = withContext(Dispatchers.IO) { api.historyDays() }
             _historyDays.value = days ?: emptyList()
+            com.dustinky.spyprobe.util.UiLog.log("loadHistoryDays: days=${_historyDays.value.size}")
         }
     }
 
     fun loadHistory(day: String) {
         viewModelScope.launch {
             _historyLoading.value = true
+            com.dustinky.spyprobe.util.UiLog.log("loadHistory: day=$day")
             val logs = withContext(Dispatchers.IO) { api.history(day, 10000) }
             _historyLogs.value = logs?.mapIndexed { i, it -> Pair(i.toLong() + 1, it.display()) }
                 ?: emptyList()
+            com.dustinky.spyprobe.util.UiLog.log("loadHistory: day=$day entries=${logs?.size}")
             _historyLoading.value = false
         }
     }
@@ -295,12 +307,14 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
     /** 清空历史：day=null 清全部 */
     fun clearHistory(day: String?, onDone: (Boolean) -> Unit = {}) {
         viewModelScope.launch {
+            com.dustinky.spyprobe.util.UiLog.log("clearHistory: day=${day ?: "(全部)"}")
             val ok = withContext(Dispatchers.IO) { api.clearHistory(day) }
             if (ok) {
                 loadHistoryDays()
                 // v1.28 P1: day==null 清全部时也要清空展示列表（之前只清单天，界面残留旧数据）
                 _historyLogs.value = emptyList()
             }
+            com.dustinky.spyprobe.util.UiLog.log("clearHistory: ok=$ok")
             onDone(ok)
         }
     }
@@ -313,6 +327,7 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
                 if (r == null) {
                     val found = api.scanPorts()
                     if (found > 0) {
+                        com.dustinky.spyprobe.util.UiLog.log("refreshStatus: 9901 不通，扫描发现端口 $found")
                         api.setPort(found)
                         _port.value = found
                         prefs.edit().putInt(KEY_PORT, found).apply()
