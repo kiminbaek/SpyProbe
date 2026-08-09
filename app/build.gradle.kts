@@ -13,8 +13,8 @@ android {
     defaultConfig {
         minSdk = 26
         targetSdk = 35
-        versionCode = 51
-        versionName = "1.36.0"
+        versionCode = 52
+        versionName = "1.37.0"
 
         // v1.10: native 抓包（shadowhook inline hook）——只编真机常用 ABI，控制体积
         ndk {
@@ -105,5 +105,55 @@ android {
     lint {
         checkReleaseBuilds = false
         abortOnError = false
+    }
+}
+
+// ===== v1.37 P0-3: Xposed 入口完整性校验任务 =====
+// 借鉴 Guise verifyReleaseXposedEntries 工程思想（GPL-3.0 不抄代码，自研实现）：
+// 发布前校验 Xposed 入口声明（java_init.list）与源码/Manifest 一致——
+// 防"入口类改名/移动但 list 没同步 → LSPosed 里模块静默不加载"的隐性翻车。
+// 未来开启 R8 混淆后，此任务会自动扩展校验 mapping.txt（入口类不被改名）。
+tasks.register("verifyReleaseXposedEntries") {
+    group = "verification"
+    description = "校验 Xposed 入口声明（java_init.list）与源码一致，防模块静默失效"
+    doLast {
+        val root = project.projectDir
+        val listFile = root.resolve("src/main/resources/META-INF/xposed/java_init.list")
+        if (!listFile.exists()) {
+            throw GradleException("缺少 Xposed 入口声明: $listFile")
+        }
+        val entry = listFile.readText().trim()
+        val expectedEntry = "com.dustinky.spyprobe.ModuleMain"
+        if (entry != expectedEntry) {
+            throw GradleException("java_init.list 入口异常: '$entry'，期望 '$expectedEntry'")
+        }
+        val entryClass = root.resolve("src/main/java/com/dustinky/spyprobe/ModuleMain.java")
+        if (!entryClass.exists()) {
+            throw GradleException("入口类源码缺失: $entryClass（java_init.list 指向它但文件不存在）")
+        }
+        val manifest = root.resolve("src/main/AndroidManifest.xml")
+        if (!manifest.exists()) {
+            throw GradleException("AndroidManifest.xml 缺失")
+        }
+        val manifestText = manifest.readText()
+        if (!manifestText.contains(".MainActivity")) {
+            throw GradleException("Manifest 缺少 MainActivity（launcher 入口丢失）")
+        }
+        // R8 mapping 校验（当前 release 未开混淆 isMinifyEnabled=false，此段为未来开启时自动生效）
+        val mapping = root.resolve("build/outputs/mapping/release/mapping.txt")
+        if (mapping.exists()) {
+            val mappingText = mapping.readText()
+            if (!mappingText.contains(expectedEntry)) {
+                throw GradleException("R8 混淆后入口类被改名/删除: $expectedEntry 不在 mapping.txt")
+            }
+        }
+        println("✅ Xposed 入口校验通过: $expectedEntry")
+    }
+}
+
+// 发布前自动执行入口校验
+afterEvaluate {
+    tasks.named("preReleaseBuild").configure {
+        dependsOn("verifyReleaseXposedEntries")
     }
 }

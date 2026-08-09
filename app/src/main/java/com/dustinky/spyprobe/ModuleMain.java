@@ -70,27 +70,36 @@ public class ModuleMain extends XposedModule {
         // DebugLog 只走内存环形 + logcat；正式日志 LogStore 推回主进程 :9900（SpyProbe 自己家落盘）。
         // 历史日志在主进程家 = 免 root、免目标 App 在线。DebugLog.init/LogPersister.init 只在主进程调用。
         // v1.32: 日志推回主进程（SpyProbe 自己家）——目标进程不再落盘目标 App data（历史日志在主进程家，免 root）
-        LogStore.get().enablePushHome();
+        // v1.37 P0-5: 从模块远程偏好取 token 随推送鉴权（防其他 App 伪造日志灌入主进程）
+        String pushToken = TokenStore.remoteToken(this);
+        DebugLog.get().log("ModuleMain", "push token=" + (pushToken.isEmpty() ? "(none, 老主进程兼容)" : "len " + pushToken.length()));
+        LogStore.get().enablePushHome(pushToken);
         SpyServer server = new SpyServer(net, mth, clsProbe, pkg, dexKit, cfgFile);
 
+        // v1.37 P0-1: 尽早拉主进程权威配置（惰性 hook 的前提——net.install 之前就知道
+        //   用户关了什么探测项，early 阶段就能按配置跳过）。主进程不在线则保持默认值全装，
+        //   延迟线程 t=2000ms 再 fallback 目标 data（与 v1.32 原逻辑兼容）。
+        final boolean[] earlyCfgLoaded = {false};
+        try {
+            String earlyCfg = fetchHomeConfig();
+            if (earlyCfg != null && !earlyCfg.isEmpty()) {
+                Config.get().applyJson(earlyCfg);
+                earlyCfgLoaded[0] = true;
+                DebugLog.get().log("ModuleMain", "config loaded from HOME (early, for lazy hook)");
+            }
+        } catch (Throwable t) {
+            DebugLog.get().log("ModuleMain", "early config fetch FAIL: " + t);
+        }
+
         // 立即装网络 hook
-        DebugLog.get().log("ModuleMain", "installing net.install(early)");
-        net.install("early");
-        DebugLog.get().log("ModuleMain", "net.install(early) done");
+        // v1.37 P0-2: 统一 HookSafe 包裹——单个 hook 安装失败不拖垮目标进程，失败留痕
+        HookSafe.install("ModuleMain", "net.install(early)", () -> net.install("early"));
 
         // v1.5: URL 构造捕捉（尽早装，URL 在启动期就大量构造）
-        try {
-            urlProbe.install("early");
-        } catch (Throwable t) {
-            log(Log.ERROR, TAG, "url probe install error: " + t);
-        }
+        HookSafe.install("ModuleMain", "urlProbe.install(early)", () -> urlProbe.install("early"));
 
         // v1.5: App 日志拦截（尽早装）
-        try {
-            logcat.install("early");
-        } catch (Throwable t) {
-            log(Log.ERROR, TAG, "logcat probe install error: " + t);
-        }
+        HookSafe.install("ModuleMain", "logcat.install(early)", () -> logcat.install("early"));
 
         // v1.6: 单个调度线程按时间点依次安装延迟探测 + 持久化规则重挂
         // v1.8: 延迟安装的探测 phase 统一标 "late"（此前误标 "early" 误导日志）
@@ -98,8 +107,7 @@ public class ModuleMain extends XposedModule {
             // t=1500ms: 类加载探测（延迟确保类加载器稳定）
             try {
                 Thread.sleep(1500);
-                DebugLog.get().log("ModuleMain", "installing clsProbe.install(late)");
-                clsProbe.install("late");
+                HookSafe.install("ModuleMain", "clsProbe.install(late)", () -> clsProbe.install("late"));
             } catch (Throwable t) {
                 log(Log.ERROR, TAG, "class probe install error: " + t);
                 DebugLog.get().log("ModuleMain", "clsProbe.install FAIL: " + t);
@@ -112,16 +120,20 @@ public class ModuleMain extends XposedModule {
                 // 否则 UI 连上 server 先拿到默认配置、probe 也按默认开关记录
                 // v1.32: 配置权威源 = 主进程（SpyProbe 自己家）：先 GET :9900/api/config（UI 在跑时用户最新设置），
                 // 失败再回退目标 App data cfgFile（v1.31.6 兜底），保证"关 native"在下次启动仍生效。
-                boolean homeLoaded = false;
-                try {
-                    String homeCfg = fetchHomeConfig();
-                    if (homeCfg != null && !homeCfg.isEmpty()) {
-                        Config.get().applyJson(homeCfg);
-                        homeLoaded = true;
-                        DebugLog.get().log("ModuleMain", "config loaded from HOME (:9900)");
+                // v1.37 P0-1: early 阶段已拉过主进程配置则跳过（惰性 hook 已按配置生效）；
+                //   否则按 v1.32 原逻辑：先拉主进程，失败 fallback 目标 data
+                boolean homeLoaded = earlyCfgLoaded[0];
+                if (!homeLoaded) {
+                    try {
+                        String homeCfg = fetchHomeConfig();
+                        if (homeCfg != null && !homeCfg.isEmpty()) {
+                            Config.get().applyJson(homeCfg);
+                            homeLoaded = true;
+                            DebugLog.get().log("ModuleMain", "config loaded from HOME (:9900)");
+                        }
+                    } catch (Throwable t) {
+                        DebugLog.get().log("ModuleMain", "fetch home config FAIL: " + t);
                     }
-                } catch (Throwable t) {
-                    DebugLog.get().log("ModuleMain", "fetch home config FAIL: " + t);
                 }
                 if (!homeLoaded) {
                     Config.get().loadConfig(cfgFile);
@@ -130,27 +142,17 @@ public class ModuleMain extends XposedModule {
                 DebugLog.get().log("ModuleMain", "loadConfig done ssl=" + Config.get().sslBypass
                         + " native=" + Config.get().nativeCapture + " debug=" + Config.get().debugEnabled);
                 // v1.10: native 层抓包（libc + SSL_write/SSL_read + HTTP/2），越早装越好
-                try {
-                    DebugLog.get().log("ModuleMain", "installing NativeProbe.init()");
-                    NativeProbe.init();
-                } catch (Throwable t) {
-                    log(Log.ERROR, TAG, "native probe init error: " + t);
-                    DebugLog.get().log("ModuleMain", "NativeProbe.init FAIL: " + t);
-                }
+                // v1.37 P0-2: HookSafe 统一包裹（NativeProbe.init 内部也有自己的 try-catch）
+                HookSafe.install("ModuleMain", "NativeProbe.init()", () -> NativeProbe.init());
                 // v1.23: 每个延迟探测单独 try-catch——任何一个装失败不能拖垮 server 启动
-                try { DebugLog.get().log("ModuleMain", "installing crypto"); crypto.install("late"); } catch (Throwable t) { log(Log.ERROR, TAG, "crypto probe install error: " + t); DebugLog.get().log("ModuleMain", "crypto FAIL: " + t); }
-                try { DebugLog.get().log("ModuleMain", "installing act"); act.install("late"); } catch (Throwable t) { log(Log.ERROR, TAG, "activity probe install error: " + t); DebugLog.get().log("ModuleMain", "act FAIL: " + t); }
-                try { DebugLog.get().log("ModuleMain", "installing json"); json.install("late"); } catch (Throwable t) { log(Log.ERROR, TAG, "json probe install error: " + t); DebugLog.get().log("ModuleMain", "json FAIL: " + t); }
-                try { DebugLog.get().log("ModuleMain", "installing prefs"); prefs.install("late"); } catch (Throwable t) { log(Log.ERROR, TAG, "prefs probe install error: " + t); DebugLog.get().log("ModuleMain", "prefs FAIL: " + t); }
-                try { DebugLog.get().log("ModuleMain", "installing env"); env.install("late"); } catch (Throwable t) { log(Log.ERROR, TAG, "env probe install error: " + t); DebugLog.get().log("ModuleMain", "env FAIL: " + t); }
+                // v1.37 P0-2: 全部走 HookSafe（统一失败留痕到 LogStore + DebugLog）
+                HookSafe.install("ModuleMain", "crypto.install(late)", () -> crypto.install("late"));
+                HookSafe.install("ModuleMain", "act.install(late)", () -> act.install("late"));
+                HookSafe.install("ModuleMain", "json.install(late)", () -> json.install("late"));
+                HookSafe.install("ModuleMain", "prefs.install(late)", () -> prefs.install("late"));
+                HookSafe.install("ModuleMain", "env.install(late)", () -> env.install("late"));
                 // v1.13: 反检测 hook 集（延迟装；hook File/Runtime 等高频类，避开启动风暴）
-                try {
-                    DebugLog.get().log("ModuleMain", "installing anti.install()");
-                    anti.install();
-                } catch (Throwable t) {
-                    log(Log.ERROR, TAG, "anti-detect install error: " + t);
-                    DebugLog.get().log("ModuleMain", "anti FAIL: " + t);
-                }
+                HookSafe.install("ModuleMain", "anti.install()", () -> anti.install());
             } catch (Throwable t) {
                 log(Log.ERROR, TAG, "deferred probe install error: " + t);
                 DebugLog.get().log("ModuleMain", "deferred install FAIL: " + t);
@@ -167,8 +169,7 @@ public class ModuleMain extends XposedModule {
             // t=2500ms: SQLite 记录
             try {
                 Thread.sleep(500);
-                DebugLog.get().log("ModuleMain", "installing sqlite");
-                sqlite.install("late");
+                HookSafe.install("ModuleMain", "sqlite.install(late)", () -> sqlite.install("late"));
             } catch (Throwable t) {
                 log(Log.ERROR, TAG, "sqlite probe install error: " + t);
                 DebugLog.get().log("ModuleMain", "sqlite FAIL: " + t);
@@ -177,8 +178,7 @@ public class ModuleMain extends XposedModule {
             // t=5000ms: DexKit 初始化（导出 dex / 字符串反查，等类加载稳定）+ 持久化 hook/hijack 规则重挂
             try {
                 Thread.sleep(2500);
-                DebugLog.get().log("ModuleMain", "installing dexKit.init()");
-                dexKit.init();
+                HookSafe.install("ModuleMain", "dexKit.init()", () -> dexKit.init());
                 // v1.25 P2-9: 规则从文件加载（与 cfgFile 同目录，零 IPC）
                 java.io.File rulesFile = (cfgFile != null && cfgFile.getParentFile() != null)
                         ? new java.io.File(cfgFile.getParentFile(), "spyprobe_rules.json") : null;

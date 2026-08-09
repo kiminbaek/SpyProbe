@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- v1.30: FileProvider 共享日志 txt 文件用 -->
+<!-- v1.37 P0-4: 更新系统下载的 APK 存 filesDir/update.apk，需暴露给系统安装器 -->
 <paths>
     <external-files-path name="logs" path="logs/" />
     <cache-path name="cache" path="." />
+    <files-path name="files" path="." />
 </paths>

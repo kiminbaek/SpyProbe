@@ -29,6 +29,12 @@ class MainActivity : ComponentActivity() {
         } catch (t: Throwable) {
             com.dustinky.spyprobe.util.UiLog.log("Home init Config FAIL: $t")
         }
+        // v1.37 P0-5: 生成/加载推送鉴权 token（server 校验 push_logs 用；目标进程经远程偏好读取）
+        try {
+            com.dustinky.spyprobe.TokenStore.ensureToken(applicationContext)
+        } catch (t: Throwable) {
+            com.dustinky.spyprobe.util.UiLog.log("Home init TokenStore FAIL: $t")
+        }
         // ③ 数据面 server（目标进程日志推送 / 配置拉取的接收端）
         try {
             com.dustinky.spyprobe.SpyHomeServer.get().start()

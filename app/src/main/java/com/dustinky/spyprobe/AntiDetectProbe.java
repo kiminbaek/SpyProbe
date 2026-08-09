@@ -72,6 +72,11 @@ public class AntiDetectProbe {
 
     /** 安装反检测 hook（线程安全，防重复装） */
     public synchronized void install() {
+        // v1.37 P0-1: 惰性安装——antiRoot/antiXposed 都关闭时完全不装反检测 hook
+        if (!Config.get().antiRoot && !Config.get().antiXposed) {
+            DebugLog.get().log("AntiDetect", "install() skipped: antiRoot/antiXposed both false");
+            return;
+        }
         if (installed) return;
         installed = true;
         try {

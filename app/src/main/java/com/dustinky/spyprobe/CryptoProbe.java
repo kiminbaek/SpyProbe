@@ -54,6 +54,12 @@ public class CryptoProbe {
     private static final int MAX_CAPTURE = 1024 * 1024; // 1MB 上限防刷屏
 
     public void install(String phase) {
+        // v1.37 P0-1: 惰性安装——开关关闭时完全不装 hook（借鉴 Guise activeHookFeatures，
+        //   用户关闭的探测项在目标进程零 hook 存在，减少崩溃面 + 更隐蔽 + 启动更快）
+        if (!Config.get().cryptoCapture) {
+            DebugLog.get().log("Crypto", "install(" + phase + ") skipped: Config.get().cryptoCapture == false");
+            return;
+        }
         try {
             // getInstance(String) / getInstance(String, String) —— 记算法
             try {

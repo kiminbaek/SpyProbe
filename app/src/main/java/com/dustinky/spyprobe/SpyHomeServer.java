@@ -84,6 +84,8 @@ public class SpyHomeServer {
             String path = parts[1];
 
             int contentLength = 0;
+            // v1.37 P0-5: 请求鉴权 token（目标进程推送带 X-Spy-Token）
+            String reqToken = "";
             String line;
             while ((line = r.readLine()) != null && !line.isEmpty()) {
                 String lower = line.toLowerCase();
@@ -92,6 +94,8 @@ public class SpyHomeServer {
                         contentLength = Integer.parseInt(line.substring(15).trim());
                     } catch (NumberFormatException e) { contentLength = 0; }
                     if (contentLength > MAX_BODY) contentLength = MAX_BODY;
+                } else if (lower.startsWith("x-spy-token:")) {
+                    reqToken = line.substring(line.indexOf(':') + 1).trim();
                 }
             }
             String body = "";
@@ -106,7 +110,30 @@ public class SpyHomeServer {
                 body = new String(buf, 0, n);
             }
 
-            String resp = route(method, path, body);
+            // v1.37 P0-5: 写操作鉴权——主进程已生成 token 时，push_logs/config POST 必须带匹配 token
+            String resp;
+            if (!TokenStore.homeToken().isEmpty()
+                    && ("POST".equals(method) || path.startsWith("/api/push_logs"))) {
+                String expected = TokenStore.homeToken();
+                if (!expected.equals(reqToken)) {
+                    // 401：token 缺失/不匹配（防其他 App 伪造日志/配置）
+                    resp = "{\"ok\":false,\"err\":\"unauthorized\"}";
+                    try (Socket s2 = sock) {
+                        java.io.OutputStream o2 = s2.getOutputStream();
+                        byte[] d = resp.getBytes(StandardCharsets.UTF_8);
+                        StringBuilder h = new StringBuilder();
+                        h.append("HTTP/1.1 401 Unauthorized\r\n");
+                        h.append("Content-Type: application/json; charset=utf-8\r\n");
+                        h.append("Content-Length: ").append(d.length).append("\r\n");
+                        h.append("Connection: close\r\n\r\n");
+                        o2.write(h.toString().getBytes(StandardCharsets.UTF_8));
+                        o2.write(d);
+                        o2.flush();
+                    } catch (Throwable t2) { }
+                    return;
+                }
+            }
+            resp = route(method, path, body);
             DebugLog.get().log("Home", method + " " + path + " -> " + resp.length() + "B");
             byte[] data = resp.getBytes(StandardCharsets.UTF_8);
             StringBuilder head = new StringBuilder();

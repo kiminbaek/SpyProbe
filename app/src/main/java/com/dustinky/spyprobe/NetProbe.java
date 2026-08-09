@@ -39,19 +39,23 @@ public class NetProbe {
         this.appCl = appCl;
     }
 
-    /** 安装全部网络 hook */
+    /** 安装全部网络 hook
+     *  v1.37 P0-1: 惰性安装（借鉴 Guise activeHookFeatures）——按 Config 开关只装用户启用的项，
+     *   关闭的探测项在目标进程零 hook 存在（减少崩溃面 + 更隐蔽 + 启动更快）。
+     *   注意：early 阶段 Config 尚未从主进程拉取，走默认值（全开）；late 阶段（配置加载后）
+     *   若某项被用户关闭，这里跳过不装。 */
     public void install(String phase) {
         DebugLog.get().log("Net", "install(" + phase + ") 开始");
-        installSslBypass(phase);
-        installOkHttpCapture(phase);
-        installUrlCapture(phase);
-        installDnsCapture(phase);
-        installSocketCapture(phase);
-        installWebViewCapture(phase);
+        if (Config.get().sslBypass) installSslBypass(phase);
+        if (Config.get().okhttpCapture) installOkHttpCapture(phase);
+        if (Config.get().urlCapture) installUrlCapture(phase);
+        if (Config.get().dnsCapture) installDnsCapture(phase);
+        if (Config.get().tcpCapture) installSocketCapture(phase);
+        if (Config.get().webViewCapture) installWebViewCapture(phase);
         // v1.9: TLS 明文抓包 + 万能连接点 + Cronet
-        installTlsCapture(phase);
-        installConnectCapture(phase);
-        installCronetCapture(phase);
+        if (Config.get().tlsCapture) installTlsCapture(phase);
+        if (Config.get().connectCapture) installConnectCapture(phase);
+        if (Config.get().cronetCapture) installCronetCapture(phase);
         DebugLog.get().log("Net", "install(" + phase + ") 完成");
     }
 

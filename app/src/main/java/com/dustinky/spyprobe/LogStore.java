@@ -58,9 +58,13 @@ public class LogStore {
     // v1.33: 会话标识——每次目标进程启动生成，随推送带给主进程；
     //   主进程看到 session 变化 → LogPersister.startSession() → 新会话文件（按次数记，不按天混）
     private final String sessionId = java.util.UUID.randomUUID().toString();
+    // v1.37 P0-5: 推送鉴权 token（目标进程从模块远程偏好取得，flushPush 带 X-Spy-Token）
+    private volatile String pushToken = "";
 
-    public void enablePushHome() {
+    /** v1.37 P0-5: 目标进程启动时调用（token 从 TokenStore.remoteToken 取）；老主进程无 token 时传 "" 不校验 */
+    public void enablePushHome(String token) {
         if (pushHome) return;
+        this.pushToken = token == null ? "" : token;
         pushHome = true;
         Thread t = new Thread(this::pushLoop, "SpyProbe-PushHome");
         t.setDaemon(true);
@@ -107,12 +111,16 @@ public class LogStore {
             sock.setTcpNoDelay(true);
             sock.connect(new java.net.InetSocketAddress("127.0.0.1", 9900), 500);
             // 手写最小 HTTP POST（Content-Length 固定，无 chunked）
+            // v1.37 P0-5: 带 X-Spy-Token 鉴权（目标进程从模块远程偏好取得；主进程校验）
             StringBuilder head = new StringBuilder();
             head.append("POST /api/push_logs HTTP/1.1\r\n")
                 .append("Host: 127.0.0.1:9900\r\n")
                 .append("Content-Type: application/json; charset=utf-8\r\n")
-                .append("Content-Length: ").append(data.length).append("\r\n")
-                .append("Connection: close\r\n\r\n");
+                .append("Content-Length: ").append(data.length).append("\r\n");
+            if (!pushToken.isEmpty()) {
+                head.append("X-Spy-Token: ").append(pushToken).append("\r\n");
+            }
+            head.append("Connection: close\r\n\r\n");
             java.io.OutputStream os = sock.getOutputStream();
             os.write(head.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
             os.write(data);

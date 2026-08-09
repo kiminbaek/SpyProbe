@@ -67,6 +67,12 @@ public class EnvProbe {
     }
 
     public void install(String phase) {
+        // v1.37 P0-1: 惰性安装——开关关闭时完全不装 hook（借鉴 Guise activeHookFeatures，
+        //   用户关闭的探测项在目标进程零 hook 存在，减少崩溃面 + 更隐蔽 + 启动更快）
+        if (!Config.get().envCapture) {
+            DebugLog.get().log("Env", "install(" + phase + ") skipped: Config.get().envCapture == false");
+            return;
+        }
         installFileExists(phase);
         installRuntimeExec(phase);
         installSystemProperties(phase);

@@ -34,6 +34,12 @@ public class ClassLoadProbe {
     }
 
     public synchronized void install(String phase) {
+        // v1.37 P0-1: 惰性安装——开关关闭时完全不装 hook（借鉴 Guise activeHookFeatures，
+        //   用户关闭的探测项在目标进程零 hook 存在，减少崩溃面 + 更隐蔽 + 启动更快）
+        if (!Config.get().classCapture) {
+            DebugLog.get().log("ClassLoad", "install(" + phase + ") skipped: Config.get().classCapture == false");
+            return;
+        }
         // hook 基类 ClassLoader.loadClass(String)（子类会继承，hook 基类一次覆盖所有 loader）
         // v1.19 P2-4: 1 参重载是 2 参的包装（loadClass(name) 内部调 loadClass(name,false)），
         //   两个 hook 都 record 会每条刷 2 次 —— 1 参只 proceed，统一由 2 参记录
