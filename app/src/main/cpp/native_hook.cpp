@@ -3,6 +3,8 @@
 #include <cstring>
 #include <android/log.h>
 #include <dlfcn.h>
+#include <elf.h>
+#include <link.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -615,6 +617,111 @@ static long now_ms() {
     return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+// GNU hash 函数（与 Android linker 一致）
+static uint32_t gnu_hash_name(const char* name) {
+    uint32_t h = 5381;
+    for (const unsigned char* p = (const unsigned char*)name; *p; p++) h = h * 33 + *p;
+    return h;
+}
+
+// v1.45.5 P0: 用 dl_iterate_phdr + 手动 ELF 动态符号表解析找 SSL_get_fd。
+//   dlopen(zip路径, RTLD_NOLOAD) 对 base.apk!/lib/... 格式不识别（v1.45.4 败因），
+//   这里直接从已加载 so 的内存基址解析 .dynsym，完全绕开 dlopen/文件系统。
+static void* find_ssl_get_fd_via_phdr(int* checked_out) {
+    void* found = nullptr;
+    int checked = 0;
+    dl_iterate_phdr([](struct dl_phdr_info* info, size_t size, void* data) -> int {
+        void** out = (void**)data;
+        uintptr_t base = (uintptr_t)info->dlpi_addr;
+        if (base == 0) return 0;
+        const char* name = info->dlpi_name;
+        if (name == nullptr || name[0] == '\0') return 0;
+        if (strstr(name, "libnative_hook") != nullptr) return 0;
+        if (strstr(name, "libc.so") != nullptr || strstr(name, "libdl.so") != nullptr) return 0;
+
+        ElfW(Ehdr)* ehdr = (ElfW(Ehdr)*)base;
+        if (ehdr == nullptr ||
+            ehdr->e_ident[EI_MAG0] != ELFMAG0 || ehdr->e_ident[EI_MAG1] != ELFMAG1 ||
+            ehdr->e_ident[EI_MAG2] != ELFMAG2 || ehdr->e_ident[EI_MAG3] != ELFMAG3) return 0;
+
+        ElfW(Phdr)* phdrs = (ElfW(Phdr)*)(base + ehdr->e_phoff);
+        const char* dynstr = nullptr;
+        ElfW(Sym)* dynsym = nullptr;
+        uint32_t hash_nchain = 0;
+        const uint32_t* gnu_gh = nullptr;
+        uint32_t gnu_symoffset = 0;
+        for (int i = 0; i < ehdr->e_phnum; i++) {
+            if (phdrs[i].p_type != PT_DYNAMIC) continue;
+            ElfW(Dyn)* dyn = (ElfW(Dyn)*)(base + phdrs[i].p_vaddr);
+            for (; dyn->d_tag != DT_NULL; dyn++) {
+                switch (dyn->d_tag) {
+                    case DT_STRTAB: dynstr = (const char*)(base + dyn->d_un.d_ptr); break;
+                    case DT_SYMTAB: dynsym = (ElfW(Sym)*)(base + dyn->d_un.d_ptr); break;
+                    case DT_HASH: {
+                        const uint32_t* h = (const uint32_t*)(base + dyn->d_un.d_ptr);
+                        hash_nchain = h[1]; // nchain
+                        break;
+                    }
+                    case DT_GNU_HASH: {
+                        gnu_gh = (const uint32_t*)(base + dyn->d_un.d_ptr);
+                        gnu_symoffset = gnu_gh[1];
+                        break;
+                    }
+                }
+            }
+        }
+        if (dynstr == nullptr || dynsym == nullptr) return 0;
+
+        // 1) 优先 GNU hash 精确查（快）
+        if (gnu_gh != nullptr) {
+            uint32_t nbucket = gnu_gh[0];
+            uint32_t bloom_size = gnu_gh[2];
+            uint32_t bloom_shift = gnu_gh[3];
+            const uint64_t* bloom = (const uint64_t*)(gnu_gh + 4);
+            const uint32_t* buckets = (const uint32_t*)(bloom + bloom_size);
+            uint32_t h = gnu_hash_name("SSL_get_fd");
+            uint64_t mask = (1ull << (h & 63)) | (1ull << ((h >> bloom_shift) & 63));
+            if ((bloom[(h / 64) % bloom_size] & mask) == mask) {
+                uint32_t idx = buckets[h % nbucket];
+                if (idx >= gnu_symoffset) {
+                    const uint32_t* chains = buckets + nbucket;
+                    while (true) {
+                        ElfW(Sym)* s = &dynsym[idx];
+                        const char* sn = dynstr + s->st_name;
+                        if ((h | 1) == (gnu_hash_name(sn) | 1) && strcmp(sn, "SSL_get_fd") == 0) {
+                            *out = (void*)(base + s->st_value);
+                            return 1;
+                        }
+                        uint32_t chain = chains[idx - gnu_symoffset];
+                        if (chain & 1) break;
+                        idx++;
+                    }
+                }
+            }
+        }
+        // 2) 兜底 DT_HASH nchain 遍历
+        if (hash_nchain > 0) {
+            for (uint32_t i = 0; i < hash_nchain; i++) {
+                ElfW(Sym)* s = &dynsym[i];
+                if (s->st_name == 0 || s->st_value == 0) continue;
+                if (strcmp(dynstr + s->st_name, "SSL_get_fd") == 0) {
+                    *out = (void*)(base + s->st_value);
+                    return 1;
+                }
+            }
+        }
+        return 0;
+    }, &found);
+    // 统计检查过的 so 数：单独再跑一遍（轻量）——直接用 phdr 遍历计数
+    dl_iterate_phdr([](struct dl_phdr_info* info, size_t size, void* data) -> int {
+        int* cnt = (int*)data;
+        if (info->dlpi_addr != 0 && info->dlpi_name != nullptr && info->dlpi_name[0] != '\0') (*cnt)++;
+        return 0;
+    }, &checked);
+    if (checked_out) *checked_out = checked;
+    return found;
+}
+
 static void resolve_ssl_get_fd_scan() {
     if (real_SSL_get_fd != nullptr) return;
     // 防抖：2 秒内最多扫一次，避免 SSL 高频回调拖慢
@@ -624,35 +731,47 @@ static void resolve_ssl_get_fd_scan() {
     if (now - last < 2000) return;
     g_last_scan_ms.store(now, std::memory_order_relaxed);
 
-    FILE* fp = fopen("/proc/self/maps", "r");
-    if (fp == nullptr) return;
-    char line[1024];
-    char path[512];
-    int scanned = 0;
-    while (fgets(line, sizeof(line), fp) != nullptr) {
-        if (sscanf(line, "%*[0-9a-fA-F]-%*[0-9a-fA-F] %*s %*s %*s %*s %511s", path) != 1) continue;
-        if (strstr(path, ".so") == nullptr) continue;
-        // 跳过明显无关与自己
-        if (strstr(path, "libnative_hook") != nullptr) continue;
-        if (strstr(path, "libc.so") != nullptr || strstr(path, "libdl.so") != nullptr) continue;
-        scanned++;
-        void* h = dlopen(path, RTLD_NOW | RTLD_NOLOAD);
-        if (h == nullptr) continue;
-        void* sym = dlsym(h, "SSL_get_fd");
-        if (sym != nullptr) {
-            real_SSL_get_fd = (type_SSL_get_fd)sym;
-            char buf[256];
-            snprintf(buf, sizeof(buf), "XH pcap: SSL_get_fd resolved via scan(%d) %s", scanned, path);
-            native_log(buf);
-            dlclose(h);
-            fclose(fp);
-            return;
-        }
-        dlclose(h);
+    // 1) dl_iterate_phdr + ELF 解析（v1.45.5 主路径，绕开 dlopen zip 路径问题）
+    int checked = 0;
+    void* sym = find_ssl_get_fd_via_phdr(&checked);
+    if (sym != nullptr) {
+        real_SSL_get_fd = (type_SSL_get_fd)sym;
+        char buf[256];
+        snprintf(buf, sizeof(buf), "XH pcap: SSL_get_fd resolved via phdr(%d so)", checked);
+        native_log(buf);
+        return;
     }
-    fclose(fp);
+
+    // 2) 兜底：/proc/self/maps + dlopen（文件系统路径场景）
+    FILE* fp = fopen("/proc/self/maps", "r");
+    if (fp != nullptr) {
+        char line[1024];
+        char path[512];
+        int scanned = 0;
+        while (fgets(line, sizeof(line), fp) != nullptr) {
+            if (sscanf(line, "%*[0-9a-fA-F]-%*[0-9a-fA-F] %*s %*s %*s %*s %511s", path) != 1) continue;
+            if (strstr(path, ".so") == nullptr) continue;
+            if (strstr(path, "libnative_hook") != nullptr) continue;
+            if (strstr(path, "libc.so") != nullptr || strstr(path, "libdl.so") != nullptr) continue;
+            scanned++;
+            void* h = dlopen(path, RTLD_NOW | RTLD_NOLOAD);
+            if (h == nullptr) continue;
+            void* s2 = dlsym(h, "SSL_get_fd");
+            if (s2 != nullptr) {
+                real_SSL_get_fd = (type_SSL_get_fd)s2;
+                char buf[256];
+                snprintf(buf, sizeof(buf), "XH pcap: SSL_get_fd resolved via scan(%d) %s", scanned, path);
+                native_log(buf);
+                dlclose(h);
+                fclose(fp);
+                return;
+            }
+            dlclose(h);
+        }
+        fclose(fp);
+    }
     char buf[128];
-    snprintf(buf, sizeof(buf), "XH pcap: SSL_get_fd scan FAIL (%d so)", scanned);
+    snprintf(buf, sizeof(buf), "XH pcap: SSL_get_fd scan FAIL (phdr %d so)", checked);
     native_log(buf);
 }
 
