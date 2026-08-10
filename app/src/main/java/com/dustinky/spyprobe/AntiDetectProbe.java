@@ -77,13 +77,70 @@ public class AntiDetectProbe {
             "io.github.libxposed.service",
             "org.lsposed.lspd"));
 
+    // v1.44 (HMA Hide-My-Applist 借鉴，自定义版权"注明出处可摘取"):
+    // 隐藏应用列表——目标 App 常用 pm.getInstalledPackages() 扫描已装模块（SpyProbe/LSPosed/Magisk）
+    // 检测 Xposed 环境。HMA 在系统服务层 hook PMS filterAppAccessLPr/AppsFilter.shouldFilterApplication，
+    // SpyProbe 作为目标进程 hook 模块，直接在 ApplicationPackageManager 层过滤更简单且同效。
+    // 系统包（android/com.android.*）永不隐藏，防误伤系统组件。
+    private static final Set<String> HIDE_PACKAGES = new HashSet<String>(Arrays.asList(
+            "com.dustinky.spyprobe",                        // 自身
+            "org.lsposed.lspd", "org.lsposed.manager",      // LSPosed
+            "com.topjohnwu.magisk", "io.github.vvb2060.magisk", // Magisk
+            "de.robv.android.xposed.installer",             // Xposed Installer
+            "eu.chainfire.supersu", "com.koushikdutta.superuser", // SuperSU / Superuser
+            "me.weishu.kernelsu",                           // KernelSU
+            "com.android.vending"));                        // Google Play（部分检测看商店数量）
+
+    /** v1.44: 判断包名是否应隐藏（系统包永不隐藏） */
+    private static boolean isHiddenPkg(String pkg) {
+        if (pkg == null) return false;
+        if (pkg.equals("android") || pkg.startsWith("android.") || pkg.startsWith("com.android.")) return false;
+        return HIDE_PACKAGES.contains(pkg);
+    }
+
+    /** v1.44: 应用列表过滤通用逻辑（保持"少几个应用"自然语义，不返回 null/空） */
+    private static <T> java.util.List<T> filterHiddenPkgs(java.util.List<T> list, String logTag) {
+        java.util.List<T> kept = new java.util.ArrayList<T>();
+        for (T item : list) {
+            String pkg = pkgNameOf(item);
+            if (pkg != null && isHiddenPkg(pkg)) {
+                LogStore.get().log(TAG, "[anti-applist] " + logTag + " 过滤 " + pkg);
+            } else {
+                kept.add(item);
+            }
+        }
+        return kept;
+    }
+
+    /** v1.44: 从 PackageInfo/ApplicationInfo/ResolveInfo 取包名（反射，避免硬依赖具体类型） */
+    private static String pkgNameOf(Object item) {
+        if (item == null) return null;
+        try {
+            if (item instanceof android.content.pm.PackageInfo) {
+                return ((android.content.pm.PackageInfo) item).packageName;
+            }
+            if (item instanceof android.content.pm.ApplicationInfo) {
+                return ((android.content.pm.ApplicationInfo) item).packageName;
+            }
+            if (item instanceof android.content.pm.ResolveInfo) {
+                android.content.pm.ResolveInfo ri = (android.content.pm.ResolveInfo) item;
+                if (ri.activityInfo != null) return ri.activityInfo.packageName;
+                if (ri.serviceInfo != null) return ri.serviceInfo.packageName;
+                if (ri.providerInfo != null) return ri.providerInfo.packageName;
+                return ri.resolvePackageName;
+            }
+        } catch (Throwable t) { }
+        return null;
+    }
+
     private volatile boolean installed = false;
 
     /** 安装反检测 hook（线程安全，防重复装） */
     public synchronized void install() {
         // v1.37 P0-1: 惰性安装——antiRoot/antiXposed 都关闭时完全不装反检测 hook
-        if (!Config.get().antiRoot && !Config.get().antiXposed) {
-            DebugLog.get().log("AntiDetect", "install() skipped: antiRoot/antiXposed both false");
+        // v1.44: 加 antiApplist 条件（三开关全关才跳过）
+        if (!Config.get().antiRoot && !Config.get().antiXposed && !Config.get().antiApplist) {
+            DebugLog.get().log("AntiDetect", "install() skipped: antiRoot/antiXposed/antiApplist all false");
             return;
         }
         if (installed) return;
@@ -388,8 +445,80 @@ public class AntiDetectProbe {
                         });
             } catch (Throwable t) { }
 
+            // ===== 隐藏应用列表（v1.44 HMA 借鉴）=====
+            // 目标 App 最常见的 Xposed/root 检测：pm.getInstalledPackages() 扫已装应用，看有没有
+            // SpyProbe/LSPosed/Magisk。hook ApplicationPackageManager（PackageManager 的实现类，
+            // 目标进程实际持有的对象）过滤返回列表；getPackageInfo 直接抛"未安装"。
+            // 注意：hook 实现类方法而非接口方法（libxposed 无法 hook 无实现体的接口方法）。
+            try {
+                Class<?> apmCls = Class.forName("android.app.ApplicationPackageManager", true, appCl);
+                // getInstalledPackages(int) -> List<PackageInfo>
+                try {
+                    module.hook(apmCls.getMethod("getInstalledPackages", int.class))
+                            .intercept((chain) -> {
+                                if (!Config.get().antiApplist) return chain.proceed();
+                                Object r = chain.proceed();
+                                if (r instanceof List) {
+                                    @SuppressWarnings("unchecked")
+                                    List<Object> list = (List<Object>) r;
+                                    return filterHiddenPkgs(list, "getInstalledPackages");
+                                }
+                                return r;
+                            });
+                } catch (Throwable t) { }
+                // getInstalledApplications(int) -> List<ApplicationInfo>
+                try {
+                    module.hook(apmCls.getMethod("getInstalledApplications", int.class))
+                            .intercept((chain) -> {
+                                if (!Config.get().antiApplist) return chain.proceed();
+                                Object r = chain.proceed();
+                                if (r instanceof List) {
+                                    @SuppressWarnings("unchecked")
+                                    List<Object> list = (List<Object>) r;
+                                    return filterHiddenPkgs(list, "getInstalledApplications");
+                                }
+                                return r;
+                            });
+                } catch (Throwable t) { }
+                // queryIntentActivities(Intent, int) -> List<ResolveInfo>
+                try {
+                    module.hook(apmCls.getMethod("queryIntentActivities",
+                                    android.content.Intent.class, int.class))
+                            .intercept((chain) -> {
+                                if (!Config.get().antiApplist) return chain.proceed();
+                                Object r = chain.proceed();
+                                if (r instanceof List) {
+                                    @SuppressWarnings("unchecked")
+                                    List<Object> list = (List<Object>) r;
+                                    return filterHiddenPkgs(list, "queryIntentActivities");
+                                }
+                                return r;
+                            });
+                } catch (Throwable t) { }
+                // getPackageInfo(String, int) -> 隐藏包抛 NameNotFoundException（"未安装"语义）
+                try {
+                    module.hook(apmCls.getMethod("getPackageInfo", String.class, int.class))
+                            .intercept((chain) -> {
+                                if (!Config.get().antiApplist) return chain.proceed();
+                                List<Object> args = chain.getArgs();
+                                String pkg = args.get(0) == null ? "" : args.get(0).toString();
+                                if (isHiddenPkg(pkg)) {
+                                    LogStore.get().log(TAG, "[anti-applist] getPackageInfo(" + pkg
+                                            + ") -> NameNotFoundException");
+                                    throw new android.content.pm.PackageManager.NameNotFoundException(pkg);
+                                }
+                                return chain.proceed();
+                            });
+                } catch (Throwable t) { }
+                LogStore.get().log(TAG, "[anti-applist] hooked getInstalledPackages/getInstalledApplications/"
+                        + "queryIntentActivities/getPackageInfo (HMA 借鉴, v1.44)");
+            } catch (Throwable t) {
+                LogStore.get().log(TAG, "[anti-applist] hook error: " + t);
+            }
+
             LogStore.get().log(TAG, "[anti] AntiDetectProbe installed (antiRoot=" + Config.get().antiRoot
-                    + " antiXposed=" + Config.get().antiXposed + ")");
+                    + " antiXposed=" + Config.get().antiXposed
+                    + " antiApplist=" + Config.get().antiApplist + ")");
         } catch (Throwable t) {
             LogStore.get().log(TAG, "[anti] install error: " + t);
             installed = false;

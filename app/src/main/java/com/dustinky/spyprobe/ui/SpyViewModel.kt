@@ -142,6 +142,7 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
         "cronet" to false,
         "antiRoot" to false,
         "antiXposed" to false,
+        "antiApplist" to false,
         "native" to true,
         "autoProbe" to false,
         "autoProbeFilter" to "",

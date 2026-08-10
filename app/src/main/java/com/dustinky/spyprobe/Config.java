@@ -42,6 +42,10 @@ public class Config {
     // v1.13: 反检测开关（隐藏 root/Xposed 痕迹，防目标 App 检测；fckvip hook_hide_root 借鉴）
     public volatile boolean antiRoot = false;      // 隐藏 root：File.exists(su)/Runtime.exec/SystemProperties 过滤
     public volatile boolean antiXposed = false;   // 隐藏 Xposed：loadClass/StackTrace/DexPathList/Modifier.isNative
+    // v1.44 (HMA 借鉴): 隐藏应用列表——PackageManager.getInstalledPackages/getInstalledApplications/
+    //   queryIntentActivities 过滤 spyprobe 自身 + LSPosed + Magisk 等（防目标 App 扫已安装模块），
+    //   getPackageInfo 对隐藏包抛 NameNotFoundException（"未安装"语义）
+    public volatile boolean antiApplist = false;
     // v1.15 P0-4: native 层抓包开关（libc+SSL+HTTP2；默认开，高频刷屏时可关）
     public volatile boolean nativeCapture = true;
     // v1.19: 全自动探测（类加载时自动 hook 该类全部方法，免手动扫描）
@@ -528,6 +532,7 @@ public class Config {
             o.put("cronet", cronetCapture);
             o.put("antiRoot", antiRoot);
             o.put("antiXposed", antiXposed);
+            o.put("antiApplist", antiApplist);
             o.put("native", nativeCapture);
             o.put("autoProbe", autoProbe);
             o.put("autoProbeFilter", autoProbeFilter == null ? "" : autoProbeFilter);
@@ -571,6 +576,7 @@ public class Config {
         cronetCapture = o.optBoolean("cronet", cronetCapture);
         antiRoot = o.optBoolean("antiRoot", antiRoot);
         antiXposed = o.optBoolean("antiXposed", antiXposed);
+        antiApplist = o.optBoolean("antiApplist", antiApplist);
         nativeCapture = o.optBoolean("native", nativeCapture);
         autoProbe = o.optBoolean("autoProbe", autoProbe);
         autoProbeFilter = o.optString("autoProbeFilter", autoProbeFilter);

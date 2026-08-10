@@ -412,9 +412,10 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
         // ===== 反检测 =====
         // v1.25 P0-1: 删除 8 个假开关（antiDetect/antiEmulator/antiFrida/antiDebug/fakeDevice/fakeLocation/
         //   pinBypass/rootCloak——后端无对应字段，下发无效且误导用户）；保留真实字段 antiRoot/antiXposed
+        // v1.44: 新增 antiApplist（HMA 借鉴）——隐藏应用列表（PackageManager 过滤 spyprobe/LSPosed/Magisk）
         SettingsGroup(
             title = "反检测",
-            subtitle = "隐藏 root / Xposed",
+            subtitle = "隐藏 root / Xposed / 应用列表",
             expanded = expanded.contains("anti"),
             onToggle = { toggle("anti") }
         ) {
@@ -425,6 +426,10 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             BoolSetting(effective, "antiXposed", "隐藏 Xposed", false,
                 inherited = inh("antiXposed"),
                 onSet = { setCfg("antiXposed", it) })
+            Divider()
+            BoolSetting(effective, "antiApplist", "隐藏应用列表", false,
+                inherited = inh("antiApplist"),
+                onSet = { setCfg("antiApplist", it) })
         }
 
         Spacer(Modifier.height(8.dp))
