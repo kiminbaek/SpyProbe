@@ -837,10 +837,19 @@ static void resolve_ssl_get_fd_scan(void* orig_fn) {
     native_log(buf);
 }
 
-// v1.45.3 路径保留：dladdr 反查（个别机型能成功），失败立即转 scan（带 orig 同库限定）
+// v1.46.0 P0 (闪退根治): SSL_get_fd 解析只尝试一次，失败永久放弃。
+//   真机铁证：目标 App 走 Conscrypt（Android 系统 TLS），SSL 用内存 BIO，
+//   SSL_get_fd 不在任何 so 的动态符号表（静态链接/隐藏符号）——phdr 485 so + maps + dlopen
+//   全库扫描必然失败，且每次遍历 485 个 so 拿 linker 锁、做 ELF 解析，播放视频时 SSL
+//   高频回调每 2 秒触发一次重扫 → 目标进程崩溃（02:33:46 scan FAIL -> 02:33:47 进程死）。
+//   v1.45.6 的 SSL_set_fd 映射 hook 在 Conscrypt 场景同样拿不到（从不调用 SSL_set_fd）。
+//   正确方向：pcap 无四元组时用占位地址照常导出明文（见 PcapWriter.feed v1.46.0）。
 static void resolve_ssl_get_fd_via_dladdr(void* sym) {
+    static std::atomic<bool> g_ssl_fd_resolve_tried{false};
+    if (g_ssl_fd_resolve_tried.load(std::memory_order_relaxed)) return;
+    g_ssl_fd_resolve_tried.store(true, std::memory_order_relaxed);
     if (real_SSL_get_fd != nullptr || sym == nullptr) return;
-    // v1.45.6: 先试 phdr 同库解析（orig=sym 所属 so），dladdr 在此前版本被证明在 Android 上报错
+    // 仅保留 dladdr 轻量一次尝试（个别机型动态导出场景能成功，无副作用）
     Dl_info info;
     if (dladdr(sym, &info) != 0 && info.dli_fname != nullptr) {
         void* h = dlopen(info.dli_fname, RTLD_NOW | RTLD_NOLOAD);
@@ -856,7 +865,7 @@ static void resolve_ssl_get_fd_via_dladdr(void* sym) {
             dlclose(h);
         }
     }
-    resolve_ssl_get_fd_scan(sym);
+    native_log("XH pcap: SSL_get_fd resolve failed (skip scan - Conscrypt static sym, avoid crash)");
 }
 
 // ================= v1.38 P0-2/P0-3: BoringSSL verify 绕过 + keylog =================

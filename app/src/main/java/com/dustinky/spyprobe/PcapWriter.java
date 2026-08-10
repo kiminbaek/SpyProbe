@@ -108,8 +108,17 @@ public class PcapWriter {
                 s = new Session();
                 parseEndpoint(socketInfo, s);
                 if (s.srcIp.isEmpty() || s.dstIp.isEmpty()) {
-                    try { DebugLog.get().logNoMirror("PcapFeed", "NOEP id=" + connId + " info=" + socketInfo); } catch (Throwable ig) { }
-                    return; // 无法定位（IPv6/无 info）跳过
+                    // v1.46.0 P0 (pcap 根治): 不再跳过——Conscrypt 内存 BIO 场景 SSL 无 fd → socketInfo=null
+                    //   （SSL_get_fd 符号不存在 + SSL_set_fd 从不调用，见 native_hook.cpp v1.46.0）。
+                    //   用占位地址 0.0.0.0 照常建会话：SSL 明文照样进 pcap，Wireshark 打开可见内容
+                    //   （地址为 0.0.0.0，但 srcPort=connId 低位可区分不同 SSL 会话，方向/数据完整）。
+                    s.srcIp = "0.0.0.0";
+                    s.dstIp = "0.0.0.0";
+                    int ph = (int) (connId & 0xffff);
+                    if (ph == 0) ph = 1;
+                    s.srcPort = ph;   // 会话标识（不同 SSL* 不同端口）
+                    s.dstPort = 443;  // TLS 默认目标端口（仅占位，无实际地址意义）
+                    try { DebugLog.get().logNoMirror("PcapFeed", "NOEP-FALLBACK id=" + connId + " info=" + socketInfo); } catch (Throwable ig) { }
                 }
                 if (!isIpv4(s.srcIp) || !isIpv4(s.dstIp)) {
                     try { DebugLog.get().logNoMirror("PcapFeed", "V6REJ id=" + connId + " src=" + s.srcIp + " dst=" + s.dstIp + " info=" + socketInfo); } catch (Throwable ig) { }

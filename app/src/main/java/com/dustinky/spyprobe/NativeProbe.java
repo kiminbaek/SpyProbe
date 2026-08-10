@@ -34,10 +34,15 @@ public class NativeProbe {
      *  否则推送体被当日志记录 → 递归爆炸（上次日志 944 条 9900 记录）。 */
     private static boolean isSelfPush(String socketInfo) {
         if (socketInfo == null) return false;
-        return socketInfo.startsWith("127.0.0.1:9900")
-                || socketInfo.startsWith("::ffff:127.0.0.1:9900")
-                || socketInfo.startsWith("[::1]:9900")
-                || socketInfo.startsWith("::1:9900");
+        // v1.46.0 P1: 原实现查字符串开头——但 socketInfo 格式是 "srcIP:srcPort->dstIP:dstPort"，
+        //   push 流量的 src 是随机端口、dst 才是 127.0.0.1:9900，开头匹配永远拦不住 → 9900 推送
+        //   流量污染 onNativeData/pcap。改为查目标端点（箭头后）是否为 9900。
+        int arrow = socketInfo.indexOf("->");
+        String dst = (arrow >= 0) ? socketInfo.substring(arrow + 2) : socketInfo;
+        return dst.startsWith("127.0.0.1:9900")
+                || dst.startsWith("::ffff:127.0.0.1:9900")
+                || dst.startsWith("[::1]:9900")
+                || dst.startsWith("::1:9900");
     }
 
     private static volatile boolean inited = false;
