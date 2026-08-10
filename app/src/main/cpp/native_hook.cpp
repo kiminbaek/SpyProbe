@@ -66,6 +66,8 @@ typedef void (*type_SSL_free)(void *ssl);
 // v1.39 P0: SSL_get_fd —— SSL 数据回调里拿底层 fd 查 socket 四元组（pcap 用）
 typedef int (*type_SSL_get_fd)(const void *ssl);
 static type_SSL_get_fd real_SSL_get_fd = nullptr;
+// v1.45.2: native_log 前置声明（callback_kotlin_chunk 在定义前使用）
+static void native_log(const char* msg);
 
 static type_send orig_send;
 static type_recv orig_recv;
@@ -284,6 +286,13 @@ bool callback_kotlin_chunk(jlong id, bool is_write, const void *buf, size_t len,
     if (is_ssl) {
         // v1.39 P0: TLS 明文数据带完整 socket 四元组（pcap 需要本地+远端地址端口）。
         //   id = ssl 指针，用 SSL_get_fd 拿底层 fd 再查 getsockname/getpeername 缓存。
+        // v1.45.2 兜底: hook_SSL_new 已延迟解析；此处若仍为 nullptr 现场 dlsym（SSL 数据回调时库必已加载）
+        if (real_SSL_get_fd == nullptr) {
+            real_SSL_get_fd = (type_SSL_get_fd)dlsym(RTLD_DEFAULT, "SSL_get_fd");
+            if (real_SSL_get_fd == nullptr) {
+                native_log("XH pcap: dlsym SSL_get_fd FAIL in callback (unexpected)");
+            }
+        }
         if (real_SSL_get_fd != nullptr) {
             int fd = real_SSL_get_fd((void*)id);
             if (fd > 0) info = get_cached_socket_info(fd);
@@ -689,6 +698,17 @@ static void hook_SSL_CTX_set_keylog_callback(void *ctx, ssl_keylog_callback_t cb
 static void* hook_SSL_new(void *ctx) {
     if (orig_ssl_new == nullptr) return nullptr;
     if (g_is_in_hook) return orig_ssl_new(ctx);
+    // v1.45.2 P0: SSL_get_fd 延迟解析——init 时 libssl.so 可能尚未加载导致 dlsym(RTLD_DEFAULT) 失败，
+    //   real_SSL_get_fd=nullptr → SSL 回调拿不到 fd → socketInfo 全 null → pcap 永远 0 数据。
+    //   SSL_new 被调用时 libssl.so 必已加载，此刻 dlsym 必成功（xhook 延迟补挂已生效）。
+    if (real_SSL_get_fd == nullptr) {
+        real_SSL_get_fd = (type_SSL_get_fd)dlsym(RTLD_DEFAULT, "SSL_get_fd");
+        if (real_SSL_get_fd == nullptr) {
+            native_log("XH pcap: dlsym SSL_get_fd FAIL in SSL_new (unexpected)");
+        } else {
+            native_log("XH pcap: dlsym SSL_get_fd OK in SSL_new (deferred)");
+        }
+    }
     ScopedHookGuard guard;
     void* ssl = orig_ssl_new(ctx);
     if (ssl != nullptr && real_SSL_get_SSL_CTX != nullptr && real_ctx_set_keylog != nullptr) {
