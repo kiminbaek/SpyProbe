@@ -27,7 +27,6 @@ public class OkHttpReplay {
 
     private static final int MAX = 50;
     private static final int MAX_URL = 200;
-    private static final int MAX_BODY_SUMMARY = 200;
 
     public static class Entry {
         public final long id;
@@ -74,24 +73,19 @@ public class OkHttpReplay {
                 Object uv = u.invoke(req);
                 if (mv != null) method = mv.toString();
                 if (uv != null) url = uv.toString();
-                // body 摘要（防 one-shot 被读坏，只取前 200 字符）
+                // body 摘要（v1.42 P1-2: 不调 buffer()——RequestBody.buffer() 会消费 one-shot body，
+                //   导致原始 POST/上传请求 body 变空/异常。只记 contentLength，不读内容）
                 try {
                     Method b = req.getClass().getMethod("body");
                     Object bodyObj = b.invoke(req);
                     if (bodyObj != null) {
-                        Method bufM = bodyObj.getClass().getMethod("buffer");
-                        Object buf = bufM.invoke(bodyObj);
-                        if (buf != null) {
-                            Method utf8 = buf.getClass().getMethod("utf8");
-                            Object s = utf8.invoke(buf);
-                            if (s != null) {
-                                String bs = s.toString();
-                                if (bs.length() > MAX_BODY_SUMMARY) {
-                                    bs = bs.substring(0, MAX_BODY_SUMMARY) + "...(" + bs.length() + "B)";
-                                }
-                                body = bs;
+                        try {
+                            Method clM = bodyObj.getClass().getMethod("contentLength");
+                            Object cl = clM.invoke(bodyObj);
+                            if (cl instanceof Long && (Long) cl > 0) {
+                                body = "[" + cl + "B body]";
                             }
-                        }
+                        } catch (Throwable t2) { /* 无 contentLength 方法（自定义 body）/ 已消费 */ }
                     }
                 } catch (Throwable t) { /* one-shot body 已消费/无 body */ }
             }

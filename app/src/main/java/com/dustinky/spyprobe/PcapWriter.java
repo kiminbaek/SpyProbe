@@ -39,7 +39,11 @@ public class PcapWriter {
 
     private volatile boolean flushThreadStarted = false;
 
-    /** v1.41 P0: 每 5s flush 全部活跃会话到主进程（长连接场景 pcap 也能落盘/导出） */
+    /** v1.41 P0: 每 5s flush 全部活跃会话到主进程（长连接场景 pcap 也能落盘/导出）
+     *  v1.42 P1-3: 去掉 !pushToken.isEmpty() 条件——token 读不到（老主进程/读失败）时
+     *   长连接 pcap 数据也必须周期推送（与 LogStore.flushPush 无 token 也推的行为一致）；
+     *   否则 pcap 只在连接关闭才推，导出就是空的。token 为空时 flushChunk 不带鉴权头，
+     *   主进程 homeToken 为空（老版本）或校验宽松时仍可接收。 */
     private synchronized void ensurePeriodicFlush() {
         if (flushThreadStarted) return;
         flushThreadStarted = true;
@@ -47,7 +51,7 @@ public class PcapWriter {
             while (true) {
                 try {
                     Thread.sleep(5000);
-                    if (Config.get().pcapCapture && !pushToken.isEmpty()) {
+                    if (Config.get().pcapCapture) {
                         flushAll();
                     }
                 } catch (Throwable ignored) {
@@ -160,28 +164,40 @@ public class PcapWriter {
             os.write(head.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
             os.write(body);
             os.flush();
+            // v1.42 P2-10: 响应读取改 BufferedReader.readLine——旧实现每轮 read 把整个 128B
+            //   缓冲 append 进 sb（含未写满残留脏字节），DebugLog 留痕字符串可能含垃圾。
+            //   HTTP 响应第一行是状态行，readLine 精确取一行即可判断 200/401。
             java.io.InputStream is = sock.getInputStream();
-            byte[] tmp = new byte[128];
+            java.io.BufferedReader br = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(is, java.nio.charset.StandardCharsets.UTF_8));
             long deadline = System.currentTimeMillis() + 1000;
-            StringBuilder sb = new StringBuilder();
-            while (System.currentTimeMillis() < deadline && is.read(tmp) != -1) {
-                sb.append(new String(tmp, java.nio.charset.StandardCharsets.UTF_8).trim());
+            String statusLine = "";
+            while (System.currentTimeMillis() < deadline) {
+                try {
+                    String line = br.readLine();
+                    if (line == null) break;
+                    if (!line.trim().isEmpty()) {
+                        statusLine = line.trim();
+                        if (statusLine.startsWith("HTTP/")) break; // 状态行
+                    }
+                } catch (Throwable t2) { break; }
             }
-            String resp = sb.toString();
+            String resp = statusLine;
             // v1.41 P0: pcap 推送失败留痕（401 等可诊断；同 push_logs 鉴权问题）
+            // v1.42 P2-14: logNoMirror——推送失败留痕不能镜像回 LogStore（否则递归推送）
             if (resp.startsWith("HTTP/1.1 401") || resp.contains("401")) {
-                try { DebugLog.get().log("PcapPush", "pcap_chunk 401 (token 不匹配/缺失) conn=" + connId); } catch (Throwable ignored) { }
+                try { DebugLog.get().logNoMirror("PcapPush", "pcap_chunk 401 (token 不匹配/缺失) conn=" + connId); } catch (Throwable ignored) { }
             } else if (resp.startsWith("HTTP/1.1 200") || resp.contains("\"ok\":true")) {
                 // ok
             } else {
-                try { DebugLog.get().log("PcapPush", "pcap_chunk resp=" + resp); } catch (Throwable ignored) { }
+                try { DebugLog.get().logNoMirror("PcapPush", "pcap_chunk resp=" + resp); } catch (Throwable ignored) { }
             }
-            try { is.close(); } catch (Throwable t2) { }
+            try { br.close(); } catch (Throwable t2) { }
             try { os.close(); } catch (Throwable t2) { }
             try { sock.close(); } catch (Throwable t2) { }
         } catch (Throwable t) {
             // 主进程不在线：静默丢弃（UI 连目标进程时可重导）；v1.41 加 DebugLog 留痕
-            try { DebugLog.get().log("PcapPush", "pcap_chunk fail: " + t.getClass().getSimpleName() + ": " + t.getMessage()); } catch (Throwable ignored) { }
+            try { DebugLog.get().logNoMirror("PcapPush", "pcap_chunk fail: " + t.getClass().getSimpleName() + ": " + t.getMessage()); } catch (Throwable ignored) { }
         }
     }
 
@@ -193,7 +209,7 @@ public class PcapWriter {
     private static byte[] buildRecord(Session s, boolean isWrite, byte[] payload) {
         int totalLen = 20 + 20 + payload.length;
         byte[] rec = new byte[16 + totalLen];
-        java.io.DataOutputStream d = new java.io.DataOutputStream(new java.io.ByteArrayOutputStream());
+        // v1.42 P2-7: 删掉死对象 DataOutputStream（每包一个，从未使用）——直接操作 byte[] 写偏移
         // 记录头：时间戳（sec/usec）
         long now = System.currentTimeMillis();
         int tsSec = (int) (now / 1000);
@@ -270,12 +286,17 @@ public class PcapWriter {
 
     private static int tcpChecksum(byte[] b, int tcpOff, int tcpLen, String srcIp, String dstIp) {
         byte[] sip = ipToBytes(srcIp), dip = ipToBytes(dstIp);
-        // 伪头：src(4) + dst(4) + 0 + proto(6) + tcpLen
+        // 伪头：src(4) + dst(4) + 0 + proto(6) + tcpLen，按 16-bit word 求和
+        // v1.42 P2-8: 修正——旧实现每个 IP 字节单独当 16bit 高字节（(sip[i]&0xff)<<8），
+        //   伪头被算错 → Wireshark 显示 bad checksum（数据可读但校验错）。
+        //   正确：每 2 字节合成一个 word；(0<<8)|proto = proto 在低字节；tcpLen 低 16 位。
         long s = 0;
-        for (int i = 0; i < 4; i++) s += (sip[i] & 0xff) << 8;
-        for (int i = 0; i < 4; i++) s += dip[i] & 0xff;
-        s += 6;                    // protocol TCP
-        s += tcpLen;               // TCP length
+        s += ((sip[0] & 0xff) << 8) | (sip[1] & 0xff);
+        s += ((sip[2] & 0xff) << 8) | (sip[3] & 0xff);
+        s += ((dip[0] & 0xff) << 8) | (dip[1] & 0xff);
+        s += ((dip[2] & 0xff) << 8) | (dip[3] & 0xff);
+        s += 6;                    // protocol TCP（低字节，高字节为 0）
+        s += tcpLen;               // TCP length（低 16 位）
         s += sum(b, tcpOff, tcpLen);
         while ((s >> 16) != 0) s = (s & 0xffff) + (s >> 16);
         return (int) (0xffff & s);

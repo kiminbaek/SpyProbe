@@ -331,80 +331,18 @@ public class SpyServer {
                     return o.toString();
                 }
                 case "/api/config": {
+                    // v1.42 P2-5: 统一走 Config.toJsonObject/applyJson（单一事实来源 32 字段）——
+                    //   旧实现手工逐字段 if/put，keystore/webViewDebug/keylog/pcap 4 个新字段漏同步。
                     if ("POST".equals(method)) {
-                        JSONObject c = new JSONObject(body);
                         Config cfg = Config.get();
-                        if (c.has("sslBypass")) cfg.sslBypass = c.getBoolean("sslBypass");
-                        if (c.has("okhttp")) cfg.okhttpCapture = c.getBoolean("okhttp");
-                        if (c.has("url")) cfg.urlCapture = c.getBoolean("url");
-                        if (c.has("dns")) cfg.dnsCapture = c.getBoolean("dns");
-                        if (c.has("tcp")) cfg.tcpCapture = c.getBoolean("tcp");
-                        if (c.has("classes")) cfg.classCapture = c.getBoolean("classes");
-                        if (c.has("classFilter")) cfg.classFilter = c.optString("classFilter", "");
-                        if (c.has("classLogAll")) cfg.classLogAll = c.getBoolean("classLogAll");
-                          if (c.has("bodyLimit")) cfg.bodyLimit = Math.max(1, Math.min(1024, c.getInt("bodyLimit"))); // v1.25 P1-2: 单位 KB（1-1024）
-                        // v1.12: 日志环形缓冲容量可配置（100-20000）
-                        if (c.has("logLimit")) cfg.logLimit = Math.max(100, Math.min(20000, c.getInt("logLimit")));
-                        if (c.has("webView")) cfg.webViewCapture = c.getBoolean("webView");
-                        if (c.has("prefs")) cfg.prefsCapture = c.getBoolean("prefs");
-                        if (c.has("sqlite")) cfg.sqliteCapture = c.getBoolean("sqlite");
-                        if (c.has("urlBuild")) cfg.urlBuildCapture = c.getBoolean("urlBuild");
-                        if (c.has("logcat")) cfg.logcatCapture = c.getBoolean("logcat");
-                        if (c.has("crypto")) cfg.cryptoCapture = c.getBoolean("crypto");
-                        if (c.has("activity")) cfg.activityCapture = c.getBoolean("activity");
-                        if (c.has("json")) cfg.jsonCapture = c.getBoolean("json");
-                        if (c.has("detailMode")) cfg.detailMode = c.getBoolean("detailMode"); // v1.6
-                        // v1.9: 环境检测 / TLS / 连接点 / Cronet 开关
-                        if (c.has("env")) cfg.envCapture = c.getBoolean("env");
-                        if (c.has("tls")) cfg.tlsCapture = c.getBoolean("tls");
-                        if (c.has("connect")) cfg.connectCapture = c.getBoolean("connect");
-                        if (c.has("cronet")) cfg.cronetCapture = c.getBoolean("cronet");
-                        // v1.13: 反检测开关（隐藏 root/Xposed，防目标 App 检测）
-                        if (c.has("antiRoot")) cfg.antiRoot = c.getBoolean("antiRoot");
-                        if (c.has("antiXposed")) cfg.antiXposed = c.getBoolean("antiXposed");
-                        // v1.15 P0-4: native 层抓包开关
-                        if (c.has("native")) cfg.nativeCapture = c.getBoolean("native");
-                        // v1.19 探测 b: 全自动探测
-                        if (c.has("autoProbe")) cfg.autoProbe = c.getBoolean("autoProbe");
-                        if (c.has("autoProbeFilter")) cfg.autoProbeFilter = c.optString("autoProbeFilter", "");
-                        // v1.22: 模块调试日志
-                        if (c.has("debug")) cfg.debugEnabled = c.getBoolean("debug");
-                        LogStore.get().log(TAG, "config updated: " + body);
-                        // v1.22: 开关持久化到目标 App data 目录文件（零 IPC）；v1.21 远程偏好实测失效已弃用
-                        Config.get().saveConfig(cfgFile);
+                        if (body != null && !body.isEmpty()) {
+                            cfg.applyJson(body);
+                            LogStore.get().log(TAG, "config updated: " + body);
+                            // v1.22: 开关持久化到目标 App data 目录文件（零 IPC）；v1.21 远程偏好实测失效已弃用
+                            cfg.saveConfig(cfgFile);
+                        }
                     }
-                    JSONObject o = new JSONObject();
-                    o.put("ok", true);
-                    o.put("sslBypass", Config.get().sslBypass);
-                    o.put("okhttp", Config.get().okhttpCapture);
-                    o.put("url", Config.get().urlCapture);
-                    o.put("dns", Config.get().dnsCapture);
-                    o.put("tcp", Config.get().tcpCapture);
-                    o.put("classes", Config.get().classCapture);
-                    o.put("classFilter", Config.get().classFilter);
-                    o.put("classLogAll", Config.get().classLogAll);
-                    o.put("bodyLimit", Config.get().bodyLimit);
-                    o.put("logLimit", Config.get().logLimit); // v1.12
-                    o.put("webView", Config.get().webViewCapture);
-                    o.put("prefs", Config.get().prefsCapture);
-                    o.put("sqlite", Config.get().sqliteCapture);
-                    o.put("urlBuild", Config.get().urlBuildCapture);
-                    o.put("logcat", Config.get().logcatCapture);
-                    o.put("crypto", Config.get().cryptoCapture);
-                    o.put("activity", Config.get().activityCapture);
-                    o.put("json", Config.get().jsonCapture);
-                    o.put("detailMode", Config.get().detailMode); // v1.6
-                    o.put("env", Config.get().envCapture);       // v1.9
-                    o.put("tls", Config.get().tlsCapture);
-                    o.put("connect", Config.get().connectCapture);
-                    o.put("cronet", Config.get().cronetCapture);
-                    o.put("antiRoot", Config.get().antiRoot);     // v1.13
-                    o.put("antiXposed", Config.get().antiXposed); // v1.13
-                    o.put("native", Config.get().nativeCapture);   // v1.15 P0-4
-                    o.put("autoProbe", Config.get().autoProbe);     // v1.19 探测 b
-                    o.put("autoProbeFilter", Config.get().autoProbeFilter);
-                    o.put("debug", Config.get().debugEnabled);        // v1.22 模块调试日志
-                    return o.toString();
+                    return Config.get().toJson().toString();
                 }
                 case "/api/classes": {
                     // ?filter= 关键字过滤；?logall=true 刷屏输出

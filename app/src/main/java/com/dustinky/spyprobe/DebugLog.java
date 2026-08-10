@@ -49,6 +49,9 @@ public class DebugLog {
     private volatile File file = null;      // files/spyprobe_debug.log
     private volatile boolean failed = false; // 文件写过但出错过 → 每条都尝试重开
     private BufferedWriter writer = null;    // v1.31.1 P3-5: 持 writer 复用（此前每次 open/close）
+    // v1.42 P2-14: 目标进程镜像进 LogStore 的防递归标志——DebugLog.log → LogStore.log →
+    //   flushPush 失败 → DebugLog.log（PushHome）→ 若再写 LogStore 则无限递归，这里掐断。
+    private static final ThreadLocal<Boolean> IN_LOGSTORE = new ThreadLocal<>();
 
     private DebugLog() { }
 
@@ -60,23 +63,31 @@ public class DebugLog {
         synchronized (lock) {
             if (file != null) return;
             if (filesDir == null) {
-                logLocked("DebugLog.init(null) — 无法落盘，仅内存+logcat");
+                logLocked("DebugLog.init(null) — 无法落盘，仅内存+logcat", true);
                 return;
             }
             file = new File(filesDir, "spyprobe_debug.log");
-            logLocked("DebugLog.init -> " + file.getAbsolutePath());
+            logLocked("DebugLog.init -> " + file.getAbsolutePath(), true);
         }
     }
 
     /** 线程安全入口 */
     public void log(String tag, String msg) {
         synchronized (lock) {
-            logLocked("[" + tag + "] " + msg);
+            logLocked("[" + tag + "] " + msg, true);
         }
     }
 
-    /** 需持锁调用 */
-    private void logLocked(String line) {
+    /** v1.42 P2-14: 不镜像 LogStore 的入口——LogStore/PcapWriter 推送失败留痕用
+     *  （推送失败 → DebugLog → 若再镜像回 LogStore → 再推送失败 → 无限递归） */
+    public void logNoMirror(String tag, String msg) {
+        synchronized (lock) {
+            logLocked("[" + tag + "] " + msg, false);
+        }
+    }
+
+    /** 需持锁调用；mirror=true 时（目标进程 file==null）镜像进 LogStore 推回主进程 */
+    private void logLocked(String line, boolean mirror) {
         String ts = FMT.format(new Date());
         String full = ts + " " + line;
         ring.addLast(full);
@@ -85,6 +96,18 @@ public class DebugLog {
             Log.d(TAG, full);
         } catch (Throwable t) { /* logcat 失败忽略 */ }
         appendFile(full);
+        // v1.42 P2-14: 目标进程（init 未拿到 filesDir，file==null）的调试日志镜像进 LogStore →
+        //   随 push 通道回主进程 9900 → 主进程 LogPersister 落自己家。进程崩溃后调试日志也能在主进程查到。
+        //   IN_LOGSTORE 双保险防递归（主线程内 LogStore.log 若回调 DebugLog 会被掐断）。
+        if (mirror && file == null && !Boolean.TRUE.equals(IN_LOGSTORE.get())) {
+            try {
+                IN_LOGSTORE.set(Boolean.TRUE);
+                LogStore.get().log("Dbg", full);
+            } catch (Throwable t) { /* 镜像失败不影响调试日志本身 */ }
+            finally {
+                IN_LOGSTORE.remove();
+            }
+        }
     }
 
     /** 同步追加（v1.31.1 P3-5: 持 writer 复用；256KB 滚动时关闭重建；失败关闭下次重开） */

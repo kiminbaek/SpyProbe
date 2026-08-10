@@ -128,27 +128,34 @@ public class LogStore {
             // 读响应直到关闭（Connection: close），避免对端 write 失败
             // v1.41 P1: 解析状态行留痕——"不知道日志有没有推到主进程"是核心痛点；
             //   非 200 时 DebugLog 记录（DebugLog 不走 push 队列，失败日志不会再次触发推送死循环）
+            // v1.42 P2-10: 改 readLine 精确读状态行——旧实现复用 tmp 缓冲 + while 覆盖，
+            //   虽然 first 保存首包长度判断安全，但统一为 readLine 更严谨（无脏字节残留）
             java.io.InputStream is = sock.getInputStream();
-            byte[] tmp = new byte[256];
-            int first = is.read(tmp);
+            java.io.BufferedReader br = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(is, java.nio.charset.StandardCharsets.UTF_8));
             long deadline = System.currentTimeMillis() + 1000;
-            while (System.currentTimeMillis() < deadline && is.read(tmp) != -1) { }
-            if (first > 0) {
-                String resp = new String(tmp, 0, Math.min(first, tmp.length), java.nio.charset.StandardCharsets.UTF_8);
-                if (!resp.startsWith("HTTP/1.1 200")) {
-                    String statusLine = resp;
-                    int cr = resp.indexOf('\r');
-                    if (cr > 0) statusLine = resp.substring(0, cr);
-                    DebugLog.get().log("PushHome", "push " + batch.size() + " lines -> " + statusLine
-                            + " (token=" + (pushToken.isEmpty() ? "EMPTY" : "set") + ")");
-                }
+            String statusLine = "";
+            while (System.currentTimeMillis() < deadline) {
+                try {
+                    String line = br.readLine();
+                    if (line == null) break;
+                    if (!line.trim().isEmpty()) {
+                        statusLine = line.trim();
+                        if (statusLine.startsWith("HTTP/")) break; // 状态行
+                    }
+                } catch (Throwable t2) { break; }
             }
-            try { is.close(); } catch (Throwable t2) { }
+            if (!statusLine.startsWith("HTTP/1.1 200")) {
+                // v1.42 P2-14: logNoMirror——推送失败留痕不能镜像回 LogStore（否则递归推送）
+                DebugLog.get().logNoMirror("PushHome", "push " + batch.size() + " lines -> " + statusLine
+                        + " (token=" + (pushToken.isEmpty() ? "EMPTY" : "set") + ")");
+            }
+            try { br.close(); } catch (Throwable t2) { }
             try { os.close(); } catch (Throwable t2) { }
             try { sock.close(); } catch (Throwable t2) { }
         } catch (Throwable t) {
             // 主进程不在线/推送失败：留痕（内存缓冲仍在，UI 连目标进程时可见）
-            DebugLog.get().log("PushHome", "push " + batch.size() + " lines FAIL: " + t);
+            DebugLog.get().logNoMirror("PushHome", "push " + batch.size() + " lines FAIL: " + t);
         }
     }
 

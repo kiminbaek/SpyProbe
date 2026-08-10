@@ -174,18 +174,20 @@ object ShareLogUtil {
 
     /**
      * 第二步：拉起系统分享（主线程调用）。
+     * v1.42 P2-9: 支持指定 mimeType——pcap 是二进制，旧实现固定 text/plain 分享，
+     *   接收方（QQ/微信/文件管理器）可能按文本损坏内容。pcap 走 octet-stream。
      * @return null=成功；非 null=失败原因（供 UI Toast 显示）
      */
-    fun shareUri(context: Context, title: String, uri: Uri): String? {
+    fun shareUri(context: Context, title: String, uri: Uri, mimeType: String = "text/plain"): String? {
         return try {
             val send = Intent(Intent.ACTION_SEND).apply {
-                type = "text/plain"
+                type = mimeType
                 putExtra(Intent.EXTRA_SUBJECT, title)
                 putExtra(Intent.EXTRA_STREAM, uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             context.startActivity(Intent.createChooser(send, title).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            UiLog.log("shareUri OK: $title uri=$uri")
+            UiLog.log("shareUri OK: $title uri=$uri mime=$mimeType")
             null
         } catch (e: Exception) {
             UiLog.log("shareUri startActivity fail: ${e.javaClass.simpleName}: ${e.message}")

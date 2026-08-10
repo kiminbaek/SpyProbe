@@ -99,7 +99,12 @@ public class PcapStore {
         } catch (Throwable ignored) { }
     }
 
-    /** 合并全部 pcap 文件为一个完整 pcap（全局头一次 + 各文件去掉自带全局头的记录） */
+    /** 合并全部 pcap 文件为一个完整 pcap（全局头一次 + 各文件去掉自带全局头的记录）
+     *  v1.42 P1-4: 流式合并——旧实现每文件整读 + 整份复制到 out，pcap 累积几十 MB 时
+     *   同时驻留「单文件全量 + 合并全量」两倍内存 → OOM。现在每文件 64KB 分块读、
+     *   边读边写 out，且超过 MAX_EXPORT_BYTES 直接放弃（返回 null，UI 提示数据过大）。 */
+    private static final long MAX_EXPORT_BYTES = 256L * 1024 * 1024; // 256MB 上限（Wireshark 可开）
+
     public byte[] exportAllBytes() {
         synchronized (lock) {
             try {
@@ -110,10 +115,29 @@ public class PcapStore {
                 java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream(1 << 20);
                 out.write(GLOBAL_HEADER);
                 int files = 0;
+                byte[] chunk = new byte[64 * 1024];
                 for (java.io.File f : fs) {
-                    byte[] all = readFile(f);
-                    if (all == null || all.length <= 24) continue;
-                    out.write(all, 24, all.length - 24); // 去掉文件自带全局头
+                    if (f.length() <= 24) continue;
+                    java.io.FileInputStream fis = new java.io.FileInputStream(f);
+                    try {
+                        // 跳过文件自带 24B 全局头
+                        long skip = 0;
+                        while (skip < 24) {
+                            long k = fis.skip(24 - skip);
+                            if (k <= 0) break;
+                            skip += k;
+                        }
+                        int n;
+                        while ((n = fis.read(chunk)) > 0) {
+                            if (out.size() + n > MAX_EXPORT_BYTES) {
+                                DebugLog.get().log("Pcap", "export aborted: merged > 256MB");
+                                return null;
+                            }
+                            out.write(chunk, 0, n);
+                        }
+                    } finally {
+                        try { fis.close(); } catch (Throwable t2) { }
+                    }
                     files++;
                 }
                 if (files == 0) return null;
@@ -122,26 +146,6 @@ public class PcapStore {
                 DebugLog.get().log("Pcap", "export err: " + t);
                 return null;
             }
-        }
-    }
-
-    private byte[] readFile(java.io.File f) {
-        try {
-            java.io.FileInputStream fis = new java.io.FileInputStream(f);
-            try {
-                byte[] b = new byte[(int) f.length()];
-                int n = 0;
-                while (n < b.length) {
-                    int k = fis.read(b, n, b.length - n);
-                    if (k < 0) break;
-                    n += k;
-                }
-                return b;
-            } finally {
-                try { fis.close(); } catch (Throwable t2) { }
-            }
-        } catch (Throwable t) {
-            return null;
         }
     }
 

@@ -244,9 +244,31 @@ void notify_kotlin_close(jlong id, bool is_ssl) {
     check_exception(env);
 }
 
+// v1.42 P2-11: 前向声明（callback_kotlin 分段回调调 chunk 版本）
+bool callback_kotlin_chunk(jlong id, bool is_write, const void *buf, size_t len, bool is_ssl);
+
 bool callback_kotlin(jlong id, bool is_write, const void *buf, size_t len, bool is_ssl) {
     if (gNativeRequestHookClass == nullptr || buf == nullptr || len == 0) return false;
-    if (len > JNI_MAX_BUFFER_MAPPING) return false;
+    // v1.42 P2-11: 不再整体丢弃 >2MB 的大块数据（SSL_read 一般 ≤16KB 但非 SSL 大读取/HTTP2
+    //   可能超限）。改为按 JNI_MAX_BUFFER_MAPPING 分段循环回调，每段独立映射 JNI 缓冲。
+    if (len > JNI_MAX_BUFFER_MAPPING) {
+        bool anyBlock = false;
+        const char *p = static_cast<const char *>(buf);
+        size_t off = 0;
+        while (off < len) {
+            size_t chunk = len - off;
+            if (chunk > JNI_MAX_BUFFER_MAPPING) chunk = JNI_MAX_BUFFER_MAPPING;
+            if (callback_kotlin_chunk(id, is_write, p + off, chunk, is_ssl)) anyBlock = true;
+            off += chunk;
+        }
+        return anyBlock;
+    }
+    return callback_kotlin_chunk(id, is_write, buf, len, is_ssl);
+}
+
+/** 单段（≤ JNI_MAX_BUFFER_MAPPING）回调 Java：NewDirectByteBuffer 映射 + 调用 NativeProbe.onNativeData */
+bool callback_kotlin_chunk(jlong id, bool is_write, const void *buf, size_t len, bool is_ssl) {
+    if (gNativeRequestHookClass == nullptr || buf == nullptr || len == 0) return false;
     if (!is_ssl && !is_network_fd((int)id)) return false;
 
     JNIEnv *env = get_jni_env();

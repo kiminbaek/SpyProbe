@@ -101,8 +101,9 @@ object Updater {
             "https://gh-proxy.com/https://api.github.com/repos/$REPO/releases/latest"
         )
         for (url in candidates) {
+            var conn: HttpURLConnection? = null
             try {
-                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                conn = (URL(url).openConnection() as HttpURLConnection).apply {
                     connectTimeout = 8000
                     readTimeout = 8000
                     setRequestProperty("User-Agent", "SpyProbe/${BuildConfig.VERSION_NAME}")
@@ -111,12 +112,14 @@ object Updater {
                 val code = conn.responseCode
                 if (code == 200) {
                     val body = conn.inputStream.bufferedReader().use { it.readText() }
-                    conn.disconnect()
                     return JSONObject(body)
                 }
-                conn.disconnect()
             } catch (t: Throwable) {
                 // 试下一个镜像
+            } finally {
+                // v1.42 P2-15: 异常路径也释放连接（旧实现 200 后正常 disconnect，
+                //   inputStream 读取抛异常 / 非 200 时 conn 泄漏，最多 4 连接/检查）
+                try { conn?.disconnect() } catch (t2: Throwable) { }
             }
         }
         return null
@@ -146,8 +149,9 @@ object Updater {
     fun download(url: String, dest: File, progress: (Int) -> Unit): Boolean {
         var current = url
         repeat(4) { attempt -> // 最多试 4 个 URL（原 + 3 镜像）
+            var conn: HttpURLConnection? = null
             try {
-                val conn = (URL(current).openConnection() as HttpURLConnection).apply {
+                conn = (URL(current).openConnection() as HttpURLConnection).apply {
                     connectTimeout = 15000
                     readTimeout = 30000
                     setRequestProperty("User-Agent", "SpyProbe/${BuildConfig.VERSION_NAME}")
@@ -156,7 +160,6 @@ object Updater {
                 }
                 val code = conn.responseCode
                 if (code != 200) {
-                    conn.disconnect()
                     // 尝试镜像
                     current = mirrorOf(url, attempt + 1) ?: return false
                     return@repeat
@@ -183,7 +186,6 @@ object Updater {
                 out.flush()
                 out.close()
                 input.close()
-                conn.disconnect()
                 if (total > 0 && read < total) {
                     dest.delete()
                     return false
@@ -194,6 +196,9 @@ object Updater {
                 dest.delete()
                 // 网络异常试镜像
                 current = mirrorOf(url, attempt + 1) ?: return false
+            } finally {
+                // v1.42 P2-15: 异常路径也释放连接（下载中断/校验失败时 conn 泄漏）
+                try { conn?.disconnect() } catch (t2: Throwable) { }
             }
         }
         return false

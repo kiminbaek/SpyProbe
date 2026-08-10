@@ -387,7 +387,8 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                     val err = com.dustinky.spyprobe.util.ShareLogUtil.shareUri(
                                         context,
                                         "SpyProbe pcap ${bytes.size / 1024}KB",
-                                        uri
+                                        uri,
+                                        "application/vnd.tcpdump.pcap" // v1.42 P2-9: 二进制 pcap 走 pcap mime，防接收方按文本损坏
                                     )
                                     if (err != null) "分享失败：$err" else "已导出 pcap（${bytes.size / 1024}KB），可在 Download/SpyProbe/ 找到"
                                 }

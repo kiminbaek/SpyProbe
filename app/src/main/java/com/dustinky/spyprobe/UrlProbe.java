@@ -24,9 +24,15 @@ public class UrlProbe {
         Long prev = sUrlSeen.get(url);
         if (prev != null && now - prev < URL_DEDUP_MS) return;
         sUrlSeen.put(url, now);
+        // v1.42 P2-12: 超限处理——旧实现 removeIf 只清超 3s 窗口的项，但窗口内 >1024 个不同
+        //   URL 时一条都清不掉 → map 无限膨胀。现在先清过期项；仍超限（窗口内确实爆炸）则整表清空
+        //   （最多损失 3s 去重，防内存泄漏优先）。
         if (sUrlSeen.size() > 1024) {
             long cutoff = now - URL_DEDUP_MS;
             sUrlSeen.entrySet().removeIf(e -> now - e.getValue() > cutoff);
+            if (sUrlSeen.size() > 1024) {
+                sUrlSeen.clear();
+            }
         }
         LogStore.get().log(TAG, "[URL] " + url);
     }

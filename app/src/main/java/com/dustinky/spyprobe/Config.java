@@ -205,9 +205,10 @@ public class Config {
 
     public synchronized void addHook(HookSpec spec) {
         // 去重：同 class+method+params 不重复加
+        // v1.42 P1-1: Objects.equals 防 null NPE（已存「全部重载」规则 paramTypes=null 时再次 add 会 NPE）
         for (HookSpec h : hooks) {
             if (h.className.equals(spec.className) && h.methodName.equals(spec.methodName)
-                    && h.paramTypes.equals(spec.paramTypes)) {
+                    && java.util.Objects.equals(h.paramTypes, spec.paramTypes)) {
                 h.enabled = true;
                 return;
             }
@@ -216,9 +217,10 @@ public class Config {
     }
 
     public synchronized boolean removeHook(String className, String methodName, String paramTypes) {
+        // v1.42 P1-1: Objects.equals 防 null NPE（paramTypes 为 null 的「全部重载」规则）
         boolean removed = hooks.removeIf(h -> h.className.equals(className)
                 && h.methodName.equals(methodName)
-                && (paramTypes == null || paramTypes.isEmpty() || h.paramTypes.equals(paramTypes)));
+                && (paramTypes == null || paramTypes.isEmpty() || java.util.Objects.equals(h.paramTypes, paramTypes)));
         // v1.16 P0-1: 复用 unhookHandles 真正卸载句柄（此前只清 map 不 unhook，hook 永久生效）
         unhookHandles(className, methodName, paramTypes);
         return removed;
@@ -492,12 +494,12 @@ public class Config {
         return resolveCfgFile();
     }
 
-    /** 序列化全部抓包开关（v1.36 P2-7: saveConfig/toJson 共用，29 字段单一事实来源） */
+    /** 序列化全部抓包开关（v1.36 P2-7: saveConfig/toJson 共用，32 字段单一事实来源） */
     public org.json.JSONObject toJson() {
         return toJsonObject();
     }
 
-    /** v1.36 P2-7: 29 字段统一序列化（唯一事实来源——saveConfig/toJson 都走这里，加字段不会漏） */
+    /** v1.36 P2-7: 32 字段统一序列化（唯一事实来源——saveConfig/toJson 都走这里，加字段不会漏） */
     private org.json.JSONObject toJsonObject() {
         org.json.JSONObject o = new org.json.JSONObject();
         try {
