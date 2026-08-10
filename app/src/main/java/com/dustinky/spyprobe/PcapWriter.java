@@ -359,7 +359,12 @@ public class PcapWriter {
     }
 
     private static boolean isIpv4(String ip) {
-        if (ip == null || ip.isEmpty() || ip.indexOf(':') >= 0) return false;
+        if (ip == null || ip.isEmpty()) return false;
+        // v1.45 P0: 兼容 IPv4-mapped IPv6（::ffff:x.x.x.x）——目标 App socket 多为 AF_INET6
+        //   mapped 地址，native get_cached_socket_info 用 inet_ntop(AF_INET6) 输出 ::ffff: 前缀，
+        //   旧逻辑见 ':' 直接拒 → pcap 永远 0 数据（1478/1478 条全 ::ffff，真机导出一直空）。
+        if (ip.startsWith("::ffff:")) ip = ip.substring("::ffff:".length());
+        if (ip.indexOf(':') >= 0) return false; // 真 IPv6 不支持
         String[] parts = ip.split("\\.");
         if (parts.length != 4) return false;
         for (String p : parts) {
@@ -373,6 +378,9 @@ public class PcapWriter {
 
     private static byte[] ipToBytes(String ip) {
         byte[] out = new byte[4];
+        if (ip == null) return out;
+        // v1.45 P0: 同上，剥 IPv4-mapped 前缀再转
+        if (ip.startsWith("::ffff:")) ip = ip.substring("::ffff:".length());
         String[] parts = ip.split("\\.");
         for (int i = 0; i < 4 && i < parts.length; i++) {
             try { out[i] = (byte) Integer.parseInt(parts[i]); } catch (Throwable t) { out[i] = 0; }
