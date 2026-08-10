@@ -149,6 +149,58 @@ public class PcapStore {
         }
     }
 
+    /** 仅导出当前会话（current.pcap，自带 24B 全局头；归档 pcap_*.pcap 不合并）
+     *  v1.46.3: 用户反馈不想导出历史——新增「仅当前会话」导出选项 */
+    public byte[] exportCurrentBytes() {
+        synchronized (lock) {
+            try {
+                if (current == null || !current.exists()) return null;
+                long len = current.length();
+                if (len <= 24) return null; // 只有全局头=无记录
+                if (len > MAX_EXPORT_BYTES) {
+                    DebugLog.get().log("Pcap", "exportCurrent aborted: > 256MB");
+                    return null;
+                }
+                byte[] data = new byte[(int) len];
+                java.io.FileInputStream fis = new java.io.FileInputStream(current);
+                int off = 0;
+                try {
+                    int n;
+                    while (off < data.length && (n = fis.read(data, off, data.length - off)) > 0) {
+                        off += n;
+                    }
+                } finally {
+                    try { fis.close(); } catch (Throwable t2) { }
+                }
+                if (off <= 24) return null;
+                return data; // current.pcap 自带 24B 全局头，直接是合法 pcap
+            } catch (Throwable t) {
+                DebugLog.get().log("Pcap", "exportCurrent err: " + t);
+                return null;
+            }
+        }
+    }
+
+    /** 清空全部 pcap 数据（current + 历史归档）。删除后下次 append 自动重建全局头。 */
+    public int clearAll() {
+        synchronized (lock) {
+            int n = 0;
+            try {
+                if (dir == null) return 0;
+                java.io.File[] fs = dir.listFiles((d, name) -> name.endsWith(".pcap"));
+                if (fs != null) {
+                    for (java.io.File f : fs) {
+                        try { if (f.delete()) n++; } catch (Throwable t2) { }
+                    }
+                }
+            } catch (Throwable t) {
+                DebugLog.get().log("Pcap", "clear err: " + t);
+            }
+            DebugLog.get().log("Pcap", "clearAll -> deleted " + n + " pcap files");
+            return n;
+        }
+    }
+
     /** 当前 pcap 文件大小（UI 状态显示） */
     public long currentSize() {
         try {

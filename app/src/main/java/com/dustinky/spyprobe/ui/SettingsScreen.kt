@@ -23,12 +23,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
@@ -370,40 +372,114 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                 inherited = inh("pcap"),
                 onSet = { setCfg("pcap", it) })
             // v1.39.1: 导出 pcap 按钮放开关正下方（与调试日志分开——pcap=抓包明文，调试日志=排障内部日志）
+            // v1.46.3: 导出弹窗（全部/仅当前会话）+ 清空 pcap 数据按钮
             var pcapStatus by remember { mutableStateOf("") }
+            var showExportDialog by remember { mutableStateOf(false) }
+            var showClearDialog by remember { mutableStateOf(false) }
+
+            fun doExportPcap(currentOnly: Boolean) {
+                com.dustinky.spyprobe.util.UiLog.log("Settings: 导出 pcap currentOnly=$currentOnly")
+                scope.launch {
+                    pcapStatus = withContext(Dispatchers.IO) {
+                        try {
+                            // 先让目标进程把活跃会话 flush 到主进程（在线时）
+                            vm.api.httpPost("/api/flush_pcap", "{}")
+                        } catch (t: Throwable) { }
+                        val bytes = if (currentOnly) {
+                            com.dustinky.spyprobe.PcapStore.get().exportCurrentBytes()
+                        } else {
+                            com.dustinky.spyprobe.PcapStore.get().exportAllBytes()
+                        }
+                        if (bytes == null || bytes.size <= 24) {
+                            "暂无 pcap 数据（需先开 pcap 开关并抓包，TLS 连接关闭后落盘）"
+                        } else {
+                            val uri = com.dustinky.spyprobe.util.ShareLogUtil.writePcapFile(context, bytes)
+                            if (uri == null) {
+                                "pcap 写文件失败（详见 UiLog）"
+                            } else {
+                                val err = com.dustinky.spyprobe.util.ShareLogUtil.shareUri(
+                                    context,
+                                    "SpyProbe pcap ${bytes.size / 1024}KB" + if (currentOnly) "（仅当前会话）" else "",
+                                    uri,
+                                    "application/vnd.tcpdump.pcap" // v1.42 P2-9: 二进制 pcap 走 pcap mime，防接收方按文本损坏
+                                )
+                                if (err != null) "分享失败：$err" else "已导出 pcap（${bytes.size / 1024}KB，" + if (currentOnly) "仅当前会话）" else "全部）"
+                            }
+                        }
+                    }
+                    android.widget.Toast.makeText(context, pcapStatus, android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
+
             Button(
                 onClick = {
                     com.dustinky.spyprobe.util.UiLog.log("Settings: 点击「导出 pcap」")
-                    scope.launch {
-                        pcapStatus = withContext(Dispatchers.IO) {
-                            try {
-                                // 先让目标进程把活跃会话 flush 到主进程（在线时）
-                                vm.api.httpPost("/api/flush_pcap", "{}")
-                            } catch (t: Throwable) { }
-                            val bytes = com.dustinky.spyprobe.PcapStore.get().exportAllBytes()
-                            if (bytes == null || bytes.size <= 24) {
-                                "暂无 pcap 数据（需先开 pcap 开关并抓包，TLS 连接关闭后落盘）"
-                            } else {
-                                val uri = com.dustinky.spyprobe.util.ShareLogUtil.writePcapFile(context, bytes)
-                                if (uri == null) {
-                                    "pcap 写文件失败（详见 UiLog）"
-                                } else {
-                                    val err = com.dustinky.spyprobe.util.ShareLogUtil.shareUri(
-                                        context,
-                                        "SpyProbe pcap ${bytes.size / 1024}KB",
-                                        uri,
-                                        "application/vnd.tcpdump.pcap" // v1.42 P2-9: 二进制 pcap 走 pcap mime，防接收方按文本损坏
-                                    )
-                                    if (err != null) "分享失败：$err" else "已导出 pcap（${bytes.size / 1024}KB），可在 Download/SpyProbe/ 找到"
-                                }
-                            }
-                        }
-                        android.widget.Toast.makeText(context, pcapStatus, android.widget.Toast.LENGTH_LONG).show()
-                    }
+                    showExportDialog = true
                 },
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
             ) {
                 Text("导出 pcap（Wireshark 直开 TLS 明文）")
+            }
+            // v1.46.3: 清空 pcap 数据（删除 current + 历史归档，下次抓包自动重建）
+            OutlinedButton(
+                onClick = {
+                    com.dustinky.spyprobe.util.UiLog.log("Settings: 点击「清空 pcap 数据」")
+                    showClearDialog = true
+                },
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error
+                )
+            ) {
+                Text("清空 pcap 数据", color = MaterialTheme.colorScheme.error)
+            }
+
+            if (showExportDialog) {
+                AlertDialog(
+                    onDismissRequest = { showExportDialog = false },
+                    title = { Text("导出 pcap 数据", fontWeight = FontWeight.Bold) },
+                    text = {
+                        Text(
+                            "导出全部 = 当前会话 + 历史归档（最多保留最近 5 次会话）\n仅当前会话 = 本次抓包数据",
+                            fontSize = 13.sp
+                        )
+                    },
+                    confirmButton = {
+                        Button(onClick = {
+                            showExportDialog = false
+                            doExportPcap(false)
+                        }) { Text("导出全部") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = {
+                            showExportDialog = false
+                            doExportPcap(true)
+                        }) { Text("仅当前会话") }
+                    }
+                )
+            }
+
+            if (showClearDialog) {
+                AlertDialog(
+                    onDismissRequest = { showClearDialog = false },
+                    title = { Text("清空 pcap 数据", fontWeight = FontWeight.Bold) },
+                    text = { Text("将删除全部 pcap 文件（当前会话 + 历史归档），不可恢复。确定继续？") },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                showClearDialog = false
+                                val n = com.dustinky.spyprobe.PcapStore.get().clearAll()
+                                android.widget.Toast.makeText(context, "已清空 $n 个 pcap 文件", android.widget.Toast.LENGTH_LONG).show()
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error
+                            )
+                        ) { Text("清空") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showClearDialog = false }) { Text("取消") }
+                    }
+                )
             }
         }
 
