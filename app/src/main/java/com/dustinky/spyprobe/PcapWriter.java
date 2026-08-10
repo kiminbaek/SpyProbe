@@ -24,6 +24,9 @@ public class PcapWriter {
     private static final int MAX_TOTAL = 32 * 1024 * 1024;    // 全部会话总上限 32MB（防 OOM，丢最旧）
 
     private static final PcapWriter INSTANCE = new PcapWriter();
+
+    // v1.45.1 诊断：pcapCapture=false 只留痕一次（防刷屏）
+    private boolean diagSkippedCfg = false;
     public static PcapWriter get() { return INSTANCE; }
 
     // 会话表：connId(ssl 指针) → Session
@@ -91,20 +94,33 @@ public class PcapWriter {
     /** native SSL 明文回调（NativeProbe.onNativeData 调用，仅 isSsl 且 pcapCapture 开） */
     public void feed(long connId, boolean isWrite, byte[] data, String socketInfo) {
         try {
-            if (!Config.get().pcapCapture) return;
+            if (!Config.get().pcapCapture) {
+                if (!diagSkippedCfg) {
+                    diagSkippedCfg = true;
+                    try { DebugLog.get().logNoMirror("PcapFeed", "SKIP cfg.pcapCapture=false id=" + connId + " info=" + socketInfo); } catch (Throwable ig) { }
+                }
+                return;
+            }
             if (data == null || data.length == 0) return;
             Session s = sessions.get(connId);
             if (s == null) {
                 // 首包：解析四元组定方向。isWrite=true 本地→远端（src=本地 dst=远端）
                 s = new Session();
                 parseEndpoint(socketInfo, s);
-                if (s.srcIp.isEmpty() || s.dstIp.isEmpty()) return; // 无法定位（IPv6/无 info）跳过
-                if (!isIpv4(s.srcIp) || !isIpv4(s.dstIp)) return;   // v1.39 仅支持 IPv4 pcap
+                if (s.srcIp.isEmpty() || s.dstIp.isEmpty()) {
+                    try { DebugLog.get().logNoMirror("PcapFeed", "NOEP id=" + connId + " info=" + socketInfo); } catch (Throwable ig) { }
+                    return; // 无法定位（IPv6/无 info）跳过
+                }
+                if (!isIpv4(s.srcIp) || !isIpv4(s.dstIp)) {
+                    try { DebugLog.get().logNoMirror("PcapFeed", "V6REJ id=" + connId + " src=" + s.srcIp + " dst=" + s.dstIp + " info=" + socketInfo); } catch (Throwable ig) { }
+                    return;   // v1.39 仅支持 IPv4 pcap
+                }
                 long isn = (System.nanoTime() & 0x7fffffff) % 0xffff + 1000;
                 s.clientSeq = isn;
                 s.serverSeq = isn + 10000;
                 s.init = true;
                 sessions.put(connId, s);
+                try { DebugLog.get().logNoMirror("PcapFeed", "NEW id=" + connId + " " + s.srcIp + ":" + s.srcPort + "->" + s.dstIp + ":" + s.dstPort); } catch (Throwable ig) { }
                 enforceTotalLimit();
             }
             if (!s.init) return;
@@ -144,7 +160,11 @@ public class PcapWriter {
     /** 全部会话推主进程（UI「立即导出」用，目标进程在线时兜底） */
     public void flushAll() {
         try {
-            if (!Config.get().pcapCapture) return;
+            if (!Config.get().pcapCapture) {
+                try { DebugLog.get().logNoMirror("PcapFeed", "flushAll SKIP cfg.pcapCapture=false"); } catch (Throwable ig) { }
+                return;
+            }
+            try { DebugLog.get().logNoMirror("PcapFeed", "flushAll sessions=" + sessions.size()); } catch (Throwable ig) { }
             for (Long connId : new java.util.ArrayList<>(sessions.keySet())) {
                 Session s = sessions.remove(connId);
                 if (s == null) continue;
@@ -215,6 +235,7 @@ public class PcapWriter {
                 try { sock.close(); } catch (Throwable t2) { }
                 return false;
             } else if (resp.startsWith("HTTP/1.1 200") || resp.contains("\"ok\":true")) {
+                try { DebugLog.get().logNoMirror("PcapPush", "OK conn=" + connId + " len=" + body.length); } catch (Throwable ig) { }
                 try { br.close(); } catch (Throwable t2) { }
                 try { os.close(); } catch (Throwable t2) { }
                 try { sock.close(); } catch (Throwable t2) { }
