@@ -33,10 +33,17 @@ public class NetProbe {
 
     private final XposedModule module;
     private final ClassLoader appCl;
+    // v1.40 P0: DexKit 混淆 OkHttp 定位兜底（ModuleMain 创建后注入；标准类名找不到时用）
+    private DexKitProbe dexKit;
 
     public NetProbe(XposedModule module, ClassLoader appCl) {
         this.module = module;
         this.appCl = appCl;
+    }
+
+    /** v1.40 P0: 注入 DexKit（ModuleMain 创建 DexKitProbe 后调用） */
+    public void setDexKit(DexKitProbe dexKit) {
+        this.dexKit = dexKit;
     }
 
     /** 安装全部网络 hook
@@ -760,6 +767,182 @@ public class NetProbe {
                 LogStore.get().log(TAG, "[" + phase + "] okhttp hook all fail: " + t);
                 DebugLog.get().log("Net", "[" + phase + "] okhttp hook all fail: " + t);
             }
+        }
+        // v1.40 P0/P1: OkHttpClient.newCall hook ——
+        //   P1 重放缓存（所有 OkHttp 请求必经入口，同步/异步都走）
+        //   P0 混淆兜底（okhttp proguard 规则 keep public API：OkHttpClient/Request/Response 类名
+        //     与方法名保留，只有 RealInterceptorChain/RealCall 等 internal 类混淆 —— 混淆 App 里
+        //     链 hook 失败但 newCall 一定能找到，从 newCall 拿 call 具体类动态 hook 响应记录）
+        installNewCallReplay(phase, hooked);
+    }
+
+    // ================= v1.40 P0/P1: OkHttpClient.newCall（混淆定位 + 请求重放缓存）=================
+    // okhttp 官方 proguard 规则 keep public API → 混淆 App 中：
+    //   okhttp3.OkHttpClient / okhttp3.Request / okhttp3.Response / okhttp3.Call 类名保留
+    //   newCall() / url() / method() / headers() / body() / execute() / enqueue() 方法名保留
+    //   RealInterceptorChain / RealCall 等 internal 类被混淆 → 链 hook 失效
+    // 所以 newCall 是混淆场景最稳定的落点：请求记录 + 重放缓存 + 动态 hook 具体 call 类响应。
+    private static final java.util.Set<String> dynamicHookedCalls = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    private void installNewCallReplay(String phase, boolean chainHooked) {
+        try {
+            Class<?> ohc = findOkHttpClientClass();
+            if (ohc == null) {
+                LogStore.get().log(TAG, "[" + phase + "] OkHttpClient.newCall hook fail: class not found (混淆?)");
+                DebugLog.get().log("Net", "[" + phase + "] OkHttpClient.newCall hook fail: class not found (混淆?)");
+                return;
+            }
+            Class<?> reqCls = Class.forName("okhttp3.Request", false, appCl);
+            final Method newCall = ohc.getMethod("newCall", reqCls);
+            final boolean chainHookedF = chainHooked;
+            final Class<?> clientCls = ohc;
+            module.hook(newCall).intercept(chain -> {
+                if (!Config.get().okhttpCapture) return chain.proceed();
+                Object req = chain.getArg(0);
+                Object call = chain.proceed();
+                if (call == null) return call;
+                try {
+                    // P1: 重放缓存（总是缓存；仅混淆场景 logReq=true 打印请求日志）
+                    OkHttpReplay.get().onNewCall(call, req, !chainHookedF);
+                } catch (Throwable t) { }
+                // P0: 链 hook 失败（混淆场景）→ 动态 hook call 具体类记录响应
+                if (!chainHookedF) {
+                    try {
+                        hookDynamicOkHttpCall(call);
+                    } catch (Throwable t) {
+                        DebugLog.get().log("Net", "dynamic call hook fail: " + t);
+                    }
+                }
+                return call;
+            });
+            LogStore.get().log(TAG, "[" + phase + "] hooked " + ohc.getName() + ".newCall"
+                    + (chainHookedF ? " (重放缓存)" : " (混淆兜底: 请求记录+动态响应hook)"));
+            DebugLog.get().log("Net", "[" + phase + "] hooked " + ohc.getName() + ".newCall chainHooked=" + chainHookedF);
+        } catch (Throwable t) {
+            LogStore.get().log(TAG, "[" + phase + "] OkHttpClient.newCall hook fail: " + t);
+            DebugLog.get().log("Net", "[" + phase + "] OkHttpClient.newCall hook fail: " + t);
+        }
+    }
+
+    /** v1.40 P0: 找 OkHttpClient 类 —— 标准类名优先，找不到用 DexKit 兜底（极端全混淆） */
+    private Class<?> findOkHttpClientClass() {
+        // 1. 标准类名（okhttp proguard keep，绝大多数 App 保留）
+        try {
+            return Class.forName("okhttp3.OkHttpClient", false, appCl);
+        } catch (Throwable t) { }
+        // 2. DexKit 兜底：类名含 OkHttpClient（混淆后类名仍带特征）
+        try {
+            if (dexKit != null && dexKit.isReady()) {
+                String r = dexKit.findOkHttpClientClass();
+                if (r != null && !r.isEmpty()) {
+                    return Class.forName(r, false, appCl);
+                }
+            }
+        } catch (Throwable t) { }
+        // 3. 类名含 OkHttp（更宽匹配）
+        try {
+            if (dexKit != null && dexKit.isReady()) {
+                String r = dexKit.findOkHttpAnyClass();
+                if (r != null && !r.isEmpty()) {
+                    return Class.forName(r, false, appCl);
+                }
+            }
+        } catch (Throwable t) { }
+        return null;
+    }
+
+    /** v1.40 P0: 动态 hook 混淆 RealCall 具体类 —— 记录响应（链 hook 失败时的兜底） */
+    private void hookDynamicOkHttpCall(Object call) {
+        Class<?> realCls = call.getClass();
+        String key = realCls.getName();
+        if (dynamicHookedCalls.contains(key)) return; // 每类只 hook 一次
+        Class<?> respCls;
+        try {
+            respCls = Class.forName("okhttp3.Response", false, appCl);
+        } catch (Throwable t) {
+            return;
+        }
+        int hooked = 0;
+        // a. 返回类型为 Response 的无参方法（混淆 RealCall.getResponseWithInterceptorChain 等价物）——
+        //    同步/异步最终都走它，hook 一次两者都覆盖
+        try {
+            for (Method m : realCls.getDeclaredMethods()) {
+                if (m.getParameterTypes().length != 0) continue;
+                if (m.getReturnType() != respCls) continue;
+                module.hook(m).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (Config.get().okhttpCapture) {
+                        try {
+                            Object self = chain.getThisObject();
+                            Object req = self != null ? self.getClass().getMethod("request").invoke(self) : null;
+                            Object method = null, url = null;
+                            if (req != null) {
+                                try {
+                                    method = req.getClass().getMethod("method").invoke(req);
+                                    url = req.getClass().getMethod("url").invoke(req);
+                                } catch (Throwable t) { }
+                            }
+                            StringBuilder sb = new StringBuilder("[OkHttp-混淆] <<< ");
+                            try {
+                                if (r != null) {
+                                    Object code = r.getClass().getMethod("code").invoke(r);
+                                    Object msg = r.getClass().getMethod("message").invoke(r);
+                                    sb.append(code).append(" ").append(msg);
+                                } else {
+                                    sb.append("null");
+                                }
+                            } catch (Throwable t) { sb.append("?"); }
+                            if (url != null) sb.append(" ").append(url);
+                            // 响应体摘要（peekBody 不消费流）
+                            try {
+                                if (r != null) {
+                                    Method peek = r.getClass().getMethod("peekBody", long.class);
+                                    Object pbody = peek.invoke(r, 512L);
+                                    if (pbody != null) {
+                                        Object s = pbody.getClass().getMethod("string").invoke(pbody);
+                                        if (s != null) {
+                                            String bs = s.toString();
+                                            if (bs.length() > 256) bs = bs.substring(0, 256) + "...(" + bs.length() + "B)";
+                                            sb.append("\n    body: ").append(bs.replace("\n", "\n    "));
+                                        }
+                                    }
+                                }
+                            } catch (Throwable t) { }
+                            LogStore.get().log(TAG, sb.toString());
+                        } catch (Throwable t) { }
+                    }
+                    return r;
+                });
+                hooked++;
+                break;
+            }
+        } catch (Throwable t) { }
+        // b. execute()（同步调用，返回 Response）—— a 找不到时的兜底
+        if (hooked == 0) {
+            try {
+                Method exec = realCls.getMethod("execute");
+                if (exec.getReturnType() == respCls) {
+                    module.hook(exec).intercept(chain -> {
+                        Object r = chain.proceed();
+                        if (Config.get().okhttpCapture) {
+                            try {
+                                Object req = chain.getThisObject() != null
+                                        ? chain.getThisObject().getClass().getMethod("request").invoke(chain.getThisObject()) : null;
+                                Object url = req != null ? req.getClass().getMethod("url").invoke(req) : "?";
+                                Object code = r != null ? r.getClass().getMethod("code").invoke(r) : "?";
+                                LogStore.get().log(TAG, "[OkHttp-混淆] <<< " + code + " " + url);
+                            } catch (Throwable t) { }
+                        }
+                        return r;
+                    });
+                    hooked++;
+                }
+            } catch (Throwable t) { }
+        }
+        if (hooked > 0) {
+            dynamicHookedCalls.add(key);
+            LogStore.get().log(TAG, "[OkHttp-混淆] 动态 hooked " + key + " 响应记录 x" + hooked);
+            DebugLog.get().log("Net", "dynamic hooked " + key + " x" + hooked);
         }
     }
 

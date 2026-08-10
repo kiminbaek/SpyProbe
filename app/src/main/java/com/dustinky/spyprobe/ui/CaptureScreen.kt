@@ -105,6 +105,22 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
     // 日志预览（最后 3 条）
     val previewLines = logLines.takeLast(3)
 
+    // v1.40 P1: 请求重放状态
+    val scope = rememberCoroutineScope()
+    var showReplay by remember { mutableStateOf(false) }
+    var replayItems by remember { mutableStateOf<List<ReplayEntry>>(emptyList()) }
+    var replayLoading by remember { mutableStateOf(false) }
+    fun refreshReplay() {
+        scope.launch {
+            replayLoading = true
+            replayItems = withContext(Dispatchers.IO) { vm.api.replayHistory() } ?: emptyList()
+            replayLoading = false
+        }
+    }
+    LaunchedEffect(connected) {
+        if (connected && showReplay) refreshReplay()
+    }
+
     Column(modifier = modifier.fillMaxSize().padding(horizontal = 16.dp)) {
 
         // ===== 状态大卡（v1.24 核心：App 图标 + 状态 + 端口 + 目标切换）=====
@@ -373,6 +389,36 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
         }
 
         Spacer(Modifier.height(16.dp))
+
+        // ===== 请求重放卡（v1.40 P1：OkHttpLogger-Frida/poker 借鉴）=====
+        ReplayCard(
+            expanded = showReplay,
+            onToggle = {
+                showReplay = !showReplay
+                if (showReplay) refreshReplay()
+            },
+            items = replayItems,
+            loading = replayLoading,
+            onRefresh = { refreshReplay() },
+            onClear = {
+                scope.launch {
+                    withContext(Dispatchers.IO) { vm.api.replayClear() }
+                    replayItems = emptyList()
+                    android.widget.Toast.makeText(context, "重放缓存已清空", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            },
+            onReplay = { e ->
+                scope.launch {
+                    val ok = withContext(Dispatchers.IO) { vm.api.replay(e.id) }
+                    android.widget.Toast.makeText(
+                        context,
+                        if (ok) "已重放 #${e.id}，结果见日志流" else "重放失败：未连接或后端错误",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            },
+            connected = connected
+        )
     }
 }
 
@@ -613,3 +659,172 @@ private fun ManualPkgDialog(vm: SpyViewModel, onDismiss: () -> Unit) {
 
 // ---------- 端口对话框（v1.28 P1: 删除——手动改端口是误导：
 //  server 端口由目标进程固定(9901)/scanPorts 自动发现(9901-9910)，手动设 UI 端口不会让 server 换端口） ----------
+
+// ---------- 请求重放卡（v1.40 P1：OkHttpLogger-Frida/poker 借鉴） ----------
+// 显示 OkHttpClient.newCall 缓存的请求列表，点击「重放」在目标进程重新执行（结果写日志流）。
+@Composable
+private fun ReplayCard(
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    items: List<ReplayEntry>,
+    loading: Boolean,
+    onRefresh: () -> Unit,
+    onClear: () -> Unit,
+    onReplay: (ReplayEntry) -> Unit,
+    connected: Boolean
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer
+        ),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
+    ) {
+        Column(Modifier.fillMaxWidth()) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onToggle)
+                    .padding(horizontal = 14.dp, vertical = 10.dp)
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "请求重放",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        "newCall 缓存请求 · 点击重放（GET 最可靠，POST body 可能失效）",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.sp
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .background(
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+                            RoundedCornerShape(8.dp)
+                        )
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        "${items.size} 条",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (expanded) "˄" else "˅",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 16.sp
+                )
+            }
+            if (expanded) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                // 操作按钮行
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    TextButton(onClick = onRefresh, enabled = !loading) { Text("刷新") }
+                    Spacer(Modifier.width(4.dp))
+                    TextButton(onClick = onClear) { Text("清空") }
+                    Spacer(Modifier.weight(1f))
+                    if (!connected) {
+                        Text(
+                            "未连接",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+                if (loading) {
+                    Text(
+                        "加载中…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                    )
+                } else if (items.isEmpty()) {
+                    Text(
+                        "暂无缓存请求。\n目标 App 发出 OkHttp 请求后自动出现在这里（需开启「OkHttp」开关）。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                    )
+                } else {
+                    Column(Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
+                        items.forEach { e ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 6.dp)
+                            ) {
+                                // 方法标签
+                                Box(
+                                    modifier = Modifier
+                                        .background(
+                                            methodColor(e.method),
+                                            RoundedCornerShape(4.dp)
+                                        )
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        e.method,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        e.url,
+                                        style = codeStyle,
+                                        fontSize = 11.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        "#${e.id} · ${e.timeText()}${if (e.body.isNotEmpty()) " · body ${e.body.length}B" else ""}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontSize = 10.sp
+                                    )
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                OutlinedButton(
+                                    onClick = { onReplay(e) },
+                                    modifier = Modifier.height(30.dp)
+                                ) {
+                                    Text("重放", fontSize = 12.sp)
+                                }
+                            }
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun methodColor(method: String): Color = when (method.uppercase()) {
+    "GET" -> Color(0xFF2E7D32)
+    "POST" -> Color(0xFFE65100)
+    "PUT" -> Color(0xFF1565C0)
+    "DELETE" -> Color(0xFFC62828)
+    "PATCH" -> Color(0xFF6A1B9A)
+    "HEAD" -> Color(0xFF546E7A)
+    else -> Color(0xFF455A64)
+}

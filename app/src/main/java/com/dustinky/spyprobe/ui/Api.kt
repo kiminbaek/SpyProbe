@@ -15,6 +15,20 @@ data class LogEntry(val time: String, val tag: String, val msg: String) {
     fun display(): String = "$time [$tag] $msg"
 }
 
+// v1.40 P1: 重放缓存条目（顶层，CaptureScreen 直接引用）
+data class ReplayEntry(
+    val id: Long,
+    val time: Long,
+    val method: String,
+    val url: String,
+    val body: String
+) {
+    fun timeText(): String {
+        val fmt = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+        return fmt.format(java.util.Date(time))
+    }
+}
+
 data class StatusInfo(
     val pkg: String = "?",
     val versionName: String = "",
@@ -532,5 +546,42 @@ class SpyApi(private var port: Int = 9901) {
             o.put("pattern", pattern)
             httpPost("/api/classfind", o.toString())
         } catch (t: Throwable) { null }
+    }
+
+    // ---------- v1.40 P1: 请求重放（OkHttpLogger-Frida/poker 借鉴） ----------
+    /** 重放缓存列表；null=未连接/失败 */
+    fun replayHistory(): List<ReplayEntry>? {
+        val resp = httpGet("/api/replay/history", 3000) ?: return null
+        return try {
+            val o = JSONObject(resp)
+            if (!o.optBoolean("ok", false)) null
+            else {
+                val arr = o.optJSONArray("items") ?: JSONArray()
+                val out = ArrayList<ReplayEntry>()
+                for (i in 0 until arr.length()) {
+                    val j = arr.getJSONObject(i)
+                    out.add(ReplayEntry(
+                        id = j.optLong("id", 0),
+                        time = j.optLong("time", 0),
+                        method = j.optString("method", "?"),
+                        url = j.optString("url", "?"),
+                        body = j.optString("body", "")
+                    ))
+                }
+                out
+            }
+        } catch (t: Throwable) { null }
+    }
+
+    /** 重放第 id 条（后端新线程执行，结果写日志流）；true=已受理 */
+    fun replay(id: Long): Boolean {
+        val resp = httpPost("/api/replay?index=$id", "{}") ?: return false
+        return try { JSONObject(resp).optBoolean("ok", false) } catch (t: Throwable) { false }
+    }
+
+    /** 清空重放缓存 */
+    fun replayClear(): Boolean {
+        val resp = httpPost("/api/replay/clear", "{}") ?: return false
+        return try { JSONObject(resp).optBoolean("ok", false) } catch (t: Throwable) { false }
     }
 }

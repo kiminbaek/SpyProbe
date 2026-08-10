@@ -567,6 +567,43 @@ public class SpyServer {
                     o.put("ok", true);
                     return o.toString();
                 }
+                // v1.40 P1: 请求重放（OkHttpLogger-Frida/poker 借鉴）—— newCall hook 缓存的请求
+                case "/api/replay/history": {
+                    return OkHttpReplay.get().listJson();
+                }
+                case "/api/replay": {
+                    // POST /api/replay?index=N（index 缺省取 0？NO——强制要求 index，防误重放）
+                    if (!"POST".equals(method)) {
+                        JSONObject o = new JSONObject();
+                        o.put("ok", false);
+                        o.put("error", "method not allowed");
+                        return o.toString();
+                    }
+                    long idx = parseIntSafe(getQueryParam(query, "index", "-1"), -1);
+                    if (idx < 0) {
+                        JSONObject o = new JSONObject();
+                        o.put("ok", false);
+                        o.put("error", "index required (POST /api/replay?index=N)");
+                        return o.toString();
+                    }
+                    OkHttpReplay.get().replay(idx);
+                    JSONObject o = new JSONObject();
+                    o.put("ok", true);
+                    o.put("id", idx);
+                    return o.toString();
+                }
+                case "/api/replay/clear": {
+                    if (!"POST".equals(method)) {
+                        JSONObject o = new JSONObject();
+                        o.put("ok", false);
+                        o.put("error", "method not allowed");
+                        return o.toString();
+                    }
+                    OkHttpReplay.get().clear();
+                    JSONObject o = new JSONObject();
+                    o.put("ok", true);
+                    return o.toString();
+                }
                 case "/api/clear": {
                     LogStore.get().clear();
                     JSONObject o = new JSONObject();

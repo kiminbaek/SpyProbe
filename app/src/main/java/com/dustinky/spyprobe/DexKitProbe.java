@@ -214,6 +214,47 @@ public class DexKitProbe {
         }
     }
 
+    /**
+     * v1.40 P0: 找混淆 OkHttpClient 类（类名含 "OkHttpClient"），返回类名字符串；未找到返回 null。
+     * 依赖 dexKit 已初始化（ModuleMain t=5000ms init；调用方 findOkHttpClientClass 会检查 isReady）。
+     */
+    public String findOkHttpClientClass() {
+        return findFirstClass("OkHttpClient");
+    }
+
+    /** v1.40 P0: 更宽匹配——类名含 "OkHttp" 的类（可能直接是 OkHttpClient 的变体/包装） */
+    public String findOkHttpAnyClass() {
+        return findFirstClass("OkHttp");
+    }
+
+    private String findFirstClass(String needle) {
+        if (bridge == null) return null;
+        try {
+            java.util.List<ClassData> classes = bridge.findClass(FindClass.create()
+                    .matcher(ClassMatcher.create()
+                            .className(needle, StringMatchType.Contains, true)));
+            if (classes == null || classes.isEmpty()) return null;
+            for (ClassData cd : classes) {
+                try {
+                    String name = cd.getName();
+                    if (name == null || name.isEmpty()) continue;
+                    // 验证该类确实可加载且含 newCall(Request)（防误匹配非 OkHttpClient 类）
+                    Class<?> cls = Class.forName(name, false, appCl);
+                    try {
+                        Class<?> req = Class.forName("okhttp3.Request", false, appCl);
+                        cls.getMethod("newCall", req);
+                        return name;
+                    } catch (Throwable t) {
+                        // 无 newCall(Request)，继续找下一个
+                    }
+                } catch (Throwable t) { }
+            }
+            return null;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     /** 释放 bridge（UI 手动触发/重启时） */
     public synchronized void close() {
         try {

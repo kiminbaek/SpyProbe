@@ -55,6 +55,8 @@ public class ModuleMain extends XposedModule {
         // v1.9: 环境检测探测 + DexKit（导出 dex / 字符串反查）
         EnvProbe env = new EnvProbe(this, cl);
         DexKitProbe dexKit = new DexKitProbe(this, cl, pkg);
+        // v1.40 P0: 注入 DexKit 到 NetProbe（混淆 OkHttpClient 定位兜底）
+        net.setDexKit(dexKit);
         // v1.13: 反检测 hook 集（隐藏 root/Xposed，防目标 App 检测）
         AntiDetectProbe anti = new AntiDetectProbe(this, cl);
         // v1.38 P0-4: 双向认证证书 dump（hooker keystore_dump.js 借鉴，Config.keystoreCapture 开关）
