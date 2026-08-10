@@ -121,15 +121,8 @@ object RootLogReader {
         return any
     }
 
-    /** v1.31.2: root 抓系统 logcat 中 shadowhook_tag（shadowhook 内部日志）——
-     *  native 库内部用 __android_log_print 打 logcat，LogStore 看不到，只有 root logcat 能拿到。
-     *  返回原始文本（含时间戳/pid/tag），无输出返回 null。 */
-    fun captureShadowHookLog(): String? {
-        // logcat -d = dump 后退出；-s = 只显 tag shadowhook_tag；-t 300 限最近 300 行防超长
-        return suExec("logcat -d -t 300 -s shadowhook_tag:*")
-    }
-
     // ---------- 内部 ----------
+    // v1.43: 删除 captureShadowHookLog（v1.34 shadowhook→xhook 后 shadowhook_tag 不再有输出，死代码）
     data class FileRef(val day: String, val part: Int, val path: String)
 
     /** su -c 命令；成功返回 stdout，失败返回 null（stderr 记录到 UiLog） */

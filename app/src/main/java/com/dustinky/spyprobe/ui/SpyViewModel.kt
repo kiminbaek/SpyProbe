@@ -237,6 +237,34 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
         return pushed
     }
 
+    /**
+     * v1.43: 批量设置开关（抓包页"全开/全关/恢复默认"）——一次保存覆盖层 + 一次推送，
+     * 避免 N 次 setEffectiveSwitch 重复 saveAppConfig + pushConfig（性能 + 日志噪音）。
+     */
+    fun setSwitches(changes: Map<String, Any>): Boolean {
+        val pkg = _targetPkg.value
+        if (pkg.isEmpty()) {
+            com.dustinky.spyprobe.util.UiLog.log("setSwitches: target 为空，跳过 ${changes.size} 项")
+            return false
+        }
+        val global = loadGlobalConfig()
+        val effective = global + loadAppConfig(pkg) + changes
+        // 只存差异项（与全局相同的不占位）
+        val overrides = HashMap<String, Any>()
+        effective.forEach { (k, v) -> if (global[k] != v) overrides[k] = v }
+        saveAppConfig(pkg, overrides)
+        // v1.32: 权威配置同步到 SpyProbe 自己家（files/spyprobe_cfg.json）
+        try {
+            com.dustinky.spyprobe.Config.get().applyJson(JSONObject(effective as Map<*, *>).toString())
+            com.dustinky.spyprobe.Config.get().saveConfig(com.dustinky.spyprobe.Config.get().homeCfgFile())
+        } catch (t: Throwable) {
+            com.dustinky.spyprobe.util.UiLog.log("setSwitches: save home cfg FAIL: $t")
+        }
+        val pushed = pushConfig(pkg)
+        com.dustinky.spyprobe.util.UiLog.log("setSwitches: ${changes.size} 项 pushed=$pushed")
+        return pushed
+    }
+
     // ---------- 目标/端口 ----------
     fun setTarget(pkg: String) {
         _targetPkg.value = pkg

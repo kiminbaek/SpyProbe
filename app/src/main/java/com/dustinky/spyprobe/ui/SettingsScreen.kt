@@ -271,9 +271,11 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
         //   用户需主动授权；无权限时自动提示并回退普通模式。
         // v1.36 P1-3: v1.32 起日志已搬回 SpyProbe 自己家（HomeLogReader 免 root 直读），
         //   Root 模式仅作"本地无历史时"的兜底，文案同步降级避免误导。
+        // v1.43: 文案进一步降级——v1.32 后新日志全在 SpyProbe 自己家免 root，
+        //   Root 仅用于兼容 v1.32 前旧版本遗留数据（目标沙箱里的历史落盘文件）。
         SettingsGroup(
             title = "工作模式",
-            subtitle = "本地优先，Root 兜底",
+            subtitle = "v1.32 起日志免 root，Root 仅兼容旧数据",
             expanded = expanded.contains("mode"),
             onToggle = { toggle("mode") }
         ) {
@@ -282,9 +284,9 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                 modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Root 兜底", style = MaterialTheme.typography.bodySmall, fontSize = 12.sp)
+                    Text("Root 兼容", style = MaterialTheme.typography.bodySmall, fontSize = 12.sp)
                     Text(
-                        if (rootMode) "本地无历史时直读目标沙箱（目标 App 可不在线）" else "普通模式：仅读本地日志（v1.32 起免 root）",
+                        if (rootMode) "已开启：仅读 v1.32 前旧版本遗留数据（新日志免 root 自动进自己家）" else "已关闭：新日志存 SpyProbe 自己家，免 root 免目标在线",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 10.sp
@@ -302,9 +304,9 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                 com.dustinky.spyprobe.util.UiLog.log("Settings: 切 Root 模式 checkRoot=$hasRoot")
                                 if (hasRoot) {
                                     vm.setRootMode(true)
-                                    android.widget.Toast.makeText(context, "Root 兜底已开启（本地无历史时直读文件）", android.widget.Toast.LENGTH_SHORT).show()
+                                    android.widget.Toast.makeText(context, "Root 兼容已开启（仅旧数据兜底）", android.widget.Toast.LENGTH_SHORT).show()
                                 } else {
-                                    android.widget.Toast.makeText(context, "未检测到 root 权限：请先完成授权（Magisk/KernelSU）", android.widget.Toast.LENGTH_LONG).show()
+                                    android.widget.Toast.makeText(context, "未检测到 root 权限：旧数据兜底不可用（新日志不受影响）", android.widget.Toast.LENGTH_LONG).show()
                                 }
                             } else {
                                 vm.setRootMode(false)

@@ -65,25 +65,8 @@ public class NativeProbe {
                 LogStore.get().log(TAG, "native hook active: libc send/recv/read/write + SSL_write/SSL_read (4 libs) + HTTP/2");
             } else {
                 LogStore.get().log(TAG, "native hook init FAILED (shadowhook_init ret!=0) -> hooks disabled, active=false");
-                // v1.31.2: 失败时尝试用 root 抓 shadowhook_tag（shadowhook 内部日志在系统 logcat，
-                // LogStore 只能看到 native_log 桥的输出，看不到 shadowhook 库内部打印）——写入 LogStore 方便导出
-                try {
-                    if (com.dustinky.spyprobe.util.RootLogReader.INSTANCE.checkRoot()) {
-                        String sh = com.dustinky.spyprobe.util.RootLogReader.INSTANCE.captureShadowHookLog();
-                        if (sh != null && !sh.trim().isEmpty()) {
-                            LogStore.get().log(TAG, "--- shadowhook_tag (logcat, root 抓取) ---");
-                            for (String line : sh.split("\n")) {
-                                if (!line.trim().isEmpty()) LogStore.get().log(TAG, line.trim());
-                            }
-                        } else {
-                            LogStore.get().log(TAG, "shadowhook_tag logcat 无输出（shadowhook 未打印或缓冲已滚出）");
-                        }
-                    } else {
-                        LogStore.get().log(TAG, "无 root 权限，未抓 shadowhook_tag；可在 root shell 执行: logcat -d -s shadowhook_tag:*");
-                    }
-                } catch (Throwable t2) {
-                    LogStore.get().log(TAG, "shadowhook_tag 抓取异常: " + t2);
-                }
+                // v1.43: 删除 v1.31.2 的 shadowhook_tag root 抓取——v1.34 已把 shadowhook 换成 xhook，
+                //   xhook 不打 shadowhook_tag 这个 logcat tag，该分支永远无输出，属死代码。
             }
         } catch (Throwable t) {
             LogStore.get().log(TAG, "native hook init fail: " + t);

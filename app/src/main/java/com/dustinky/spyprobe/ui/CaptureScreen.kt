@@ -19,7 +19,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
@@ -64,6 +66,23 @@ import java.util.regex.Pattern
 
 // v1.24: 抓包页重做 —— 大状态卡 + 分组开关 + 日志预览 + 终端风格
 // v1.18: 抓包页 —— 目标/端口/状态/记录开关 + 日志入口（日志流已移到独立 LogsScreen）
+// v1.43: 整页可滚动 + 批量开关（全开/全关/恢复默认）+ 重放快捷入口
+
+/** v1.43: 抓包页全部开关 key（用于"全开/全关"） */
+private val ALL_SWITCH_KEYS = listOf(
+    "sslBypass", "okhttp", "url", "dns", "tcp",
+    "tls", "connect", "cronet", "native",
+    "webView", "logcat", "sqlite", "urlBuild",
+    "crypto", "activity", "json", "env", "classes"
+)
+
+/** v1.43: 抓包开关默认值（与下方各 SwitchItem 的 fallback 默认一致，恢复默认用） */
+private val DEFAULT_SWITCHES: Map<String, Any> = mapOf(
+    "sslBypass" to true, "okhttp" to true, "url" to true, "dns" to true, "tcp" to true,
+    "tls" to true, "connect" to true, "cronet" to false, "native" to true,
+    "webView" to true, "logcat" to true, "sqlite" to true, "urlBuild" to true,
+    "crypto" to false, "activity" to false, "json" to false, "env" to true, "classes" to true
+)
 
 @Composable
 fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier = Modifier) {
@@ -83,6 +102,15 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
     fun setSwitch(key: String, value: Boolean) {
         val ok = vm.setEffectiveSwitch(key, value)
         cfg = cfg + (key to value)
+        if (!ok) {
+            android.widget.Toast.makeText(context, "未连接，已保存本地，连接后自动生效", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // v1.43: 批量应用开关（全开/全关/恢复默认）——一次保存+一次推送
+    fun applySwitches(values: Map<String, Any>) {
+        val ok = vm.setSwitches(values)
+        cfg = cfg + values
         if (!ok) {
             android.widget.Toast.makeText(context, "未连接，已保存本地，连接后自动生效", android.widget.Toast.LENGTH_SHORT).show()
         }
@@ -121,7 +149,14 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
         if (connected && showReplay) refreshReplay()
     }
 
-    Column(modifier = modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+    // v1.43 P0-1: 整页加 verticalScroll——此前 Column 不可滚动，展开"高级抓包/应用层记录"
+    //   后内容超出屏幕底部无法操作（状态卡+3组开关+日志预览+重放卡总高约 920dp，主流屏 640-800dp）
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp)
+    ) {
 
         // ===== 状态大卡（v1.24 核心：App 图标 + 状态 + 端口 + 目标切换）=====
         Card(
@@ -173,7 +208,7 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
                     )
                 }
 
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(12.dp))
 
                 // 目标 App 行：图标 + 包名 + 切换
                 var showPicker by remember { mutableStateOf(false) }
@@ -224,7 +259,23 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
         }
 
         // ===== 开关分组（v1.24：可折叠卡片，分三组）=====
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(12.dp))
+
+        // v1.43 P1: 批量开关——调试常要"全开抓一把"，逐个点 18 个开关太累
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp)
+        ) {
+            Text(
+                "抓包开关",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = { applySwitches(ALL_SWITCH_KEYS.associateWith { true }) }) { Text("全开", fontSize = 12.sp) }
+            TextButton(onClick = { applySwitches(ALL_SWITCH_KEYS.associateWith { false }) }) { Text("全关", fontSize = 12.sp) }
+            TextButton(onClick = { applySwitches(DEFAULT_SWITCHES) }) { Text("恢复默认", fontSize = 12.sp) }
+        }
 
         // 基础抓包
         SwitchGroupCard(
@@ -303,7 +354,7 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
             }
         }
 
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(12.dp))
 
         // ===== 日志预览卡（v1.24 新增：抓包页直接看最近几条）=====
         Card(
@@ -346,6 +397,18 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
                         )
                     }
                     Spacer(Modifier.weight(1f))
+                    // v1.43 P2: 请求重放快捷入口——ReplayCard 折叠在页底可发现性差，
+                    //   日志预览卡右上角直接给入口（有缓存请求才显示）
+                    if (replayItems.isNotEmpty()) {
+                        TextButton(
+                            onClick = {
+                                showReplay = true
+                                refreshReplay()
+                            },
+                            modifier = Modifier.height(28.dp)
+                        ) { Text("重放 ${replayItems.size}", fontSize = 11.sp) }
+                        Spacer(Modifier.width(4.dp))
+                    }
                     Text(
                         "查看全部 ›",
                         style = MaterialTheme.typography.bodySmall,
@@ -388,7 +451,7 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
             }
         }
 
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(12.dp))
 
         // ===== 请求重放卡（v1.40 P1：OkHttpLogger-Frida/poker 借鉴）=====
         ReplayCard(
