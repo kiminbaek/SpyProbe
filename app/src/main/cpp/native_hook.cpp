@@ -604,26 +604,77 @@ static void native_log(const char* msg) {
     if (need_detach) gJvm->DetachCurrentThread();
 }
 
-// v1.45.3 P0: SSL_get_fd 解析终极方案——dlsym(RTLD_DEFAULT) 失败（目标 App SSL 库 RTLD_LOCAL
-//   加载/内置，符号不进全局表）时，用 dladdr 反查 orig 指针所属 so 文件，dlopen(RTLD_NOLOAD)
-//   拿句柄再 dlsym。无论库怎么加载，只要 .dynsym 导出 SSL_get_fd 就能解析。
+// v1.45.4 P0: SSL_get_fd 解析终极方案——dlsym(RTLD_DEFAULT) 失败（目标 App SSL 库 RTLD_LOCAL
+//   加载/内置，符号不进全局表）；dladdr 也被 Android 对 zip 内 so 误判（返回自身库）。
+//   最终方案：遍历 /proc/self/maps 收集所有 .so 路径 → 逐个 dlopen(RTLD_NOLOAD) 拿句柄 →
+//   dlsym(句柄, "SSL_get_fd")。RTLD_NOLOAD 返回已加载库的句柄，dlsym 沿句柄依赖链查找，
+//   RTLD_LOCAL/GLOBAL 完全不影响；命中一次即缓存。
+static long now_ms() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static void resolve_ssl_get_fd_scan() {
+    if (real_SSL_get_fd != nullptr) return;
+    // 防抖：2 秒内最多扫一次，避免 SSL 高频回调拖慢
+    static std::atomic<long> g_last_scan_ms{0};
+    long now = now_ms();
+    long last = g_last_scan_ms.load(std::memory_order_relaxed);
+    if (now - last < 2000) return;
+    g_last_scan_ms.store(now, std::memory_order_relaxed);
+
+    FILE* fp = fopen("/proc/self/maps", "r");
+    if (fp == nullptr) return;
+    char line[1024];
+    char path[512];
+    int scanned = 0;
+    while (fgets(line, sizeof(line), fp) != nullptr) {
+        if (sscanf(line, "%*[0-9a-fA-F]-%*[0-9a-fA-F] %*s %*s %*s %*s %511s", path) != 1) continue;
+        if (strstr(path, ".so") == nullptr) continue;
+        // 跳过明显无关与自己
+        if (strstr(path, "libnative_hook") != nullptr) continue;
+        if (strstr(path, "libc.so") != nullptr || strstr(path, "libdl.so") != nullptr) continue;
+        scanned++;
+        void* h = dlopen(path, RTLD_NOW | RTLD_NOLOAD);
+        if (h == nullptr) continue;
+        void* sym = dlsym(h, "SSL_get_fd");
+        if (sym != nullptr) {
+            real_SSL_get_fd = (type_SSL_get_fd)sym;
+            char buf[256];
+            snprintf(buf, sizeof(buf), "XH pcap: SSL_get_fd resolved via scan(%d) %s", scanned, path);
+            native_log(buf);
+            dlclose(h);
+            fclose(fp);
+            return;
+        }
+        dlclose(h);
+    }
+    fclose(fp);
+    char buf[128];
+    snprintf(buf, sizeof(buf), "XH pcap: SSL_get_fd scan FAIL (%d so)", scanned);
+    native_log(buf);
+}
+
+// v1.45.3 路径保留：dladdr 反查（个别机型能成功），失败立即转 scan
 static void resolve_ssl_get_fd_via_dladdr(void* sym) {
     if (real_SSL_get_fd != nullptr || sym == nullptr) return;
     Dl_info info;
-    if (dladdr(sym, &info) == 0 || info.dli_fname == nullptr) return;
-    void* h = dlopen(info.dli_fname, RTLD_NOW | RTLD_NOLOAD);
-    if (h == nullptr) return;
-    real_SSL_get_fd = (type_SSL_get_fd)dlsym(h, "SSL_get_fd");
-    if (real_SSL_get_fd != nullptr) {
-        char buf[256];
-        snprintf(buf, sizeof(buf), "XH pcap: SSL_get_fd resolved via dladdr %s", info.dli_fname);
-        native_log(buf);
-    } else {
-        char buf[256];
-        snprintf(buf, sizeof(buf), "XH pcap: dlsym SSL_get_fd FAIL via dladdr %s", info.dli_fname);
-        native_log(buf);
+    if (dladdr(sym, &info) != 0 && info.dli_fname != nullptr) {
+        void* h = dlopen(info.dli_fname, RTLD_NOW | RTLD_NOLOAD);
+        if (h != nullptr) {
+            real_SSL_get_fd = (type_SSL_get_fd)dlsym(h, "SSL_get_fd");
+            if (real_SSL_get_fd != nullptr) {
+                char buf[256];
+                snprintf(buf, sizeof(buf), "XH pcap: SSL_get_fd resolved via dladdr %s", info.dli_fname);
+                native_log(buf);
+                dlclose(h);
+                return;
+            }
+            dlclose(h);
+        }
     }
-    dlclose(h);
+    resolve_ssl_get_fd_scan();
 }
 
 // ================= v1.38 P0-2/P0-3: BoringSSL verify 绕过 + keylog =================
