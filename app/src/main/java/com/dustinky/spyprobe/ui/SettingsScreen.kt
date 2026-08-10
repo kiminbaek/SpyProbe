@@ -12,11 +12,13 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Share
@@ -561,10 +563,58 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             Divider()
 
             // ===== v1.37 P0-4: 检查更新 =====
+            // v1.43.1: 检查到新版本 → AlertDialog 弹窗展示完整更新日志（此前 body.take(200)+maxLines=3
+            //   只能看到开头）；下载流程抽 startUpdate 复用（弹窗按钮与内嵌备用按钮共用同一逻辑）
             var updateStatus by remember { mutableStateOf("") }
             var updateInfo by remember { mutableStateOf<com.dustinky.spyprobe.Updater.UpdateInfo?>(null) }
+            var showUpdateDialog by remember { mutableStateOf(false) }
             var downloading by remember { mutableStateOf(false) }
             var downloadPct by remember { mutableStateOf(0) }
+
+            fun startUpdate(upInfo: com.dustinky.spyprobe.Updater.UpdateInfo) {
+                scope.launch {
+                    downloading = true
+                    downloadPct = 0
+                    com.dustinky.spyprobe.util.UiLog.log("Settings: 开始下载更新 v${upInfo.latestVersion}")
+                    val dest = java.io.File(context.filesDir, "update.apk")
+                    val ok = withContext(Dispatchers.IO) {
+                        com.dustinky.spyprobe.Updater.download(upInfo.downloadUrl, dest) { pct ->
+                            downloadPct = pct
+                        }
+                    }
+                    if (!ok) {
+                        updateStatus = "下载失败（网络/镜像不可用）"
+                        downloading = false
+                    } else {
+                        updateStatus = "下载完成，校验中…"
+                        val err = withContext(Dispatchers.IO) {
+                            com.dustinky.spyprobe.Updater.verify(context, dest, upInfo.sha256)
+                        }
+                        if (err != null) {
+                            updateStatus = "校验失败：$err"
+                            downloading = false
+                        } else {
+                            updateStatus = "校验通过，安装中…"
+                            val installed = withContext(Dispatchers.IO) {
+                                com.dustinky.spyprobe.Updater.installRoot(dest)
+                            }
+                            if (installed) {
+                                updateStatus = "已静默安装，重启 SpyProbe 生效"
+                                downloading = false
+                            } else {
+                                // root 失败 → 系统安装器
+                                updateStatus = "静默安装失败，改用系统安装器"
+                                val started = withContext(Dispatchers.IO) {
+                                    com.dustinky.spyprobe.Updater.installSystem(context, dest)
+                                }
+                                updateStatus = if (started) "已打开系统安装器" else "系统安装器启动失败"
+                                downloading = false
+                            }
+                        }
+                    }
+                }
+            }
+
             Button(
                 onClick = {
                     com.dustinky.spyprobe.util.UiLog.log("Settings: 点击「检查更新」")
@@ -579,6 +629,7 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                     "检查失败：${r.reason}"
                                 is com.dustinky.spyprobe.Updater.CheckResult.Update -> {
                                     updateInfo = r.info
+                                    showUpdateDialog = true
                                     "发现新版本 v${r.info.latestVersion}"
                                 }
                             }
@@ -595,61 +646,30 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 4.dp), fontSize = 11.sp)
             }
+            // 内嵌备用操作行（弹窗被外部点击关闭后仍有下载入口）
             val upInfo = updateInfo
             if (upInfo != null && !downloading) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
-                    Button(onClick = {
-                        scope.launch {
-                            downloading = true
-                            downloadPct = 0
-                            com.dustinky.spyprobe.util.UiLog.log("Settings: 开始下载更新 v${upInfo.latestVersion}")
-                            val dest = java.io.File(context.filesDir, "update.apk")
-                            val ok = withContext(Dispatchers.IO) {
-                                com.dustinky.spyprobe.Updater.download(upInfo.downloadUrl, dest) { pct ->
-                                    downloadPct = pct
-                                }
-                            }
-                            if (!ok) {
-                                updateStatus = "下载失败（网络/镜像不可用）"
-                                downloading = false
-                            } else {
-                                updateStatus = "下载完成，校验中…"
-                                val err = withContext(Dispatchers.IO) {
-                                    com.dustinky.spyprobe.Updater.verify(context, dest, upInfo.sha256)
-                                }
-                                if (err != null) {
-                                    updateStatus = "校验失败：$err"
-                                    downloading = false
-                                } else {
-                                    updateStatus = "校验通过，安装中…"
-                                    val installed = withContext(Dispatchers.IO) {
-                                        com.dustinky.spyprobe.Updater.installRoot(dest)
-                                    }
-                                    if (installed) {
-                                        updateStatus = "已静默安装，重启 SpyProbe 生效"
-                                        downloading = false
-                                    } else {
-                                        // root 失败 → 系统安装器
-                                        updateStatus = "静默安装失败，改用系统安装器"
-                                        val started = withContext(Dispatchers.IO) {
-                                            com.dustinky.spyprobe.Updater.installSystem(context, dest)
-                                        }
-                                        updateStatus = if (started) "已打开系统安装器" else "系统安装器启动失败"
-                                        downloading = false
-                                    }
-                                }
-                            }
-                        }
-                    }) { Text("下载并更新", fontSize = 12.sp) }
+                    Button(onClick = { startUpdate(upInfo) }) { Text("下载并更新", fontSize = 12.sp) }
                     TextButton(onClick = { updateInfo = null; updateStatus = "" }) {
                         Text("忽略", fontSize = 12.sp)
                     }
                 }
-                if (upInfo.body.isNotBlank()) {
-                    Text(upInfo.body.take(200), style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 4.dp), fontSize = 10.sp, maxLines = 3)
-                }
+            }
+            // v1.43.1: 新版本弹窗——完整更新日志（可滚动）+ 下载/忽略
+            if (upInfo != null && showUpdateDialog && !downloading) {
+                UpdateDialog(
+                    info = upInfo,
+                    onDownload = {
+                        showUpdateDialog = false
+                        startUpdate(upInfo)
+                    },
+                    onDismiss = {
+                        showUpdateDialog = false
+                        updateInfo = null
+                        updateStatus = ""
+                    }
+                )
             }
             Divider()
             // v1.29: 独立调试日志 —— 排查"历史无记录/导出失败/重启丢日志"一键分享
@@ -717,6 +737,50 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
 }
 
 // ===== 分组卡片 =====
+/**
+ * v1.43.1: 新版本弹窗——完整更新日志（可滚动）+ 下载/忽略。
+ * 此前更新日志在设置页内嵌 body.take(200)+maxLines=3，只能看到开头；
+ * 改为弹窗展示 release notes 全文（markdown 原文，纯文本显示），最多 360dp 高可滚动。
+ */
+@Composable
+private fun UpdateDialog(
+    info: com.dustinky.spyprobe.Updater.UpdateInfo,
+    onDownload: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                "发现新版本 v${info.latestVersion}",
+                fontWeight = FontWeight.Bold,
+                fontSize = 16.sp
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 360.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    info.body.ifBlank { "（本次发布无更新说明）" },
+                    style = MaterialTheme.typography.bodySmall,
+                    fontSize = 12.sp,
+                    lineHeight = 18.sp
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = onDownload) { Text("下载并更新") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("忽略") }
+        }
+    )
+}
+
 @Composable
 private fun SettingsGroup(
     title: String,
