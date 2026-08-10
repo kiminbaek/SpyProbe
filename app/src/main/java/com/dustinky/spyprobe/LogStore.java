@@ -126,15 +126,29 @@ public class LogStore {
             os.write(data);
             os.flush();
             // 读响应直到关闭（Connection: close），避免对端 write 失败
+            // v1.41 P1: 解析状态行留痕——"不知道日志有没有推到主进程"是核心痛点；
+            //   非 200 时 DebugLog 记录（DebugLog 不走 push 队列，失败日志不会再次触发推送死循环）
             java.io.InputStream is = sock.getInputStream();
             byte[] tmp = new byte[256];
+            int first = is.read(tmp);
             long deadline = System.currentTimeMillis() + 1000;
             while (System.currentTimeMillis() < deadline && is.read(tmp) != -1) { }
+            if (first > 0) {
+                String resp = new String(tmp, 0, Math.min(first, tmp.length), java.nio.charset.StandardCharsets.UTF_8);
+                if (!resp.startsWith("HTTP/1.1 200")) {
+                    String statusLine = resp;
+                    int cr = resp.indexOf('\r');
+                    if (cr > 0) statusLine = resp.substring(0, cr);
+                    DebugLog.get().log("PushHome", "push " + batch.size() + " lines -> " + statusLine
+                            + " (token=" + (pushToken.isEmpty() ? "EMPTY" : "set") + ")");
+                }
+            }
             try { is.close(); } catch (Throwable t2) { }
             try { os.close(); } catch (Throwable t2) { }
             try { sock.close(); } catch (Throwable t2) { }
         } catch (Throwable t) {
-            // 主进程不在线/推送失败：静默丢弃（内存缓冲仍在，UI 连目标进程时可见）
+            // 主进程不在线/推送失败：留痕（内存缓冲仍在，UI 连目标进程时可见）
+            DebugLog.get().log("PushHome", "push " + batch.size() + " lines FAIL: " + t);
         }
     }
 

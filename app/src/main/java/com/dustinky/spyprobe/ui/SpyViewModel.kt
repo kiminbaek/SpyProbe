@@ -252,33 +252,41 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------- 轮询 ----------
+    // v1.41 架构修正：日志源双通道——
+    //   ① 主数据源 = 9900 自己家（homeFetchLogs：SpyHomeServer 收 push_logs 的内存 LogStore，永远可用）
+    //   ② 9901 目标进程只用于连接状态检测（ping）与配置补发
+    //   效果：目标 App 不在线时，实时日志仍显示已推回自己家的内容；分享走 homeExport 不再失败
     fun startPolling() {
         if (pollingJob != null && pollingJob!!.isActive) return
         pollingJob = viewModelScope.launch {
             // v1.23: 连接状态跟踪（断开→恢复时自动补发当前目标配置）
             var wasConnected = false
             while (isActive) {
-                val resp = withContext(Dispatchers.IO) { api.fetchLogs(since) }
-                if (resp != null) {
-                    if (!wasConnected) {
-                        wasConnected = true
-                        // v1.36 P1-2: 连接恢复重置 since —— 目标进程重启后新进程 seq 从 1 开始，
-                        //   旧 since（如 1234）轮询返回空且被更新为小值 → seq < since 的新日志永久跳过；
-                        //   重置后全量重拉 + 清空旧列表（旧进程日志已无意义）
-                        since = 0
-                        _logLines.value = emptyList()
-                        com.dustinky.spyprobe.util.UiLog.log("轮询: 连接恢复 target=${_targetPkg.value} port=${api.baseUrl()} since 重置 0")
-                        // v1.23: 目标进程连接恢复 → 自动补发该 App 生效配置（本地权威推送到执行端）
-                        val pkg = _targetPkg.value
-                        if (pkg.isNotEmpty()) {
-                            withContext(Dispatchers.IO) { api.sendConfig(effectiveConfig(pkg)) }
-                        }
-                        refreshStatus()
-                        // v1.36 P1-2: 本轮 resp 是旧 since 拉的结果，跳过本轮追加，
-                        //   下一轮 with since=0 全量重拉（不重复显示）
-                        continue
+                // ① 9901 ping → 目标进程在线状态（决定是否重置 since + 补发配置）
+                val alive = withContext(Dispatchers.IO) { api.ping() != null }
+                if (alive && !wasConnected) {
+                    wasConnected = true
+                    // v1.36 P1-2: 连接恢复重置 since —— 目标进程重启后新进程 seq 从 1 开始，
+                    //   旧 since（如 1234）轮询返回空且被更新为小值 → seq < since 的新日志永久跳过；
+                    //   重置后全量重拉 + 清空旧列表（旧进程日志已无意义）
+                    since = 0
+                    _logLines.value = emptyList()
+                    com.dustinky.spyprobe.util.UiLog.log("轮询: 目标在线 target=${_targetPkg.value} since 重置 0")
+                    // v1.23: 目标进程连接恢复 → 自动补发该 App 生效配置（本地权威推送到执行端）
+                    val pkg = _targetPkg.value
+                    if (pkg.isNotEmpty()) {
+                        withContext(Dispatchers.IO) { api.sendConfig(effectiveConfig(pkg)) }
                     }
-                    val (newLogs, next) = resp
+                    refreshStatus()
+                } else if (!alive && wasConnected) {
+                    wasConnected = false
+                    refreshStatus()
+                }
+
+                // ② 日志数据 = 9900 自己家（push_logs 推回主进程的 LogStore；目标不在线也保留历史）
+                val homeResp = withContext(Dispatchers.IO) { api.homeFetchLogs(since) }
+                if (homeResp != null) {
+                    val (newLogs, next) = homeResp
                     since = next
                     if (newLogs.isNotEmpty()) {
                         // v1.16 P0-2: 每行分配唯一自增 seq
@@ -289,7 +297,20 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
                         } else all
                     }
                 } else {
-                    wasConnected = false
+                    // 9900 异常不可用（理论不发生）→ 回退 9901 目标进程增量
+                    com.dustinky.spyprobe.util.UiLog.log("轮询: 9900 不可用，回退 9901")
+                    val resp = withContext(Dispatchers.IO) { api.fetchLogs(since) }
+                    if (resp != null) {
+                        val (newLogs, next) = resp
+                        since = next
+                        if (newLogs.isNotEmpty()) {
+                            val newLines = newLogs.flatMap { it.display().split("\n") }.map { Pair(++logSeq, it) }
+                            val all = (_logLines.value + newLines)
+                            _logLines.value = if (all.size > MAX_LOG_LINES) {
+                                all.subList(all.size - MAX_LOG_LINES, all.size)
+                            } else all
+                        }
+                    }
                 }
                 delay(800)
             }

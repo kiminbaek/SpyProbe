@@ -279,6 +279,74 @@ class SpyApi(private var port: Int = 9901) {
         }
     }
 
+    // ---------- v1.41: 主进程自己家通道（9900） ----------
+    // 目标：实时日志/实时分享不依赖目标进程在线——日志已推回主进程 LogStore，UI 直接读自己家
+    // 9900 = SpyHomeServer（主进程内，MainActivity 启动），永远可用（只要 SpyProbe UI 进程活着）
+
+    private fun homeBaseUrl(): String = "http://127.0.0.1:9900"
+
+    private fun homeHttpGet(path: String, readTimeoutMs: Int = 1500): String? {
+        val t0 = System.currentTimeMillis()
+        return try {
+            val u = URL(homeBaseUrl() + path)
+            val c = u.openConnection() as HttpURLConnection
+            c.connectTimeout = 1500
+            c.readTimeout = readTimeoutMs
+            val r = BufferedReader(InputStreamReader(c.inputStream, StandardCharsets.UTF_8))
+            val sb = StringBuilder()
+            var line: String?
+            while (r.readLine().also { line = it } != null) sb.append(line).append('\n')
+            r.close()
+            c.disconnect()
+            lastHttpError = ""
+            com.dustinky.spyprobe.util.UiLog.log("home GET $path OK ${sb.length}B ${System.currentTimeMillis() - t0}ms")
+            sb.toString()
+        } catch (t: Throwable) {
+            lastHttpError = "home GET $path: ${t.javaClass.simpleName}: ${t.message}"
+            com.dustinky.spyprobe.util.UiLog.log("homeHttpGet fail: $lastHttpError (${System.currentTimeMillis() - t0}ms)")
+            null
+        }
+    }
+
+    /** 自己家增量日志（实时轮询主用；返回新行+next，null=自己家不可用） */
+    fun homeFetchLogs(since: Long): Pair<List<LogEntry>, Long>? {
+        val resp = homeHttpGet("/api/logs?since=$since") ?: return null
+        return try {
+            val o = JSONObject(resp)
+            val next = o.optLong("next", since)
+            val arr = o.optJSONArray("logs") ?: JSONArray()
+            val list = ArrayList<LogEntry>()
+            for (i in 0 until arr.length()) {
+                val e = arr.getJSONObject(i)
+                list.add(LogEntry(e.optString("time"), e.optString("tag"), e.optString("msg")))
+            }
+            Pair(list, next)
+        } catch (t: Throwable) { null }
+    }
+
+    /** 自己家导出当前内存日志为纯文本（实时分享主用；不依赖目标进程在线） */
+    fun homeExport(): String? {
+        val resp = homeHttpGet("/api/export", 20000)
+        if (resp == null) {
+            com.dustinky.spyprobe.util.UiLog.log("homeExport(): null ($lastHttpError)")
+            return null
+        }
+        return try {
+            val o = JSONObject(resp)
+            if (!o.optBoolean("ok", false)) {
+                com.dustinky.spyprobe.util.UiLog.log("homeExport(): ok=false, resp=${resp.take(200)}")
+                null
+            } else {
+                val text = o.optString("text")
+                com.dustinky.spyprobe.util.UiLog.log("homeExport(): ok, text len=${text.length}")
+                text
+            }
+        } catch (t: Throwable) {
+            com.dustinky.spyprobe.util.UiLog.log("homeExport(): JSON parse fail: ${t.javaClass.simpleName}: ${t.message}, resp=${resp.take(200)}")
+            null
+        }
+    }
+
     // ---------- v1.27: 历史日志（落盘文件） ----------
     /** 可用的历史日期列表（新日期在前） */
     fun historyDays(): List<String>? {

@@ -751,7 +751,11 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                     }
                                     return@launch
                                 }
-                                val text = withContext(Dispatchers.IO) { vm.api.export() }
+                                // v1.41: 实时分享双通道——先读自己家（9900，永远可用，APP 不在线也成功）
+                                // 9901 目标进程 export 仅作兜底（自己家不可用时）
+                                val text = withContext(Dispatchers.IO) {
+                                    vm.api.homeExport() ?: vm.api.export()
+                                }
                                 if (text == null || text.isEmpty()) {
                                     val why = if (text == null) vm.api.lastHttpError.ifEmpty { "HTTP 无响应" } else "日志内容为空"
                                     com.dustinky.spyprobe.util.UiLog.log("LogsScreen 导出失败: $why")

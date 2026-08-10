@@ -49,10 +49,12 @@ public class NativeProbe {
         //   此前 init() 无条件执行、开关只控制"是否记录"，用户关 native 后 shadowhook 照样
         //   inline hook libc 高频函数 → 91暗网(Flutter) 进主界面闪退、且关了 native 也闪退。
         // 现在：native=false 时跳过整个 native 层（不 loadLibrary 不 hook），Java 层抓包不受影响。
-        if (!Config.get().nativeCapture) {
-            LogStore.get().log(TAG, "native hook skipped: nativeCapture=false (native 层不装 hook；Java 层 SSL 绕过/OkHttp 等照常，重启目标 App 后生效)");
+        // v1.41 P0: pcap 独立于 nativeCapture——只开 pcap 导出时也装 native hook（pcap 数据源=native SSL hook）
+        if (!Config.get().nativeCapture && !Config.get().pcapCapture) {
+            LogStore.get().log(TAG, "native hook skipped: nativeCapture=false && pcapCapture=false (native 层不装 hook；Java 层 SSL 绕过/OkHttp 等照常，重启目标 App 后生效)");
             return;
         }
+        LogStore.get().log(TAG, "native hook init: nativeCapture=" + Config.get().nativeCapture + " pcapCapture=" + Config.get().pcapCapture);
         try {
             System.loadLibrary("native_hook");
             // v1.31.2 P0-1: initNativeHook 改为返回 boolean——v1.31.1 及以前无脑置 inited=true，
@@ -128,11 +130,10 @@ public class NativeProbe {
     @SuppressWarnings("unused")
     private static boolean onNativeData(long id, boolean isWrite, ByteBuffer buf, String socketInfo, String stack, boolean isSsl) {
         try {
-            // v1.15 P0-4: native 抓包开关（高频刷屏可关；关时不做任何记录/解析，只放行）
-            if (!Config.get().nativeCapture) return false;
             if (buf == null) return false;
             // v1.35 P0-1b: 跳过自身日志推送（127.0.0.1:9900），根治递归污染
             if (isSelfPush(socketInfo)) return false;
+            // v1.41 P0: pcap 独立于 nativeCapture——只开 pcap 导出时也采集 TLS 明文（pcap 数据源=native SSL hook）
             // v1.39 P0: pcap 导出——TLS 明文完整喂 PcapWriter（独立 duplicate 读取，不影响日志读取）
             if (isSsl && Config.get().pcapCapture) {
                 try {
@@ -145,6 +146,8 @@ public class NativeProbe {
                 } catch (Throwable ignored) {
                 }
             }
+            // v1.41 P0: native 日志记录仍受 nativeCapture 控制（pcap 已在上方独立采集）
+            if (!Config.get().nativeCapture) return false;
             String dir = isWrite ? ">>>" : "<<<";
             String proto = isSsl ? "TLS" : "TCP";
             String loc = (socketInfo != null && !socketInfo.isEmpty()) ? socketInfo : ("#" + id);
@@ -220,8 +223,7 @@ public class NativeProbe {
     @SuppressWarnings("unused")
     private static void onConnectionClosed(long id, boolean isSsl) {
         try {
-            // v1.15 P0-4: native 抓包开关
-            if (!Config.get().nativeCapture) return;
+            // v1.41 P0: pcap 独立于 nativeCapture——只开 pcap 时连接关闭也要 flush 会话
             // v1.39 P0: TLS 连接关闭 → pcap 会话记录推主进程
             if (isSsl && Config.get().pcapCapture) {
                 try {
@@ -229,6 +231,8 @@ public class NativeProbe {
                 } catch (Throwable ignored) {
                 }
             }
+            // v1.41 P0: 连接关闭日志记录仍受 nativeCapture 控制（pcap 已在上方独立处理）
+            if (!Config.get().nativeCapture) return;
             LogStore.get().log(TAG, "[conn closed " + (isSsl ? "TLS" : "TCP") + " #" + id + "]");
         } catch (Throwable ignored) {
         }

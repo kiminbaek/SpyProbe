@@ -33,6 +33,30 @@ public class PcapWriter {
     /** v1.37 P0-5: 与 push_logs 同 token 鉴权（目标进程启动时由 ModuleMain 调） */
     public void enablePushHome(String token) {
         this.pushToken = token == null ? "" : token;
+        // v1.41 P0: 周期 flush——长连接（不关闭）数据也能推主进程，不依赖连接关闭事件
+        ensurePeriodicFlush();
+    }
+
+    private volatile boolean flushThreadStarted = false;
+
+    /** v1.41 P0: 每 5s flush 全部活跃会话到主进程（长连接场景 pcap 也能落盘/导出） */
+    private synchronized void ensurePeriodicFlush() {
+        if (flushThreadStarted) return;
+        flushThreadStarted = true;
+        Thread t = new Thread(() -> {
+            while (true) {
+                try {
+                    Thread.sleep(5000);
+                    if (Config.get().pcapCapture && !pushToken.isEmpty()) {
+                        flushAll();
+                    }
+                } catch (Throwable ignored) {
+                    // 目标进程绝不能崩
+                }
+            }
+        }, "pcap-periodic-flush");
+        t.setDaemon(true);
+        t.start();
     }
 
     private static class Session {
@@ -139,12 +163,25 @@ public class PcapWriter {
             java.io.InputStream is = sock.getInputStream();
             byte[] tmp = new byte[128];
             long deadline = System.currentTimeMillis() + 1000;
-            while (System.currentTimeMillis() < deadline && is.read(tmp) != -1) { }
+            StringBuilder sb = new StringBuilder();
+            while (System.currentTimeMillis() < deadline && is.read(tmp) != -1) {
+                sb.append(new String(tmp, java.nio.charset.StandardCharsets.UTF_8).trim());
+            }
+            String resp = sb.toString();
+            // v1.41 P0: pcap 推送失败留痕（401 等可诊断；同 push_logs 鉴权问题）
+            if (resp.startsWith("HTTP/1.1 401") || resp.contains("401")) {
+                try { DebugLog.get().log("PcapPush", "pcap_chunk 401 (token 不匹配/缺失) conn=" + connId); } catch (Throwable ignored) { }
+            } else if (resp.startsWith("HTTP/1.1 200") || resp.contains("\"ok\":true")) {
+                // ok
+            } else {
+                try { DebugLog.get().log("PcapPush", "pcap_chunk resp=" + resp); } catch (Throwable ignored) { }
+            }
             try { is.close(); } catch (Throwable t2) { }
             try { os.close(); } catch (Throwable t2) { }
             try { sock.close(); } catch (Throwable t2) { }
         } catch (Throwable t) {
-            // 主进程不在线：静默丢弃（UI 连目标进程时可重导）
+            // 主进程不在线：静默丢弃（UI 连目标进程时可重导）；v1.41 加 DebugLog 留痕
+            try { DebugLog.get().log("PcapPush", "pcap_chunk fail: " + t.getClass().getSimpleName() + ": " + t.getMessage()); } catch (Throwable ignored) { }
         }
     }
 

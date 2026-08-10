@@ -185,6 +185,21 @@ public class SpyHomeServer {
             String p = path.contains("?") ? path.substring(0, path.indexOf('?')) : path;
 
             switch (p) {
+                case "/api/export": {
+                    // v1.41: 自己家导出（UI 实时分享不依赖目标进程在线）
+                    // 最近 3000 条（同 9901 逻辑，防超大拼接）
+                    StringBuilder sb = new StringBuilder();
+                    java.util.List<LogStore.Entry> all = LogStore.get().all();
+                    int from = Math.max(0, all.size() - 3000);
+                    for (int i = from; i < all.size(); i++) {
+                        LogStore.Entry e = all.get(i);
+                        sb.append(com.dustinky.spyprobe.util.ShareLogUtil.INSTANCE.formatLine(e.time, e.tag, e.msg)).append('\n');
+                    }
+                    JSONObject o = new JSONObject();
+                    o.put("ok", true);
+                    o.put("text", sb.toString());
+                    return o.toString();
+                }
                 case "/api/ping": {
                     JSONObject o = new JSONObject();
                     o.put("ok", true);
@@ -236,14 +251,18 @@ public class SpyHomeServer {
                     return o.toString();
                 }
                 case "/api/logs": {
-                    // 最近 N 条日志（可选 tag 过滤）；URL: /api/logs?limit=100&tag=SpyProbe
-                    int limit = 200;
+                    // v1.41: 支持 since 增量（UI 实时轮询自己家用）；格式与 9901 对齐（logs+next）
+                    // 兼容旧参数 limit/tag：limit 取最近 N 条，tag 过滤
+                    long since = 0;
+                    int limit = -1;
                     String tagFilter = "";
                     String q = path.contains("?") ? path.substring(path.indexOf('?') + 1) : "";
                     for (String kv : q.split("&")) {
                         String[] pair = kv.split("=");
                         if (pair.length != 2) continue;
-                        if ("limit".equals(pair[0])) {
+                        if ("since".equals(pair[0])) {
+                            try { since = Long.parseLong(pair[1]); } catch (Throwable t) { since = 0; }
+                        } else if ("limit".equals(pair[0])) {
                             try { limit = Math.max(1, Math.min(Integer.parseInt(pair[1]), 2000)); } catch (Throwable t) { }
                         } else if ("tag".equals(pair[0])) {
                             tagFilter = pair[1];
@@ -251,22 +270,39 @@ public class SpyHomeServer {
                     }
                     java.util.List<LogStore.Entry> all = LogStore.get().all();
                     JSONArray arr = new JSONArray();
-                    int from = Math.max(0, all.size() - limit);
-                    for (int i = from; i < all.size(); i++) {
-                        LogStore.Entry e = all.get(i);
-                        if (!tagFilter.isEmpty() && !e.tag.contains(tagFilter)) continue;
-                        JSONObject eo = new JSONObject();
-                        eo.put("seq", e.seq);
-                        eo.put("t", e.time);
-                        eo.put("tag", e.tag);
-                        eo.put("m", e.msg);
-                        arr.put(eo);
+                    if (since > 0) {
+                        // since 模式：返回 seq > since 的全部（增量）
+                        for (LogStore.Entry e : all) {
+                            if (e.seq <= since) continue;
+                            if (!tagFilter.isEmpty() && !e.tag.contains(tagFilter)) continue;
+                            JSONObject eo = new JSONObject();
+                            eo.put("seq", e.seq);
+                            eo.put("time", e.time);
+                            eo.put("tag", e.tag);
+                            eo.put("msg", e.msg);
+                            arr.put(eo);
+                        }
+                    } else {
+                        // 兼容模式：最近 N 条（默认 200）
+                        if (limit < 0) limit = 200;
+                        int from = Math.max(0, all.size() - limit);
+                        for (int i = from; i < all.size(); i++) {
+                            LogStore.Entry e = all.get(i);
+                            if (!tagFilter.isEmpty() && !e.tag.contains(tagFilter)) continue;
+                            JSONObject eo = new JSONObject();
+                            eo.put("seq", e.seq);
+                            eo.put("time", e.time);
+                            eo.put("tag", e.tag);
+                            eo.put("msg", e.msg);
+                            arr.put(eo);
+                        }
                     }
                     JSONObject o = new JSONObject();
                     o.put("ok", true);
                     o.put("count", arr.length());
                     o.put("total", all.size());
-                    o.put("entries", arr);
+                    o.put("logs", arr);
+                    o.put("next", LogStore.get().lastSeq());
                     return o.toString();
                 }
                 case "/api/config": {
