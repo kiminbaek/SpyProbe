@@ -71,8 +71,16 @@ typedef void (*type_SSL_free)(void *ssl);
 // v1.39 P0: SSL_get_fd —— SSL 数据回调里拿底层 fd 查 socket 四元组（pcap 用）
 typedef int (*type_SSL_get_fd)(const void *ssl);
 static type_SSL_get_fd real_SSL_get_fd = nullptr;
+// v1.45.6 P0: SSL_set_fd —— OpenSSL/BoringSSL 标准流程 SSL_new→SSL_set_fd(ssl,fd)→SSL_connect
+//   必有。直接 hook 记录 ssl→fd 映射，完全绕开 SSL_get_fd 符号解析（跨库/namespace 全免疫）。
+typedef int (*type_SSL_set_fd)(void *ssl, int fd);
+static type_SSL_set_fd orig_ssl_set_fd = nullptr;
+static std::unordered_map<uintptr_t, int> g_ssl_fd_map;
+static std::mutex g_ssl_fd_mutex;
 // v1.45.2: native_log 前置声明（callback_kotlin_chunk 在定义前使用）
 static void native_log(const char* msg);
+// v1.45.6: get_ssl_fd_from_hook 前置声明（callback_kotlin_chunk 在定义前使用）
+static int get_ssl_fd_from_hook(uintptr_t ssl_ptr);
 
 static type_send orig_send;
 static type_recv orig_recv;
@@ -291,17 +299,12 @@ bool callback_kotlin_chunk(jlong id, bool is_write, const void *buf, size_t len,
     if (is_ssl) {
         // v1.39 P0: TLS 明文数据带完整 socket 四元组（pcap 需要本地+远端地址端口）。
         //   id = ssl 指针，用 SSL_get_fd 拿底层 fd 再查 getsockname/getpeername 缓存。
-        // v1.45.2 兜底: hook_SSL_new 已延迟解析；此处若仍为 nullptr 现场 dlsym（SSL 数据回调时库必已加载）
-        if (real_SSL_get_fd == nullptr) {
-            real_SSL_get_fd = (type_SSL_get_fd)dlsym(RTLD_DEFAULT, "SSL_get_fd");
-            if (real_SSL_get_fd == nullptr) {
-                native_log("XH pcap: dlsym SSL_get_fd FAIL in callback (unexpected)");
-            }
-        }
-        if (real_SSL_get_fd != nullptr) {
-            int fd = real_SSL_get_fd((void*)id);
-            if (fd > 0) info = get_cached_socket_info(fd);
-        }
+        // v1.45.2 兜底: hook_SSL_new 已延迟解析
+        // v1.45.6 P0: 优先查 SSL_set_fd 记录的 ssl→fd 映射（标准流程必有，跨库/namespace 全免疫）；
+        //   不再直接 dlsym(RTLD_DEFAULT)——那可能拿到系统 BoringSSL 的 SSL_get_fd（跨库垃圾 fd）。
+        //   若映射缺失则用 real_SSL_get_fd（已由 hook_SSL_new 同库解析）。
+        int fd = get_ssl_fd_from_hook((uintptr_t)id);
+        if (fd > 0) info = get_cached_socket_info(fd);
     } else if (id > 0) {
         info = get_cached_socket_info((int)id);
     }
@@ -564,6 +567,8 @@ void do_ssl_free_common(void *ssl, type_SSL_free orig) {
     if (g_is_in_hook) { orig(ssl); return; }
     ScopedHookGuard guard;
     { std::lock_guard<std::mutex> lock(g_cache_mutex); g_stack_cache.erase(reinterpret_cast<jlong>(ssl)); }
+    // v1.45.6: 清理 SSL_set_fd 记录的 ssl→fd 映射
+    { std::lock_guard<std::mutex> lock(g_ssl_fd_mutex); g_ssl_fd_map.erase(reinterpret_cast<uintptr_t>(ssl)); }
     h2_free(reinterpret_cast<uintptr_t>(ssl));
     notify_kotlin_close(reinterpret_cast<jlong>(ssl), true);
     orig(ssl);
@@ -627,22 +632,50 @@ static uint32_t gnu_hash_name(const char* name) {
 // v1.45.5 P0: 用 dl_iterate_phdr + 手动 ELF 动态符号表解析找 SSL_get_fd。
 //   dlopen(zip路径, RTLD_NOLOAD) 对 base.apk!/lib/... 格式不识别（v1.45.4 败因），
 //   这里直接从已加载 so 的内存基址解析 .dynsym，完全绕开 dlopen/文件系统。
-static void* find_ssl_get_fd_via_phdr(int* checked_out) {
+// v1.45.6 P0: 增加 orig_fn 参数——只解析 orig_fn（实际被调用的 SSL_read/SSL_write 地址）
+//   所属的那个 so（同库保证）。若 orig_fn 为 nullptr 则回退全库扫描。
+static void* find_ssl_get_fd_via_phdr(void* orig_fn, int* checked_out) {
     void* found = nullptr;
     int checked = 0;
+    uintptr_t orig_addr = (uintptr_t)orig_fn;
     dl_iterate_phdr([](struct dl_phdr_info* info, size_t size, void* data) -> int {
-        void** out = (void**)data;
+        struct ScanCtx { void** out; uintptr_t orig_addr; int* checked; }* ctx = (ScanCtx*)data;
+        void** out = ctx->out;
         uintptr_t base = (uintptr_t)info->dlpi_addr;
         if (base == 0) return 0;
         const char* name = info->dlpi_name;
         if (name == nullptr || name[0] == '\0') return 0;
         if (strstr(name, "libnative_hook") != nullptr) return 0;
         if (strstr(name, "libc.so") != nullptr || strstr(name, "libdl.so") != nullptr) return 0;
+        if (ctx->checked) (*ctx->checked)++;
 
         ElfW(Ehdr)* ehdr = (ElfW(Ehdr)*)base;
         if (ehdr == nullptr ||
             ehdr->e_ident[EI_MAG0] != ELFMAG0 || ehdr->e_ident[EI_MAG1] != ELFMAG1 ||
             ehdr->e_ident[EI_MAG2] != ELFMAG2 || ehdr->e_ident[EI_MAG3] != ELFMAG3) return 0;
+
+        // v1.45.6: 若指定 orig_fn，先确认本 so 的地址区间包含它（同库校验）。
+        //   计算本 so 的 PT_LOAD 地址范围 [seg_lo, seg_hi)。
+        if (ctx->orig_addr != 0) {
+            bool in_range = false;
+            uintptr_t seg_lo = 0, seg_hi = 0;
+            bool has_seg = false;
+            ElfW(Phdr)* phdrs0 = (ElfW(Phdr)*)(base + ehdr->e_phoff);
+            for (int i = 0; i < ehdr->e_phnum; i++) {
+                if (phdrs0[i].p_type != PT_LOAD) continue;
+                uintptr_t s_lo = base + phdrs0[i].p_vaddr;
+                uintptr_t s_hi = s_lo + phdrs0[i].p_memsz;
+                if (!has_seg) { seg_lo = s_lo; seg_hi = s_hi; has_seg = true; }
+                else {
+                    if (s_lo < seg_lo) seg_lo = s_lo;
+                    if (s_hi > seg_hi) seg_hi = s_hi;
+                }
+            }
+            if (!has_seg) return 0;
+            if (ctx->orig_addr < seg_lo || ctx->orig_addr >= seg_hi) return 0; // 非本 so，跳过
+            in_range = true;
+            (void)in_range;
+        }
 
         ElfW(Phdr)* phdrs = (ElfW(Phdr)*)(base + ehdr->e_phoff);
         const char* dynstr = nullptr;
@@ -722,7 +755,35 @@ static void* find_ssl_get_fd_via_phdr(int* checked_out) {
     return found;
 }
 
-static void resolve_ssl_get_fd_scan() {
+// v1.45.6 P0: hook SSL_set_fd 记录 ssl→fd 映射（标准流程必有，比 SSL_get_fd 可靠）
+static int hook_SSL_set_fd(void *ssl, int fd) {
+    if (ssl != nullptr && fd > 0) {
+        std::lock_guard<std::mutex> lock(g_ssl_fd_mutex);
+        g_ssl_fd_map[reinterpret_cast<uintptr_t>(ssl)] = fd;
+    }
+    if (orig_ssl_set_fd != nullptr) return orig_ssl_set_fd(ssl, fd);
+    return 0;
+}
+
+// v1.45.6 P0: callback 里查 ssl→fd 映射（SSL_set_fd 记录的），查不到再用 SSL_get_fd
+static int get_ssl_fd_from_hook(uintptr_t ssl_ptr) {
+    {
+        std::lock_guard<std::mutex> lock(g_ssl_fd_mutex);
+        auto it = g_ssl_fd_map.find(ssl_ptr);
+        if (it != g_ssl_fd_map.end()) return it->second;
+    }
+    if (real_SSL_get_fd != nullptr) {
+        int fd = real_SSL_get_fd((const void*)ssl_ptr);
+        if (fd > 0) return fd;
+    }
+    return -1;
+}
+
+// v1.45.6 P0: 双保险解析 SSL_get_fd。
+//   1) 优先从 orig_fn（实际被调用的 SSL_read/SSL_write 地址）所属 so 内解析——同库保证，
+//      根治 v1.45.5 "phdr 全库扫描第一个命中系统 BoringSSL → 跨库调用 SSL_get_fd 返回垃圾 fd"。
+//   2) 失败才回退全库扫描 + maps/dlopen。
+static void resolve_ssl_get_fd_scan(void* orig_fn) {
     if (real_SSL_get_fd != nullptr) return;
     // 防抖：2 秒内最多扫一次，避免 SSL 高频回调拖慢
     static std::atomic<long> g_last_scan_ms{0};
@@ -731,13 +792,14 @@ static void resolve_ssl_get_fd_scan() {
     if (now - last < 2000) return;
     g_last_scan_ms.store(now, std::memory_order_relaxed);
 
-    // 1) dl_iterate_phdr + ELF 解析（v1.45.5 主路径，绕开 dlopen zip 路径问题）
+    // 1) dl_iterate_phdr + ELF 解析，限定 orig_fn 所属 so（v1.45.6 主路径）
     int checked = 0;
-    void* sym = find_ssl_get_fd_via_phdr(&checked);
+    void* sym = find_ssl_get_fd_via_phdr(orig_fn, &checked);
     if (sym != nullptr) {
         real_SSL_get_fd = (type_SSL_get_fd)sym;
         char buf[256];
-        snprintf(buf, sizeof(buf), "XH pcap: SSL_get_fd resolved via phdr(%d so)", checked);
+        snprintf(buf, sizeof(buf), "XH pcap: SSL_get_fd resolved via phdr(%d so)%s", checked,
+                 orig_fn != nullptr ? " [orig-lib]" : "");
         native_log(buf);
         return;
     }
@@ -775,9 +837,10 @@ static void resolve_ssl_get_fd_scan() {
     native_log(buf);
 }
 
-// v1.45.3 路径保留：dladdr 反查（个别机型能成功），失败立即转 scan
+// v1.45.3 路径保留：dladdr 反查（个别机型能成功），失败立即转 scan（带 orig 同库限定）
 static void resolve_ssl_get_fd_via_dladdr(void* sym) {
     if (real_SSL_get_fd != nullptr || sym == nullptr) return;
+    // v1.45.6: 先试 phdr 同库解析（orig=sym 所属 so），dladdr 在此前版本被证明在 Android 上报错
     Dl_info info;
     if (dladdr(sym, &info) != 0 && info.dli_fname != nullptr) {
         void* h = dlopen(info.dli_fname, RTLD_NOW | RTLD_NOLOAD);
@@ -793,7 +856,7 @@ static void resolve_ssl_get_fd_via_dladdr(void* sym) {
             dlclose(h);
         }
     }
-    resolve_ssl_get_fd_scan();
+    resolve_ssl_get_fd_scan(sym);
 }
 
 // ================= v1.38 P0-2/P0-3: BoringSSL verify 绕过 + keylog =================
@@ -899,14 +962,12 @@ static void* hook_SSL_new(void *ctx) {
     if (g_is_in_hook) return orig_ssl_new(ctx);
     // v1.45.2 P0: SSL_get_fd 延迟解析——init 时 libssl.so 可能尚未加载导致 dlsym(RTLD_DEFAULT) 失败，
     //   real_SSL_get_fd=nullptr → SSL 回调拿不到 fd → socketInfo 全 null → pcap 永远 0 数据。
-    //   SSL_new 被调用时 libssl.so 必已加载，此刻 dlsym 必成功（xhook 延迟补挂已生效）。
+    //   SSL_new 被调用时 libssl.so 必已加载，此刻解析必成功（xhook 延迟补挂已生效）。
+    // v1.45.6 P0: 改为 orig_ssl_new 同库解析（resolve_ssl_get_fd_via_dladdr 内部先 dladdr 后 phdr 同库）。
+    //   不再用 dlsym(RTLD_DEFAULT)——那可能拿到系统 BoringSSL 的 SSL_get_fd，而 ssl 对象来自
+    //   App 私有 SSL 库（xhook 按符号名全库 hook），跨库调用返回垃圾 fd（v1.45.5 真机 NOEP 根因）。
     if (real_SSL_get_fd == nullptr) {
-        real_SSL_get_fd = (type_SSL_get_fd)dlsym(RTLD_DEFAULT, "SSL_get_fd");
-        if (real_SSL_get_fd == nullptr) {
-            native_log("XH pcap: dlsym SSL_get_fd FAIL in SSL_new (unexpected)");
-        } else {
-            native_log("XH pcap: dlsym SSL_get_fd OK in SSL_new (deferred)");
-        }
+        resolve_ssl_get_fd_via_dladdr((void*)orig_ssl_new);
     }
     ScopedHookGuard guard;
     void* ssl = orig_ssl_new(ctx);
@@ -989,10 +1050,11 @@ Java_com_dustinky_spyprobe_NativeProbe_initNativeHook(JNIEnv *env, jobject thiz,
             native_log("XH keylog: dlsym SSL_get_SSL_CTX/SSL_CTX_set_keylog_callback FAIL (libssl.so 未加载?)");
         }
         // v1.39 P0: pcap 导出需要 SSL_get_fd（SSL 明文 → 底层 fd → socket 四元组）
-        real_SSL_get_fd = (type_SSL_get_fd)dlsym(RTLD_DEFAULT, "SSL_get_fd");
-        if (real_SSL_get_fd == nullptr) {
-            native_log("XH pcap: dlsym SSL_get_fd FAIL (SSL 数据将不带 socket 信息)");
-        }
+        // v1.45.6 P0: 不再直接 dlsym(RTLD_DEFAULT) 赋值！dlsym 会命中系统 BoringSSL 的
+        //   SSL_get_fd，而 ssl 对象来自 App 私有 SSL 库（xhook 按符号名全库 hook）→
+        //   跨库调用返回垃圾 fd（v1.45.5 真机 NOEP 根因，且所有解析日志全消失）。
+        //   保持 null，交给 hook_SSL_new 用 orig_ssl_new 同库解析 / SSL_set_fd 映射主路径。
+        real_SSL_get_fd = nullptr;
 
         // v1.34: xhook 按符号注册（对所有已加载 so 的 GOT 生效），lib_name 仅作日志标注
         hook_func("libc.so", "send", (void*)hook_send, (void**)&orig_send);
@@ -1026,6 +1088,9 @@ Java_com_dustinky_spyprobe_NativeProbe_initNativeHook(JNIEnv *env, jobject thiz,
         // v1.38 P0-3: SSL keylog（ssl_log.js 借鉴）——Wireshark 导入 CLIENT_RANDOM 还原 TLS 明文
         hook_func("libssl.so", "SSL_CTX_set_keylog_callback", (void*)hook_SSL_CTX_set_keylog_callback, (void**)&orig_ctx_set_keylog);
         hook_func("libssl.so", "SSL_new", (void*)hook_SSL_new, (void**)&orig_ssl_new);
+        // v1.45.6 P0: SSL_set_fd —— 标准流程必有（SSL_new→SSL_set_fd→SSL_connect），
+        //   直接记录 ssl→fd 映射，绕开 SSL_get_fd 符号解析（跨库/namespace 全免疫）
+        hook_func("libssl.so", "SSL_set_fd", (void*)hook_SSL_set_fd, (void**)&orig_ssl_set_fd);
 
         // 同步执行 GOT 改写（async=0 同步，确保返回时 hook 已生效）
         int xh_ret = xhook_refresh(0);
