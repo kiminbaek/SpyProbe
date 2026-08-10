@@ -26,7 +26,7 @@ public class SpyHomeServer {
 
     static final String TAG = "SpyProbe.Home";
     static final int PORT = 9900;
-    static final int MAX_BODY = 1 << 20; // 请求体上限 1MB
+    static final int MAX_BODY = 4 << 20; // v1.46.2: 4MB——pcap_chunk 单会话最大 2MB（PcapWriter.MAX_SESSION），1MB 上限会截断 2MB chunk 丢一半数据
 
     // v1.38 P2-9: 服务启动时间戳（/api/status uptime 用）
     private static final long START_TS = System.currentTimeMillis();
