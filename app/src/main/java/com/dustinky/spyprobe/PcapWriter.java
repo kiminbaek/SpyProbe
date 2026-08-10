@@ -273,13 +273,17 @@ public class PcapWriter {
         byte[] rec = new byte[16 + totalLen];
         // v1.42 P2-7: 删掉死对象 DataOutputStream（每包一个，从未使用）——直接操作 byte[] 写偏移
         // 记录头：时间戳（sec/usec）
+        // v1.46.1 P0 修复：pcap 记录头必须与全局头 GLOBAL_HEADER 字节序一致（小端）。
+        // 全局头 magic d4c3b2a1 声明小端，而 putInt 是大端（网络序）→ Wireshark/tcpdump
+        // 按小端解析把 incl_len 读成 0x0C010000(201MB) 直接放弃。IP/TCP 头内部字段
+        // 仍是网络序（大端），保持 putInt/putShort 不动，只有这 4 个记录头字段改小端。
         long now = System.currentTimeMillis();
         int tsSec = (int) (now / 1000);
         int tsUsec = (int) ((now % 1000) * 1000);
-        putInt(rec, 0, tsSec);
-        putInt(rec, 4, tsUsec);
-        putInt(rec, 8, totalLen);
-        putInt(rec, 12, totalLen);
+        putIntLE(rec, 0, tsSec);
+        putIntLE(rec, 4, tsUsec);
+        putIntLE(rec, 8, totalLen);
+        putIntLE(rec, 12, totalLen);
         int off = 16;
         // ===== IPv4 头（20B）=====
         rec[off] = 0x45;                      // version 4, IHL 5
@@ -316,6 +320,14 @@ public class PcapWriter {
         if (isWrite) s.clientSeq += payload.length;
         else s.serverSeq += payload.length;
         return rec;
+    }
+
+    /** 小端写 int（pcap 记录头用——全局头 magic 0xa1b2c3d4 声明本文件小端字节序） */
+    private static void putIntLE(byte[] b, int off, int v) {
+        b[off] = (byte) (v & 0xff);
+        b[off + 1] = (byte) ((v >> 8) & 0xff);
+        b[off + 2] = (byte) ((v >> 16) & 0xff);
+        b[off + 3] = (byte) ((v >> 24) & 0xff);
     }
 
     private static void putShort(byte[] b, int off, int v) {
