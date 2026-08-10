@@ -65,6 +65,13 @@ public class TokenStore {
                 String t = readFile(f);
                 if (t != null && !t.isEmpty()) {
                     cacheToken(t);
+                    // v1.40.1 P0 修复: 文件存在时也同步写 SharedPreferences——
+                    // 旧实现直接 return，老版本升级后 SP 从未写入 → 目标进程
+                    // getRemotePreferences 读空 → push_logs 不带 token → 401
+                    try {
+                        ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                                .edit().putString(KEY_TOKEN, t).commit();
+                    } catch (Throwable t2) { }
                     return t;
                 }
             }
@@ -97,12 +104,33 @@ public class TokenStore {
 
     /** 目标进程（hook 的 App）经 Xposed 框架读模块自己家 token；读不到返回 ""（老版本主进程） */
     public static String remoteToken(XposedModule module) {
+        // v1.40.1 P0 修复: 双通道取 token——
+        //   ① getRemotePreferences（v1.21 已知坑: 用户实测重启后仍失效，v1.22 才弃用）
+        //   ② openRemoteFile 直读 files/spyprobe_token（libxposed 标准文件 IPC，更可靠）
+        // 先试 SP；空/异常再读文件，避免 401。
         try {
             SharedPreferences sp = module.getRemotePreferences(PREFS_NAME);
             String t = sp.getString(KEY_TOKEN, "");
             if (t != null && !t.isEmpty()) return t;
         } catch (Throwable t) {
-            DebugLog.get().log(TAG, "remoteToken fail: " + t);
+            DebugLog.get().log(TAG, "remoteToken prefs fail: " + t);
+        }
+        try {
+            android.os.ParcelFileDescriptor pfd = module.openRemoteFile(FILE_TOKEN);
+            if (pfd != null) {
+                try (java.io.FileInputStream in = new java.io.FileInputStream(pfd.getFileDescriptor())) {
+                    byte[] buf = new byte[256];
+                    int n = in.read(buf);
+                    if (n > 0) {
+                        String t = new String(buf, 0, n, StandardCharsets.UTF_8).trim();
+                        if (!t.isEmpty()) return t;
+                    }
+                } finally {
+                    try { pfd.close(); } catch (Throwable t2) { }
+                }
+            }
+        } catch (Throwable t) {
+            DebugLog.get().log(TAG, "remoteToken file fail: " + t);
         }
         return "";
     }
