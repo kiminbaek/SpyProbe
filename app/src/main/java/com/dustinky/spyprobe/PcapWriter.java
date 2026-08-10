@@ -29,12 +29,27 @@ public class PcapWriter {
     // 会话表：connId(ssl 指针) → Session
     private final java.util.Map<Long, Session> sessions = new java.util.concurrent.ConcurrentHashMap<>();
     private volatile String pushToken = "";
+    // v1.44.1 P0: 续 token 回调（401/失败时重新拉——HTTP 从 9900 拿，根治 libxposed 静默空）
+    private volatile java.util.function.Supplier<String> pushTokenProvider = null;
 
     /** v1.37 P0-5: 与 push_logs 同 token 鉴权（目标进程启动时由 ModuleMain 调） */
-    public void enablePushHome(String token) {
+    public void enablePushHome(String token, java.util.function.Supplier<String> tokenProvider) {
         this.pushToken = token == null ? "" : token;
+        this.pushTokenProvider = tokenProvider;
         // v1.41 P0: 周期 flush——长连接（不关闭）数据也能推主进程，不依赖连接关闭事件
         ensurePeriodicFlush();
+    }
+
+    private void refreshPushToken() {
+        try {
+            if (pushTokenProvider != null) {
+                String t = pushTokenProvider.get();
+                if (t != null && !t.isEmpty()) {
+                    this.pushToken = t;
+                    try { DebugLog.get().logNoMirror("PcapPush", "token refreshed len=" + t.length()); } catch (Throwable ignored) { }
+                }
+            }
+        } catch (Throwable t) { /* 下次再试 */ }
     }
 
     private volatile boolean flushThreadStarted = false;
@@ -146,7 +161,15 @@ public class PcapWriter {
 
     // ================= 推送主进程（纯 Socket，同 LogStore.flushPush 模式）=================
 
+    // v1.44.1 P0: 失败续 token 重试一次（401=token 空/过期；主进程在线时必能拿到新 token）
     private void flushChunk(byte[] body, long connId) {
+        if (doFlushChunk(body, connId)) return;
+        refreshPushToken();
+        doFlushChunk(body, connId);
+    }
+
+    /** 单次推送，返回是否成功（HTTP 200 或 ok） */
+    private boolean doFlushChunk(byte[] body, long connId) {
         try {
             java.net.Socket sock = new java.net.Socket();
             sock.setTcpNoDelay(true);
@@ -187,17 +210,26 @@ public class PcapWriter {
             // v1.42 P2-14: logNoMirror——推送失败留痕不能镜像回 LogStore（否则递归推送）
             if (resp.startsWith("HTTP/1.1 401") || resp.contains("401")) {
                 try { DebugLog.get().logNoMirror("PcapPush", "pcap_chunk 401 (token 不匹配/缺失) conn=" + connId); } catch (Throwable ignored) { }
+                try { br.close(); } catch (Throwable t2) { }
+                try { os.close(); } catch (Throwable t2) { }
+                try { sock.close(); } catch (Throwable t2) { }
+                return false;
             } else if (resp.startsWith("HTTP/1.1 200") || resp.contains("\"ok\":true")) {
-                // ok
+                try { br.close(); } catch (Throwable t2) { }
+                try { os.close(); } catch (Throwable t2) { }
+                try { sock.close(); } catch (Throwable t2) { }
+                return true;
             } else {
                 try { DebugLog.get().logNoMirror("PcapPush", "pcap_chunk resp=" + resp); } catch (Throwable ignored) { }
             }
             try { br.close(); } catch (Throwable t2) { }
             try { os.close(); } catch (Throwable t2) { }
             try { sock.close(); } catch (Throwable t2) { }
+            return false;
         } catch (Throwable t) {
             // 主进程不在线：静默丢弃（UI 连目标进程时可重导）；v1.41 加 DebugLog 留痕
             try { DebugLog.get().logNoMirror("PcapPush", "pcap_chunk fail: " + t.getClass().getSimpleName() + ": " + t.getMessage()); } catch (Throwable ignored) { }
+            return false;
         }
     }
 

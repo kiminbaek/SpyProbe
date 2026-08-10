@@ -207,6 +207,17 @@ public class SpyHomeServer {
                     o.put("v", BuildConfig.VERSION_NAME);
                     return o.toString();
                 }
+                case "/api/token": {
+                    // v1.44.1: 目标进程 HTTP 拉 token（根治 libxposed getRemotePreferences/
+                    //   openRemoteFile 跨进程读在真机上静默返回空——v1.21 坑 v1.40.1 未真正修好）。
+                    //   本机回环 127.0.0.1:9900，仅本机 App 可访问；目标进程能收到 401 就说明
+                    //   9900 活着 → 这里一定拿得到 token → 重试必成功。
+                    //   无 token 时返回 empty（老主进程/未初始化，主进程不校验则目标进程可不带）。
+                    JSONObject o = new JSONObject();
+                    o.put("ok", true);
+                    o.put("token", TokenStore.homeToken());
+                    return o.toString();
+                }
                 case "/api/push_logs": {
                     // 目标进程批量推送日志 → 主进程 LogStore（LogPersister 落自己家）
                     JSONObject root = new JSONObject(body == null ? "{}" : body);

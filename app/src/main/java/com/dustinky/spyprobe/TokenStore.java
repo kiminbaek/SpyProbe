@@ -102,8 +102,53 @@ public class TokenStore {
 
     // ===== 目标进程侧 =====
 
-    /** 目标进程（hook 的 App）经 Xposed 框架读模块自己家 token；读不到返回 ""（老版本主进程） */
+    /**
+     * v1.44.1: HTTP 从主进程 9900 拉 token（根治 libxposed 跨进程读在真机静默返回空）。
+     * 用纯 Socket 手写 GET——不能用 HttpURLConnection（会被自己的 NetProbe hook 捕获造成递归，
+     * v1.35 推送改纯 Socket 的教训同源）。能收到 401 就说明 9900 活着 → 这里必能拿到 token。
+     */
+    public static String homeTokenViaHttp() {
+        try {
+            java.net.Socket sock = new java.net.Socket();
+            sock.setTcpNoDelay(true);
+            sock.connect(new java.net.InetSocketAddress("127.0.0.1", 9900), 500);
+            String head = "GET /api/token HTTP/1.1\r\nHost: 127.0.0.1:9900\r\nConnection: close\r\n\r\n";
+            java.io.OutputStream os = sock.getOutputStream();
+            os.write(head.getBytes(StandardCharsets.UTF_8));
+            os.flush();
+            java.io.BufferedReader br = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(sock.getInputStream(), StandardCharsets.UTF_8));
+            StringBuilder body = new StringBuilder();
+            boolean inHeader = true;
+            String line;
+            while ((line = br.readLine()) != null) {
+                if (inHeader) {
+                    if (line.trim().isEmpty()) inHeader = false;
+                } else {
+                    body.append(line);
+                }
+            }
+            br.close();
+            os.close();
+            sock.close();
+            if (body.length() > 0) {
+                String t = new org.json.JSONObject(body.toString()).optString("token", "");
+                if (!t.isEmpty()) return t;
+            }
+        } catch (Throwable t) {
+            try { DebugLog.get().log(TAG, "homeTokenViaHttp fail: " + t); } catch (Throwable t2) { }
+        }
+        return "";
+    }
+
+    /** 目标进程（hook 的 App）取主进程 token；读不到返回 ""（老版本主进程不校验） */
     public static String remoteToken(XposedModule module) {
+        // v1.44.1 P0 修复: HTTP 优先——libxposed 跨进程读（getRemotePreferences/openRemoteFile）
+        //   真机静默返回空（v1.21 坑，v1.40.1 双通道全是同一坏通道未真正修好）。
+        //   HTTP 走 9900 本机回环网络通道（已证明通——401 都能收到），100% 可靠。
+        String viaHttp = homeTokenViaHttp();
+        if (!viaHttp.isEmpty()) return viaHttp;
+        // 兜底：9900 未起（主进程还没开 UI）时回退 libxposed 双通道（兼容老主进程）
         // v1.40.1 P0 修复: 双通道取 token——
         //   ① getRemotePreferences（v1.21 已知坑: 用户实测重启后仍失效，v1.22 才弃用）
         //   ② openRemoteFile 直读 files/spyprobe_token（libxposed 标准文件 IPC，更可靠）

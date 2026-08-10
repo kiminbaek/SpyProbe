@@ -62,13 +62,30 @@ public class LogStore {
     private volatile String pushToken = "";
 
     /** v1.37 P0-5: 目标进程启动时调用（token 从 TokenStore.remoteToken 取）；老主进程无 token 时传 "" 不校验 */
-    public void enablePushHome(String token) {
+    public void enablePushHome(String token, java.util.function.Supplier<String> tokenProvider) {
         if (pushHome) return;
         this.pushToken = token == null ? "" : token;
+        this.pushTokenProvider = tokenProvider;
         pushHome = true;
         Thread t = new Thread(this::pushLoop, "SpyProbe-PushHome");
         t.setDaemon(true);
         t.start();
+    }
+
+    // v1.44.1 P0: 续 token 回调（目标进程 push 401/失败时重新拉——HTTP 从 9900 拿，
+    //   根治 libxposed 静默空导致 push 永远 401 的问题）
+    private volatile java.util.function.Supplier<String> pushTokenProvider = null;
+
+    private void refreshPushToken() {
+        try {
+            if (pushTokenProvider != null) {
+                String t = pushTokenProvider.get();
+                if (t != null && !t.isEmpty()) {
+                    this.pushToken = t;
+                    DebugLog.get().logNoMirror("PushHome", "token refreshed len=" + t.length());
+                }
+            }
+        } catch (Throwable t) { /* 忽略：下次推送再试 */ }
     }
 
     private void pushLoop() {
@@ -98,7 +115,25 @@ public class LogStore {
     //   （上次日志 944/1258 条是 127.0.0.1:9900 推送记录）。
     //   改纯 Socket：Java 层无任何 hook 点捕获；native 层在 NativeProbe.onNativeData
     //   按 127.0.0.1:9900 显式跳过（双保险）。
+    // v1.44.1 P0: 失败不丢数据——doPush 失败（401/断连）→ 续 token → 重试一次；
+    //   仍失败 → 整批放回队列（避免窗口期数据丢失）。队列满时丢弃头部（防无限堆积）。
     private void flushPush(List<String> batch) {
+        if (doPush(batch)) return;
+        refreshPushToken();
+        if (doPush(batch)) return;
+        if (!batch.isEmpty()) {
+            for (String line : batch) {
+                if (!pushQueue.offer(line)) {
+                    pushQueue.poll(); // 队满丢最旧，保留最新
+                    pushQueue.offer(line);
+                }
+            }
+            DebugLog.get().logNoMirror("PushHome", "push FAIL, requeued " + batch.size() + " lines");
+        }
+    }
+
+    /** 单次推送，返回是否收到 HTTP 200 */
+    private boolean doPush(List<String> batch) {
         try {
             StringBuilder sb = new StringBuilder("{\"session\":\"").append(sessionId).append("\",\"entries\":[");
             for (int i = 0; i < batch.size(); i++) {
@@ -145,7 +180,8 @@ public class LogStore {
                     }
                 } catch (Throwable t2) { break; }
             }
-            if (!statusLine.startsWith("HTTP/1.1 200")) {
+            boolean ok = statusLine.startsWith("HTTP/1.1 200");
+            if (!ok) {
                 // v1.42 P2-14: logNoMirror——推送失败留痕不能镜像回 LogStore（否则递归推送）
                 DebugLog.get().logNoMirror("PushHome", "push " + batch.size() + " lines -> " + statusLine
                         + " (token=" + (pushToken.isEmpty() ? "EMPTY" : "set") + ")");
@@ -153,9 +189,11 @@ public class LogStore {
             try { br.close(); } catch (Throwable t2) { }
             try { os.close(); } catch (Throwable t2) { }
             try { sock.close(); } catch (Throwable t2) { }
+            return ok;
         } catch (Throwable t) {
             // 主进程不在线/推送失败：留痕（内存缓冲仍在，UI 连目标进程时可见）
             DebugLog.get().logNoMirror("PushHome", "push " + batch.size() + " lines FAIL: " + t);
+            return false;
         }
     }
 
