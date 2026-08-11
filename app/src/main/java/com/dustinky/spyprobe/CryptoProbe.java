@@ -566,9 +566,12 @@ public class CryptoProbe {
             // v1.54: 同 算法+key+iv 5s 限频（视频分片每片 init 一次 → 34 行重复）
             String initSig = "init:" + ctx.algorithm + "|" + ctx.keyAlgo + ":" + ctx.keyHex + "|" + ctx.ivHex;
             if (cryptoRateLimited(initSig)) return;
-            LogStore.get().log(TAG, "[init] " + ctx.algorithm + " mode=" + ctx.cryptMode
+            String initMsg = "[init] " + ctx.algorithm + " mode=" + ctx.cryptMode
                     + " key=" + (ctx.keyAlgo != null ? ctx.keyAlgo + ":" : "") + ctx.keyHex
-                    + " iv=" + ctx.ivHex);
+                    + " iv=" + ctx.ivHex;
+            // v1.55: 结构化 Crypto 事件（算法/key/iv/mode 详情页直接看，不再从文本里找）
+            logCryptoEvent("INIT", ctx.algorithm, ctx.cryptMode,
+                    (ctx.keyAlgo != null ? ctx.keyAlgo + ":" : "") + ctx.keyHex, ctx.ivHex, "", initMsg);
         } catch (Throwable t) {
             LogStore.get().log(TAG, "[init] parse fail: " + t);
         }
@@ -602,18 +605,44 @@ public class CryptoProbe {
                     .append(" key=").append(ctx.keyAlgo != null ? ctx.keyAlgo + ":" : "").append(ctx.keyHex)
                     .append(" iv=").append(ctx.ivHex);
             byte[] inBytes = ctx.hadData ? ctx.dataStream.toByteArray() : null;
+            String inHex = "";
             if (inBytes != null) {
-                sb.append(" in=").append(MethodProbe.hex(inBytes, Math.min(inBytes.length, 128)))
-                        .append(inBytes.length > 128 ? "...(" + inBytes.length + "B)" : "(" + inBytes.length + "B)");
+                inHex = MethodProbe.hex(inBytes, Math.min(inBytes.length, 128))
+                        + (inBytes.length > 128 ? "...(" + inBytes.length + "B)" : "(" + inBytes.length + "B)");
+                sb.append(" in=").append(inHex);
             }
-            sb.append(" out=").append(resultBytes != null
+            String outHex = resultBytes != null
                     ? MethodProbe.hex(resultBytes, Math.min(resultBytes.length, 128))
                     + (resultBytes.length > 128 ? "...(" + resultBytes.length + "B)" : "(" + resultBytes.length + "B)")
-                    : "null");
-            LogStore.get().log(TAG, sb.toString());
-            LogStore.get().log(TAG, "[stack]\n" + MethodProbe.stack(10));
+                    : "null";
+            sb.append(" out=").append(outHex);
+            String stack = MethodProbe.stack(10);
+            // v1.55: 结构化 Crypto 事件（doFinal = 一次完整加解密，key/iv/入出数据全在详情页）
+            logCryptoEvent("DOFINAL", ctx.algorithm, ctx.cryptMode,
+                    (ctx.keyAlgo != null ? ctx.keyAlgo + ":" : "") + ctx.keyHex, ctx.ivHex,
+                    inHex + " -> " + outHex, sb.toString() + " [stack]" + stack);
         } catch (Throwable t) {
             LogStore.get().log(TAG, "[doFinal] parse fail: " + t);
         }
+    }
+
+    /** v1.55: 结构化 Crypto 事件——日志行嵌入 [EVT#id]，EventStore 写 SpyEvent（UI 卡片化） */
+    private static void logCryptoEvent(String op, String algorithm, String mode, String key, String iv,
+                                       String data, String fullMsg) {
+        try {
+            long eid = EventStore.get().nextId();
+            String msg = "[EVT#" + eid + "]" + fullMsg;
+            LogStore.get().log(TAG, msg);
+            org.json.JSONObject payload = new org.json.JSONObject();
+            payload.put("op", op == null ? "" : op);
+            payload.put("algorithm", algorithm == null ? "" : algorithm);
+            payload.put("mode", mode == null ? "" : mode);
+            payload.put("key", key == null ? "" : key);
+            payload.put("iv", iv == null ? "" : iv);
+            payload.put("data", data == null ? "" : data);
+            EventStore.get().add(new SpyEvent("CRYPTO", eid, System.currentTimeMillis(),
+                    (op == null ? "" : op) + " " + (algorithm == null ? "" : algorithm),
+                    payload, msg, ""));
+        } catch (Throwable t) { /* 结构化失败不影响文本日志 */ }
     }
 }

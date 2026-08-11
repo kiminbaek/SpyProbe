@@ -81,6 +81,62 @@ public class SQLiteProbe {
         }
     }
 
+    /**
+     * v1.55: 结构化 SQL 事件——日志行嵌入 [EVT#id]，EventStore 写 SpyEvent（UI 卡片化）。
+     * 文本行保留（[EVT#id][SQL] ... 前缀，兼容导出/详情原始视图）。
+     * @param sql  完整 SQL（含操作前缀）
+     * @param args 参数摘要（可空）
+     */
+    static void logSqlEvent(String sql, String args) {
+        try {
+            long eid = EventStore.get().nextId();
+            String argsPart = (args == null || args.isEmpty()) ? "" : "  " + args;
+            String msg = "[EVT#" + eid + "][SQL] " + sql + argsPart;
+            LogStore.get().log(TAG, msg);
+            // 结构化 payload：op / table / sql / args（详情页渲染）
+            org.json.JSONObject payload = new org.json.JSONObject();
+            payload.put("op", extractOp(sql));
+            payload.put("table", extractTable(sql));
+            payload.put("sql", sql == null ? "" : sql);
+            payload.put("args", args == null ? "" : args);
+            EventStore.get().add(new SpyEvent("SQL", eid, System.currentTimeMillis(),
+                    extractOp(sql) + " " + extractTable(sql), payload, msg, ""));
+        } catch (Throwable t) { /* 结构化失败不影响文本日志 */ }
+    }
+
+    /** 提取 SQL 操作类型（INSERT/UPDATE/DELETE/SELECT/REPLACE/execSQL...） */
+    private static String extractOp(String sql) {
+        if (sql == null) return "SQL";
+        String t = sql.trim();
+        int sp = t.indexOf(' ');
+        if (sp < 0) return t.toUpperCase(Locale.US);
+        String op = t.substring(0, sp).toUpperCase(Locale.US);
+        return op;
+    }
+
+    /** 提取操作表名（INSERT INTO xx / UPDATE xx / DELETE FROM xx / SELECT ... FROM xx） */
+    private static String extractTable(String sql) {
+        if (sql == null) return "";
+        String t = sql.trim();
+        String up = t.toUpperCase(Locale.US);
+        String[] keys = {"INSERT INTO ", "UPDATE ", "DELETE FROM ", "FROM ", "INTO ", "REPLACE INTO "};
+        for (String k : keys) {
+            int i = up.indexOf(k);
+            if (i >= 0) {
+                String rest = t.substring(i + k.length()).trim();
+                int end = 0;
+                while (end < rest.length()) {
+                    char c = rest.charAt(end);
+                    if (Character.isLetterOrDigit(c) || c == '_' || c == '.') end++;
+                    else break;
+                }
+                if (end > 0) return rest.substring(0, end);
+                return rest.isEmpty() ? "?" : rest;
+            }
+        }
+        return "";
+    }
+
     /** 归一化 SQL：去字符串字面量/数字/空白 → 模板 key */
     private static String normalizeSql(String sql) {
         String s = sql;
@@ -118,28 +174,27 @@ public class SQLiteProbe {
             hooked += hookByName(db, "execSQL", 1, (chain, name) -> {
                 String sql = String.valueOf(chain.getArg(0));
                 if (!shouldLog(sql)) return;
-                StringBuilder sb = new StringBuilder("[SQL] execSQL: ").append(sql);
-                if (chain.getArgs().size() > 1) sb.append("  args=").append(MethodProbe.str(chain.getArg(1), 200));
-                LogStore.get().log(TAG, sb.toString());
+                String args = chain.getArgs().size() > 1 ? MethodProbe.str(chain.getArg(1), 200) : "";
+                logSqlEvent(sql, args);
             });
             hooked += hookByName(db, "execSQL", 2, (chain, name) -> {
                 String sql = String.valueOf(chain.getArg(0));
                 if (!shouldLog(sql)) return;
-                LogStore.get().log(TAG, "[SQL] execSQL: " + sql + "  args=" + MethodProbe.str(chain.getArg(1), 200));
+                logSqlEvent(sql, MethodProbe.str(chain.getArg(1), 200));
             });
 
             // insert(String table, String nullColumnHack, ContentValues values)
             hooked += hookByName(db, "insert", 3, (chain, name) -> {
                 String sql = "INSERT INTO " + chain.getArg(0);
                 if (!shouldLog(sql)) return;
-                LogStore.get().log(TAG, "[SQL] " + sql + " " + cv(chain.getArg(2)));
+                logSqlEvent(sql, cv(chain.getArg(2)));
             });
 
             // update(String table, ContentValues values, String whereClause, String[] whereArgs)
             hooked += hookByName(db, "update", 4, (chain, name) -> {
                 String sql = "UPDATE " + chain.getArg(0);
                 if (!shouldLog(sql)) return;
-                LogStore.get().log(TAG, "[SQL] " + sql + " " + cv(chain.getArg(1))
+                logSqlEvent(sql, cv(chain.getArg(1))
                         + " WHERE " + chain.getArg(2) + " args=" + MethodProbe.str(chain.getArg(3), 200));
             });
 
@@ -147,22 +202,21 @@ public class SQLiteProbe {
             hooked += hookByName(db, "delete", 3, (chain, name) -> {
                 String sql = "DELETE FROM " + chain.getArg(0);
                 if (!shouldLog(sql)) return;
-                LogStore.get().log(TAG, "[SQL] " + sql
-                        + " WHERE " + chain.getArg(1) + " args=" + MethodProbe.str(chain.getArg(2), 200));
+                logSqlEvent(sql, " WHERE " + chain.getArg(1) + " args=" + MethodProbe.str(chain.getArg(2), 200));
             });
 
             // rawQuery(String sql, String[] selectionArgs)
             hooked += hookByName(db, "rawQuery", 2, (chain, name) -> {
                 String sql = String.valueOf(chain.getArg(0));
                 if (!shouldLog(sql)) return;
-                LogStore.get().log(TAG, "[SQL] rawQuery: " + sql + " args=" + MethodProbe.str(chain.getArg(1), 200));
+                logSqlEvent(sql, MethodProbe.str(chain.getArg(1), 200));
             });
 
             // v1.15 P2-4: rawQuery(String, String[], CancellationSignal) 3 参重载
             hooked += hookByName(db, "rawQuery", 3, (chain, name) -> {
                 String sql = String.valueOf(chain.getArg(0));
                 if (!shouldLog(sql)) return;
-                LogStore.get().log(TAG, "[SQL] rawQuery: " + sql + " args=" + MethodProbe.str(chain.getArg(1), 200));
+                logSqlEvent(sql, MethodProbe.str(chain.getArg(1), 200));
             });
 
             // query 各重载（4~8 参）→ 拼可读 SELECT
@@ -174,22 +228,21 @@ public class SQLiteProbe {
             hooked += hookByName(db, "insertWithOnConflict", 4, (chain, name) -> {
                 String sql = "INSERT(conflict) INTO " + chain.getArg(0);
                 if (!shouldLog(sql)) return;
-                LogStore.get().log(TAG, "[SQL] " + sql + " " + cv(chain.getArg(2)));
+                logSqlEvent(sql, cv(chain.getArg(2)));
             });
 
             // v1.6: replace —— INSERT OR REPLACE 语义
             hooked += hookByName(db, "replace", 3, (chain, name) -> {
                 String sql = "REPLACE INTO " + chain.getArg(0);
                 if (!shouldLog(sql)) return;
-                LogStore.get().log(TAG, "[SQL] " + sql + " " + cv(chain.getArg(2)));
+                logSqlEvent(sql, cv(chain.getArg(2)));
             });
 
             // v1.6: rawQueryWithFactory(CursorFactory, String sql, String[], String)
             hooked += hookByName(db, "rawQueryWithFactory", 4, (chain, name) -> {
                 String sql = String.valueOf(chain.getArg(1));
                 if (!shouldLog(sql)) return;
-                LogStore.get().log(TAG, "[SQL] rawQuery(factory): " + sql
-                        + " args=" + MethodProbe.str(chain.getArg(2), 200));
+                logSqlEvent(sql, MethodProbe.str(chain.getArg(2), 200));
             });
 
             // v1.6: queryWithFactory —— 自定义 factory 的 query
@@ -277,7 +330,7 @@ public class SQLiteProbe {
                             if (chain.getArgs().size() > 6 && chain.getArg(6) != null) sb.append(" ORDER BY ").append(chain.getArg(6));
                             if (chain.getArgs().size() > 7 && chain.getArg(7) != null) sb.append(" LIMIT ").append(chain.getArg(7));
                             String sql = sb.toString();
-                            if (shouldLog(sql)) LogStore.get().log(TAG, sql);
+                            if (shouldLog(sql)) logSqlEvent(sql, "");
                         } catch (Throwable t) { }
                     }
                     return r;
@@ -336,7 +389,7 @@ public class SQLiteProbe {
                             if (chain.getArg(base + 6) != null) sb.append(" ORDER BY ").append(chain.getArg(base + 6));
                             if (chain.getArg(base + 7) != null) sb.append(" LIMIT ").append(chain.getArg(base + 7));
                             String sql = sb.toString();
-                            if (shouldLog(sql)) LogStore.get().log(TAG, sql);
+                            if (shouldLog(sql)) logSqlEvent(sql, "");
                         } catch (Throwable t) { }
                     }
                     return r;
