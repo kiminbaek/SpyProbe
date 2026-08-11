@@ -206,7 +206,7 @@ fun HttpDetailPage(entry: HttpEntry, onBack: () -> Unit) {
 
 /** v1.51: 浏览器式 Tab——文字 + 底部 2dp 色条（选中荧光绿） */
 @Composable
-private fun DetailTab(label: String, selected: Boolean, onClick: () -> Unit) {
+internal fun DetailTab(label: String, selected: Boolean, onClick: () -> Unit) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
@@ -292,7 +292,7 @@ private fun OverviewView(entry: HttpEntry, expandStack: Boolean, onToggleStack: 
 
 /** v1.51: 可折叠分区卡片——标题条 + 箭头 + 内容 */
 @Composable
-private fun SectionCard(
+internal fun SectionCard(
     title: String,
     subtitle: String? = null,
     initiallyExpanded: Boolean = true,
@@ -334,7 +334,7 @@ private fun SectionCard(
 
 /** v1.51: 原始 HTTP 报文——语法高亮（请求/响应通用，自动识别） */
 @Composable
-private fun RawView(raw: String) {
+internal fun RawView(raw: String) {
     Column(
         Modifier
             .fillMaxSize()
@@ -367,7 +367,7 @@ private fun HeadersView(headers: Map<String, String>) {
 
 /** v1.51: 双列表格（Key 左白 / Value 右略暗，细线分隔） */
 @Composable
-private fun KeyValueTable(entries: List<Pair<String, String>>) {
+internal fun KeyValueTable(entries: List<Pair<String, String>>) {
     Column(
         Modifier
             .fillMaxSize()
@@ -408,7 +408,7 @@ private fun KeyValueTable(entries: List<Pair<String, String>>) {
 
 /** 请求体/响应体：文本 / JSON 高亮 / Hex 三视图（v1.49: 大 body 截断 + 展开全部） */
 @Composable
-private fun BodyView(bodyType: String, body: String) {
+internal fun BodyView(bodyType: String, body: String) {
     var mode by remember { mutableStateOf(0) }
     var fullBody by remember { mutableStateOf(false) }
     if (body.isEmpty()) {
@@ -468,7 +468,7 @@ private enum class HlKind { JSON, HTTP, PLAIN }
  * 和 HTTP 报文（协议蓝/方法红/URL浅绿/头键绿/状态琥珀）自动识别。
  */
 @Composable
-private fun SyntaxHighlighter(text: String) {
+internal fun SyntaxHighlighter(text: String) {
     val annotated = remember(text) { highlightAnnotated(text) }
     Text(annotated, style = codeStyle, fontSize = 10.sp, softWrap = true)
 }
@@ -590,14 +590,14 @@ private fun highlightHttp(text: String): androidx.compose.ui.text.AnnotatedStrin
 // ================= 小组件 =================
 
 @Composable
-private fun EmptyHint(text: String) {
+internal fun EmptyHint(text: String) {
     Box(Modifier.fillMaxWidth().padding(vertical = 24.dp), contentAlignment = Alignment.Center) {
         Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
 @Composable
-private fun KvRow(k: String, v: String) {
+internal fun KvRow(k: String, v: String) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -685,7 +685,7 @@ internal fun hostOf(url: String): String {
     } catch (t: Throwable) { url }
 }
 
-private fun copyText(context: android.content.Context, text: String) {
+internal fun copyText(context: android.content.Context, text: String) {
     try {
         val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
         cm.setPrimaryClip(android.content.ClipData.newPlainText("spyprobe", text))
@@ -710,7 +710,7 @@ private fun shareText(context: android.content.Context, entry: HttpEntry) {
 }
 
 /** hex dump（v1.49: full=false 截断 256B；full=true 完整显示最多 4096B 防渲染卡顿） */
-private fun hexDump(line: String, full: Boolean = false): String {
+internal fun hexDump(line: String, full: Boolean = false): String {
     val cap = if (full) 4096 else 256
     val bytes = line.toByteArray(Charsets.UTF_8).take(cap).toByteArray()
     val sb = StringBuilder()

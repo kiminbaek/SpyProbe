@@ -381,13 +381,3 @@ private fun AnalysisRow(
             color = MaterialTheme.colorScheme.primary)
     }
 }
-
-@Composable
-private fun EmptyHint(text: String) {
-    Text(
-        text,
-        fontSize = 10.sp,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(vertical = 6.dp)
-    )
-}

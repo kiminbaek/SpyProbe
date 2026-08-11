@@ -2,6 +2,7 @@ package com.dustinky.spyprobe.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -25,9 +27,14 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -168,17 +175,35 @@ private fun payloadSummary(p: JSONObject): String {
 }
 
 /**
- * v1.55: 通用事件详情页（全屏）——结构化字段表 + 原始视图 + 复制。
- * 字段按 payload 键名友好排序渲染：op/table/sql/args/algorithm/mode/key/iv/data/
- * host/ip/port/timeout/ok/err/source/content/truncated…
+ * v1.57: 通用事件详情页（全屏，小黄鸟式）——顶栏 + 顶部 Tab（总览/原始/调用栈）
+ * + 总览 SectionCard 折叠分区 + JSON 高亮 + KeyValueTable。
+ *
+ * 布局（对齐 HttpDetailPage 小黄鸟风格）：
+ *   ┌─────────────────────────────────────────┐
+ *   │ ← [SQL] UPDATE cacheObject  EVT#7  ⧉分享 │   ← 顶栏：返回+类型徽标+标题+ID+复制/分享
+ *   ├─────────────────────────────────────────┤
+ *   │ 总览│原始│调用栈                           │   ← 顶部 Tab（浏览器式下划线选中）
+ *   ├─────────────────────────────────────────┤
+ *   │  内容区：                                  │
+ *   │  总览 = SectionCard 折叠分区               │
+ *   │    ├ 基本信息（类型/时间/耗时/ID）          │
+ *   │    ├ payload 字段（友好分组 Key-Value）     │
+ *   │    └ JSON 内容（SyntaxHighlighter 高亮）   │
+ *   │  原始 = SyntaxHighlighter(logLine)        │
+ *   │  调用栈 = codeStyle 折叠文本                │
+ *   └─────────────────────────────────────────┘
  */
 @Composable
 internal fun EventDetailScreen(
     entry: com.dustinky.spyprobe.SpyEvent,
     onBack: () -> Unit
 ) {
+    val context = LocalContext.current
+    var view by remember { mutableStateOf(0) }        // 0=总览 1=原始 2=调用栈
+    val col = eventColor(entry.type)
+
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        // 顶栏
+        // ===== 顶栏 =====
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
@@ -186,8 +211,9 @@ internal fun EventDetailScreen(
                 .background(MaterialTheme.colorScheme.surfaceContainer)
                 .padding(horizontal = 4.dp, vertical = 6.dp)
         ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", modifier = Modifier.size(18.dp))
+            IconButton(onClick = onBack, modifier = Modifier.size(36.dp)) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回",
+                    modifier = Modifier.size(20.dp))
             }
             Text(
                 eventTypeLabel(entry.type),
@@ -195,113 +221,262 @@ internal fun EventDetailScreen(
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier
-                    .background(eventColor(entry.type), RoundedCornerShape(4.dp))
+                    .background(col, RoundedCornerShape(4.dp))
                     .padding(horizontal = 6.dp, vertical = 2.dp)
             )
             Spacer(Modifier.width(8.dp))
-            Text(
-                entry.title.ifBlank { entry.type },
-                style = MaterialTheme.typography.titleSmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
-            )
-            Text(
-                "EVT#${entry.id}",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 10.sp
-            )
-        }
-
-        Column(
-            Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(12.dp)
-        ) {
-            // ===== 结构化字段表 =====
-            fieldRow("类型", entry.type)
-            fieldRow("时间", java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US)
-                .format(java.util.Date(entry.time)))
-            if (entry.done) fieldRow("耗时", "${entry.durationMs}ms")
-            fieldRow("ID", "EVT#${entry.id}")
-
-            HorizontalDivider(Modifier.padding(vertical = 8.dp))
-
-            // payload 字段（友好顺序）
-            val p = entry.payload
-            if (p != null && p.length() > 0) {
-                val order = listOf(
-                    "op", "algorithm", "mode", "key", "iv", "data",
-                    "table", "sql", "args",
-                    "kind", "host", "ip", "port", "timeout", "ok", "err",
-                    "source", "content", "truncated"
-                )
-                val sorted = order.filter { p.has(it) } + otherKeys(p, order)
-                for (k in sorted) {
-                    fieldRow(k, p.optString(k, ""))
-                }
-                HorizontalDivider(Modifier.padding(vertical = 8.dp))
-            }
-
-            // ===== 原始视图 =====
-            Text("原始日志", style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary, fontSize = 11.sp)
-            Spacer(Modifier.size(4.dp))
-            Text(
-                entry.logLine,
-                style = codeStyle,
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            // ===== 调用栈 =====
-            if (entry.stack.isNotBlank()) {
-                HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                Text("调用栈", style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary, fontSize = 11.sp)
-                Spacer(Modifier.size(4.dp))
+            Column(Modifier.weight(1f)) {
                 Text(
-                    entry.stack,
-                    style = codeStyle,
-                    fontSize = 10.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    entry.title.ifBlank { entry.type },
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
+                Text(
+                    "EVT#${entry.id}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 10.sp
+                )
+            }
+            if (entry.done) {
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "${entry.durationMs}ms",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                    fontSize = 10.sp
+                )
+            }
+            IconButton(onClick = {
+                copyText(context, entry.logLine + if (entry.stack.isNotBlank()) "\n\n调用栈:\n" + entry.stack else "")
+            }) {
+                Icon(CopyIcon, contentDescription = "复制",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+            }
+            IconButton(onClick = { shareEventText(context, entry) }) {
+                Icon(Icons.Filled.Share, contentDescription = "分享",
+                    tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+            }
+        }
+
+        // ===== 顶部 Tab（浏览器式下划线）=====
+        val tabs = buildList {
+            add("总览"); add("原始")
+            if (entry.stack.isNotBlank()) add("调用栈")
+        }
+        Row(
+            verticalAlignment = Alignment.Bottom,
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(top = 6.dp)
+        ) {
+            tabs.forEachIndexed { i, label ->
+                DetailTab(label = label, selected = view == i, onClick = { view = i })
+            }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+        // ===== 内容区 =====
+        Box(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+        ) {
+            when (view) {
+                0 -> EventOverview(entry)
+                1 -> EventRawView(entry)
+                else -> EventStackView(entry)
             }
         }
     }
 }
 
-/** v1.55: 详情页字段行（键 + 值，值可换行） */
+/** v1.57: 总览 = SectionCard 折叠分区：基本信息 + payload 字段 + JSON 内容 */
 @Composable
-private fun fieldRow(key: String, value: String) {
-    if (value.isEmpty()) return
-    Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-        Text(
-            key,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.primary,
-            fontSize = 10.sp,
-            fontWeight = FontWeight.Bold
-        )
-        Text(
-            value,
-            style = codeStyle,
-            fontSize = 12.sp,
-            color = MaterialTheme.colorScheme.onSurface
-        )
+private fun EventOverview(entry: com.dustinky.spyprobe.SpyEvent) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        // 基本信息
+        SectionCard(title = "基本信息") {
+            KvRow("类型", entry.type)
+            KvRow("ID", "EVT#${entry.id}")
+            KvRow("时间", java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.getDefault())
+                .format(java.util.Date(entry.time)))
+            if (entry.done) KvRow("耗时", "${entry.durationMs}ms")
+        }
+
+        // payload 字段（友好分组）
+        val p = entry.payload
+        if (p != null && p.length() > 0) {
+            val groups = payloadGroups(entry.type)
+            for (group in groups) {
+                val rows = group.keys.mapNotNull { k ->
+                    val v = p.optString(k, "")
+                    if (v.isEmpty() || v == "null" || v == "{}" || v == "[]") null
+                    else k to v
+                }
+                if (rows.isNotEmpty()) {
+                    SectionCard(title = group.title) {
+                        rows.forEach { (k, v) ->
+                            // 大字段（JSON/长文本）用折叠 + 高亮，短字段用 KeyValueTable 行
+                            if (v.length > 300 || looksLikeJson(v)) {
+                                val jsonLike = looksLikeJson(v)
+                                var expanded by remember { mutableStateOf(false) }
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { expanded = !expanded }
+                                        .padding(vertical = 3.dp)
+                                ) {
+                                    Text(
+                                        k,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontSize = 10.sp,
+                                        modifier = Modifier.width(110.dp)
+                                    )
+                                    Text(
+                                        if (expanded) "▾ 收起" else "▸ 展开（${v.length} 字符）",
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.secondary
+                                    )
+                                }
+                                if (expanded) {
+                                    if (jsonLike) {
+                                        SyntaxHighlighter(v)
+                                    } else {
+                                        Text(v, style = codeStyle, fontSize = 11.sp, softWrap = true,
+                                            color = MaterialTheme.colorScheme.onSurface)
+                                    }
+                                }
+                            } else {
+                                KvRow(k, v)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // payload 里没被分组覆盖的其余键（兜底）
+            val covered = groups.flatMap { it.keys }.toSet()
+            val rest = otherKeys(p, covered.toList())
+            if (rest.isNotEmpty()) {
+                SectionCard(title = "其他字段") {
+                    rest.forEach { k ->
+                        val v = p.optString(k, "")
+                        if (v.isNotEmpty() && v != "null") KvRow(k, v)
+                    }
+                }
+            }
+        }
+
+        // 原始日志（始终可见，小字）
+        if (entry.logLine.isNotBlank()) {
+            SectionCard(title = "原始日志") {
+                Text(entry.logLine, style = codeStyle, fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, softWrap = true)
+            }
+        }
     }
 }
 
-/** v1.55: payload 中不在友好顺序里的其余键（按字母序） */
-private fun otherKeys(p: JSONObject, order: List<String>): List<String> {
+/** v1.57: 原始视图——SyntaxHighlighter 自动识别 JSON/HTTP/纯文本 */
+@Composable
+private fun EventRawView(entry: com.dustinky.spyprobe.SpyEvent) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(12.dp)
+    ) {
+        SyntaxHighlighter(entry.logLine)
+    }
+}
+
+/** v1.57: 调用栈视图 */
+@Composable
+private fun EventStackView(entry: com.dustinky.spyprobe.SpyEvent) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(12.dp)
+    ) {
+        Text(entry.stack, style = codeStyle, fontSize = 10.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant, softWrap = true)
+    }
+}
+
+/** v1.57: 判断字符串像不像 JSON（用于自动高亮） */
+private fun looksLikeJson(s: String): Boolean {
+    val t = s.trimStart()
+    return (t.startsWith("{") && t.endsWith("}")) || (t.startsWith("[") && t.endsWith("]"))
+}
+
+/** v1.57: payload 字段友好分组（按事件类型） */
+private data class PayloadGroup(val title: String, val keys: List<String>)
+
+private fun payloadGroups(type: String): List<PayloadGroup> = when (type) {
+    "SQL" -> listOf(
+        PayloadGroup("SQL 操作", listOf("op", "table")),
+        PayloadGroup("语句", listOf("sql")),
+        PayloadGroup("参数", listOf("args"))
+    )
+    "JSON" -> listOf(
+        PayloadGroup("来源", listOf("source")),
+        PayloadGroup("内容", listOf("content"))
+    )
+    "CRYPTO" -> listOf(
+        PayloadGroup("算法", listOf("algorithm", "mode", "key", "iv")),
+        PayloadGroup("数据", listOf("data")),
+        PayloadGroup("结果", listOf("ok", "err"))
+    )
+    "NET" -> listOf(
+        PayloadGroup("连接", listOf("host", "ip", "port", "timeout", "kind")),
+        PayloadGroup("结果", listOf("ok", "err"))
+    )
+    "URL" -> listOf(
+        PayloadGroup("URL", listOf("url")),
+        PayloadGroup("来源", listOf("source", "kind"))
+    )
+    "CLIP" -> listOf(
+        PayloadGroup("剪贴板内容", listOf("content"))
+    )
+    else -> listOf(PayloadGroup("字段", listOf()))
+}
+
+/** v1.57: payload 中不在分组里的其余键（按字母序） */
+private fun otherKeys(p: JSONObject, covered: List<String>): List<String> {
     val out = ArrayList<String>()
     val it = p.keys()
     while (it.hasNext()) {
         val k = it.next()
-        if (!order.contains(k)) out.add(k)
+        if (!covered.contains(k)) out.add(k)
     }
     out.sort()
     return out
+}
+
+/** v1.57: 分享事件文本 */
+private fun shareEventText(context: android.content.Context, entry: com.dustinky.spyprobe.SpyEvent) {
+    try {
+        val text = "=== EVT#${entry.id} [${entry.type}] ${entry.title} ===\n\n" +
+                entry.logLine + if (entry.stack.isNotBlank()) "\n\n调用栈:\n" + entry.stack else ""
+        val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(android.content.Intent.EXTRA_TEXT, text)
+        }
+        context.startActivity(android.content.Intent.createChooser(intent, "分享事件"))
+    } catch (t: Throwable) {
+        android.widget.Toast.makeText(context, "分享失败: $t", android.widget.Toast.LENGTH_SHORT).show()
+    }
 }
