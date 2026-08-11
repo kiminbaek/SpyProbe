@@ -31,14 +31,9 @@ public class UrlProbe {
                 return;
             }
         }
-        // v1.54 P1: http(s) URL 与 REQ# 结构化卡片重复（TlsHttpParser 已抓完整请求含 URL）→
-        //   降级到调试日志，日志页只留 REQ# 卡片。URL 构造点仍在调试日志可查（反编译找接口地址）。
-        //   保留非 http 协议（content:// 自定义 provider 等）在日志页——它们不会成为网络请求，
-        //   对逆向（找 app 内部 provider/文件访问）仍有独立价值。
-        if (lower.startsWith("http://") || lower.startsWith("https://")) {
-            DebugLog.get().logNoMirror("URL", "[URL] " + url);
-            return;
-        }
+        // v1.54 修正：http(s) URL **保留在日志页**——URL 探测的价值是"app 运行时动态拼接的 URL
+        //   + 构造调用栈"（静态反编译只能看到写死字符串，拼接逻辑全靠运行时探测），REQ# 卡片只给
+        //   网络请求详情，两者是不同维度的信息，不构成重复。不降级 DebugLog。
         long now = System.currentTimeMillis();
         Long prev = sUrlSeen.get(url);
         if (prev != null && now - prev < URL_DEDUP_MS) return;
