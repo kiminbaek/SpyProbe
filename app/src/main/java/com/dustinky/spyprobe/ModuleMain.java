@@ -82,6 +82,8 @@ public class ModuleMain extends XposedModule {
         LogStore.get().enablePushHome(pushToken, () -> TokenStore.remoteToken(this));
         // v1.39 P0: pcap 记录推送主进程（与日志推送同 token 鉴权）
         PcapWriter.get().enablePushHome(pushToken, () -> TokenStore.remoteToken(this));
+        // v1.48: 结构化 HTTP 条目推送主进程（小黄鸟式详情页数据源）
+        HttpStore.get().enablePush(pushToken, () -> TokenStore.remoteToken(this));
         SpyServer server = new SpyServer(net, mth, clsProbe, pkg, dexKit, cfgFile, pushToken); // v1.47 P1-3: 9901 控制面鉴权
 
         // v1.37 P0-1: 尽早拉主进程权威配置（惰性 hook 的前提——net.install 之前就知道

@@ -218,6 +218,25 @@ public class SpyHomeServer {
                     o.put("token", TokenStore.homeToken());
                     return o.toString();
                 }
+                case "/api/push_http": {
+                    // v1.48: 目标进程推送结构化 HTTP 条目 → 主进程内存 HttpStore（UI 详情页查询）
+                    JSONObject root = new JSONObject(body == null ? "{}" : body);
+                    JSONArray arr = root.optJSONArray("entries");
+                    int n = 0;
+                    if (arr != null) {
+                        for (int i = 0; i < arr.length(); i++) {
+                            try {
+                                JSONObject e = arr.getJSONObject(i);
+                                HttpEntry he = HttpEntry.fromJson(e);
+                                if (he != null) { HomeHttpStore.get().add(he); n++; }
+                            } catch (Throwable t) { }
+                        }
+                    }
+                    JSONObject o = new JSONObject();
+                    o.put("ok", true);
+                    o.put("accepted", n);
+                    return o.toString();
+                }
                 case "/api/push_logs": {
                     // 目标进程批量推送日志 → 主进程 LogStore（LogPersister 落自己家）
                     JSONObject root = new JSONObject(body == null ? "{}" : body);

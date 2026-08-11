@@ -664,6 +664,8 @@ public class NetProbe {
                     // method/url 需在 try 外可见（失败留痕也要用）
                     Object method = null;
                     Object url = null;
+                    // v1.48: 结构化 HttpEntry（小黄鸟式详情数据源）
+                    HttpEntry he = null;
                     try {
                         ensureReqMethods(req);
                         url = sReqUrl.invoke(req);
@@ -671,11 +673,20 @@ public class NetProbe {
                         Object headers = sReqHeaders.invoke(req);
                         StringBuilder sb = new StringBuilder();
                         sb.append("[REQ#").append(rid).append("] >>> ").append(method).append(" ").append(url);
+                        // v1.48: 解析请求头为 k-v map（结构化详情用）
+                        java.util.Map<String, String> reqHdrs = new java.util.TreeMap<>();
                         if (headers != null) {
                             // okhttp Headers.toString() 格式 "Key: value\n..."
-                            sb.append("\n    ").append(headers.toString().replace("\n", "\n    "));
+                            String hs = headers.toString();
+                            for (String line : hs.split("\n")) {
+                                int c = line.indexOf(':');
+                                if (c > 0) reqHdrs.put(line.substring(0, c).trim(), line.substring(c + 1).trim());
+                            }
+                            sb.append("\n    ").append(hs.replace("\n", "\n    "));
                         }
                         // P0-2(v1.6): 记录请求体前先查 contentLength()，超大 body 不 buffer（防 OOM）
+                        String reqBodyStr = "";
+                        int reqBodyBytes = 0;
                         try {
                             Object body = sReqBody.invoke(req);
                             if (body != null) {
@@ -693,18 +704,32 @@ public class NetProbe {
                                                 int reqRawLen = bs.length();
                                                 bs = bs.substring(0, reqLimit) + "...(" + reqRawLen + "B)";
                                             }
+                                            reqBodyStr = bs;
+                                            reqBodyBytes = bs.length();
                                             sb.append("\n    reqBody: ").append(bs.replace("\n", "\n    "));
                                         }
                                     }
                                 } else if (clen > MAX_REQ_BODY) {
+                                    reqBodyBytes = (int) Math.min(clen, Integer.MAX_VALUE);
                                     sb.append("\n    reqBody: <skipped ").append(clen).append("B, too large>");
                                 }
                             }
                         } catch (Throwable t) { /* one-shot body 忽略 */ }
                         LogStore.get().log(TAG, sb.toString());
+                        // v1.48: 构建结构化条目（body 类型嗅探，栈摘要取前几帧）
+                        String ct = reqHdrs.get("Content-Type");
+                        String btype = HttpEntry.sniffBodyType(ct, reqBodyStr);
+                        String stack = StackUtil.getCompact();
+                        he = new HttpEntry("OKHTTP", rid, System.currentTimeMillis(),
+                                Thread.currentThread().getName(),
+                                String.valueOf(method), String.valueOf(url),
+                                reqHdrs, btype, reqBodyStr, reqBodyBytes,
+                                stack, sb.toString());
+                        HttpStore.get().add(he);
                     } catch (Throwable t) {
                         LogStore.get().log(TAG, "[OkHttp] req parse fail: " + t);
                     }
+                    final HttpEntry fHe = he;
                     Object resp;
                     try {
                         resp = chainParam.proceed();
@@ -712,6 +737,8 @@ public class NetProbe {
                         // v1.2: 失败请求留痕（连接失败/超时/协议错误），rethrow 保持原行为
                         // v1.35 P1-3: 失败行带关联 ID
                         LogStore.get().log(TAG, "[REQ#" + rid + "] !!! REQUEST FAILED: " + method + " " + url + " -> " + t);
+                        // v1.48: 失败请求也补状态（status=0 + done，UI 显示失败）
+                        if (fHe != null) { fHe.done = true; fHe.durationMs = System.currentTimeMillis() - fHe.time; }
                         throw t;
                     }
                     try {
@@ -730,13 +757,30 @@ public class NetProbe {
                         if (rawLen > limit) b = b.substring(0, limit) + "...(" + rawLen + "B)";
                         StringBuilder sb = new StringBuilder();
                         sb.append("[REQ#").append(rid).append("] <<< ").append(code).append(" ").append(msg);
+                        // v1.48: 解析响应头为 k-v map
+                        java.util.Map<String, String> rspHdrs = new java.util.TreeMap<>();
                         if (respHeaders != null) {
                             // v1.2: 响应头（Set-Cookie / Content-Type / 长度）
-                            sb.append("\n    ").append(respHeaders.toString().replace("\n", "\n    "));
+                            String hs = respHeaders.toString();
+                            for (String line : hs.split("\n")) {
+                                int c = line.indexOf(':');
+                                if (c > 0) rspHdrs.put(line.substring(0, c).trim(), line.substring(c + 1).trim());
+                            }
+                            sb.append("\n    ").append(hs.replace("\n", "\n    "));
                         }
                         sb.append("\n    body(").append(b.length()).append("B): ")
                           .append(b.replace("\n", "\n    "));
                         LogStore.get().log(TAG, sb.toString());
+                        // v1.48: 填充结构化条目响应
+                        if (fHe != null) {
+                            String rct = rspHdrs.get("Content-Type");
+                            String rtype = HttpEntry.sniffBodyType(rct, b);
+                            int rbytes = rawLen > limit ? limit : rawLen;
+                            long dur = System.currentTimeMillis() - fHe.time;
+                            int status = 0;
+                            try { status = ((Number) code).intValue(); } catch (Throwable ignored) { }
+                            fHe.complete(status, String.valueOf(msg), rspHdrs, rtype, b, rbytes, dur);
+                        }
                     } catch (Throwable t) {
                         LogStore.get().log(TAG, "[OkHttp] resp parse fail: " + t);
                     }
@@ -966,6 +1010,7 @@ public class NetProbe {
                         String m = c.getRequestMethod();
                         // P1: 记录响应头 + Content-Length
                         StringBuilder hd = new StringBuilder();
+                        java.util.Map<String, String> rspHdrs = new java.util.TreeMap<>();
                         try {
                             Map<String, List<String>> hf = c.getHeaderFields();
                             if (hf != null) {
@@ -973,9 +1018,27 @@ public class NetProbe {
                                 String ct = c.getHeaderField("Content-Type");
                                 hd.append(" Content-Length=").append(cl == null ? "?" : cl)
                                   .append(" Content-Type=").append(ct == null ? "?" : ct);
+                                for (Map.Entry<String, List<String>> e : hf.entrySet()) {
+                                    if (e.getKey() != null && e.getValue() != null && !e.getValue().isEmpty()) {
+                                        rspHdrs.put(e.getKey(), e.getValue().get(0));
+                                    }
+                                }
                             }
                         } catch (Throwable t) { }
-                        LogStore.get().log(TAG, "[HUC] " + m + " " + u + " -> " + r + hd);
+                        String line = "[HUC] " + m + " " + u + " -> " + r + hd;
+                        LogStore.get().log(TAG, line);
+                        // v1.48: 轻量结构化（HUC 请求头拿不到，只记录 method/url/status/响应头）
+                        HttpEntry he = new HttpEntry("URL_CONN", HttpStore.get().nextId(), System.currentTimeMillis(),
+                                Thread.currentThread().getName(),
+                                m, u == null ? "" : u.toString(),
+                                new java.util.TreeMap<>(), "none", "", 0,
+                                StackUtil.getCompact(), line);
+                        int status = 0;
+                        try { status = ((Number) r).intValue(); } catch (Throwable ignored) { }
+                        String msg = "";
+                        try { msg = c.getResponseMessage(); } catch (Throwable ignored) { }
+                        he.complete(status, msg, rspHdrs, "text", "", 0, 0);
+                        HttpStore.get().add(he);
                     } catch (Throwable t) { }
                 }
                 return r;

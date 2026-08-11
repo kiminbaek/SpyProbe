@@ -882,12 +882,3 @@ private fun ReplayCard(
     }
 }
 
-private fun methodColor(method: String): Color = when (method.uppercase()) {
-    "GET" -> Color(0xFF2E7D32)
-    "POST" -> Color(0xFFE65100)
-    "PUT" -> Color(0xFF1565C0)
-    "DELETE" -> Color(0xFFC62828)
-    "PATCH" -> Color(0xFF6A1B9A)
-    "HEAD" -> Color(0xFF546E7A)
-    else -> Color(0xFF455A64)
-}

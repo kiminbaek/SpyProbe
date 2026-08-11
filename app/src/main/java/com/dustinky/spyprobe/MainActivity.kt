@@ -35,6 +35,12 @@ class MainActivity : ComponentActivity() {
         } catch (t: Throwable) {
             com.dustinky.spyprobe.util.UiLog.log("Home init PcapStore FAIL: $t")
         }
+        // v1.48: 结构化 HTTP 条目落盘自己家：files/http_entries/（目标进程推 HttpEntry 写这里）
+        try {
+            com.dustinky.spyprobe.HomeHttpStore.get().init(applicationContext.filesDir)
+        } catch (t: Throwable) {
+            com.dustinky.spyprobe.util.UiLog.log("Home init HomeHttpStore FAIL: $t")
+        }
         // v1.37 P0-5: 生成/加载推送鉴权 token（server 校验 push_logs 用；目标进程经远程偏好读取）
         try {
             com.dustinky.spyprobe.TokenStore.ensureToken(applicationContext)

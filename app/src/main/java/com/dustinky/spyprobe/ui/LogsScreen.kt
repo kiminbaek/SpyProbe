@@ -141,7 +141,8 @@ private val StarBorderIcon: ImageVector by lazy {
  * v1.31.1 P3-12: 自定义 ContentCopy 图标（去掉 material-icons-extended 依赖，APK -5MB）。
  * 标准 Material Icons content_copy 路径（24dp viewport），与原 extended 图标完全一致。
  */
-private val CopyIcon: ImageVector by lazy {
+// v1.49: 提升为 internal——HttpDetailScreen 顶栏「复制」按钮复用（原来 private，仅 LogsScreen 内可用）
+internal val CopyIcon: ImageVector by lazy {
     ImageVector.Builder(
         name = "ContentCopy",
         defaultWidth = 24.dp,
@@ -214,6 +215,8 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     var detailEntry by remember { mutableStateOf<Pair<Long, String>?>(null) }
     // v1.39 P3: 实时日志详情对话框（JSON/Hex 双视图）
     var detailDialog by remember { mutableStateOf<String?>(null) }
+    // v1.48: 结构化 HTTP 请求详情页（小黄鸟式）——点击 [REQ#N] 请求行命中 HttpStore 时弹出
+    var httpDetail by remember { mutableStateOf<com.dustinky.spyprobe.HttpEntry?>(null) }
     // v1.25 P1-3: 暂停状态从局部 remember 改为 vm（此前暂停只停自动滚动不停轮询——日志还在积累；
     //   vm.paused 同时控制轮询停止 + 自动滚动暂停，语义一致）
     val paused by vm.paused.collectAsState()
@@ -519,14 +522,53 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                 .padding(horizontal = 8.dp, vertical = 4.dp)
                         ) {
                             items(filtered, key = { it.first }) { (idx, line) ->
-                                HistoryLineRow(
-                                    idx = idx,
-                                    line = line,
-                                    onClick = {
-                                        detailEntry = idx to line
-                                        historyLevel = HistoryLevel.DETAIL
-                                    }
-                                )
+                                // v1.49: 历史 LINES 层也支持 REQ# 结构化详情——内存优先，未命中按会话日期文件回溯
+                                val rid = parseReqId(line)
+                                val heMem = rid?.let { com.dustinky.spyprobe.HomeHttpStore.get().find(it) }
+                                if (heMem != null) {
+                                    HttpRequestCard(
+                                        entry = heMem,
+                                        onClick = { httpDetail = heMem }
+                                    )
+                                } else {
+                                    HistoryLineRow(
+                                        idx = idx,
+                                        line = line,
+                                        onClick = {
+                                            val rid2 = parseReqId(line)
+                                            if (rid2 != null) {
+                                                val he2 = rid2?.let { com.dustinky.spyprobe.HomeHttpStore.get().find(it) }
+                                                if (he2 != null) {
+                                                    httpDetail = he2
+                                                } else {
+                                                    // 内存未命中 → 按会话日期从 http_entries 文件回溯
+                                                    val day = selectedSession?.date
+                                                    if (day != null) {
+                                                        scope.launch {
+                                                            val appCtx = context.applicationContext as android.app.Application
+                                                            val fromDay = withContext(Dispatchers.IO) {
+                                                                com.dustinky.spyprobe.HomeHttpStore.get().readDay(appCtx.filesDir, day)
+                                                                    .firstOrNull { e -> e.id == rid2 }
+                                                            }
+                                                            if (fromDay != null) {
+                                                                httpDetail = fromDay
+                                                            } else {
+                                                                detailEntry = idx to line
+                                                                historyLevel = HistoryLevel.DETAIL
+                                                            }
+                                                        }
+                                                    } else {
+                                                        detailEntry = idx to line
+                                                        historyLevel = HistoryLevel.DETAIL
+                                                    }
+                                                }
+                                            } else {
+                                                detailEntry = idx to line
+                                                historyLevel = HistoryLevel.DETAIL
+                                            }
+                                        }
+                                    )
+                                }
                             }
                         }
                     }
@@ -564,16 +606,34 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                 .padding(horizontal = 8.dp, vertical = 4.dp)
                         ) {
                             items(filtered, key = { it.first }) { (idx, line) ->
-                                Text(
-                                    line,
-                                    style = codeStyle,
-                                    color = logColor(line),
-                                    softWrap = true,
-                                    // v1.39 P3: 实时行点击 → JSON/Hex 详情（Reqable 风格双视图）
-                                    modifier = Modifier
-                                        .padding(vertical = 1.dp)
-                                        .clickable { detailDialog = line }
-                                )
+                                // v1.49: 实时列表请求行卡片化——含 [REQ#N] 且命中 HomeHttpStore 的行渲染为小黄鸟式微卡片
+                                //（方法色块+URL+状态码+耗时+响应体摘要），普通行保持纯文本
+                                val rid = parseReqId(line)
+                                val he = rid?.let { com.dustinky.spyprobe.HomeHttpStore.get().find(it) }
+                                if (he != null) {
+                                    HttpRequestCard(
+                                        entry = he,
+                                        onClick = { httpDetail = he }
+                                    )
+                                } else {
+                                    Text(
+                                        line,
+                                        style = codeStyle,
+                                        color = logColor(line),
+                                        softWrap = true,
+                                        modifier = Modifier
+                                            .padding(vertical = 1.dp)
+                                            .clickable {
+                                                val rid2 = parseReqId(line)
+                                                val he2 = rid2?.let { com.dustinky.spyprobe.HomeHttpStore.get().find(it) }
+                                                if (he2 != null) {
+                                                    httpDetail = he2
+                                                } else {
+                                                    detailDialog = line
+                                                }
+                                            }
+                                    )
+                                }
                             }
                         }
                     }
@@ -584,6 +644,12 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             val dialogLine = detailDialog
             if (dialogLine != null) {
                 LogDetailDialog(line = dialogLine, onDismiss = { detailDialog = null })
+            }
+
+            // v1.48: 结构化 HTTP 请求详情页（小黄鸟式）——更高优先级，先于旧弹窗判断
+            val httpEntry = httpDetail
+            if (httpEntry != null) {
+                HttpDetailDialog(entry = httpEntry, onDismiss = { httpDetail = null })
             }
 
             // ===== 浮动操作按钮 =====
@@ -1226,4 +1292,137 @@ private fun hexToBytes(s: String): ByteArray {
         out[i] = clean.substring(i * 2, i * 2 + 2).toInt(16).toByte()
     }
     return out
+}
+
+// v1.48: 从日志行解析 [REQ#N] 关联 id（命中 HttpStore 则展示结构化详情页）
+private fun parseReqId(line: String): Long? {
+    val m = Regex("""\[REQ#(\d+)]""").find(line) ?: return null
+    return m.groupValues[1].toLongOrNull()
+}
+
+/**
+ * v1.49: 实时列表请求微卡片（小黄鸟式）——命中 HomeHttpStore 的 [REQ#N] 行渲染为结构化卡片：
+ *   [GET]  api.example.com/v1/user             ●200
+ *   REQ#7  342B→1.8KB  1.2s                    响应体摘要
+ */
+@Composable
+private fun HttpRequestCard(entry: com.dustinky.spyprobe.HttpEntry, onClick: () -> Unit) {
+    val done = entry.done
+    val failed = done && entry.status <= 0
+    val statusTxt = when {
+        failed -> "FAIL"
+        !done -> "…"
+        else -> entry.status.toString()
+    }
+    val statusCol = when {
+        failed -> MaterialTheme.colorScheme.error
+        !done -> MaterialTheme.colorScheme.onSurfaceVariant
+        else -> statusColor(entry.status)
+    }
+    // URL 摘要：host + path（截断）
+    val urlSummary = try {
+        val u = java.net.URI(entry.url)
+        val path = u.path
+        val q = u.rawQuery
+        val p = if (!path.isNullOrEmpty()) path else "/"
+        val full = "${u.host ?: entry.url}$p" + if (!q.isNullOrEmpty()) "?$q" else ""
+        if (full.length > 60) full.take(60) + "…" else full
+    } catch (t: Throwable) {
+        entry.url
+    }
+    // 响应体摘要（首行，截断 60 字符）
+    val bodySummary = if (entry.done && entry.respBody.isNotBlank()) {
+        entry.respBody.replace("\n", " ").trim().let { if (it.length > 60) it.take(60) + "…" else it }
+    } else if (failed) {
+        "请求失败"
+    } else {
+        "请求中…"
+    }
+
+    Card(
+        onClick = onClick,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer,
+        ),
+        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp)
+    ) {
+        Column(Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+            // 第一行：方法色块 + URL + 状态
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    entry.method.uppercase(),
+                    color = Color.White,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .background(methodColor(entry.method), RoundedCornerShape(4.dp))
+                        .padding(horizontal = 5.dp, vertical = 1.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    urlSummary,
+                    style = codeStyle,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(6.dp))
+                // 状态码
+                Text(
+                    statusTxt,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = statusCol,
+                    fontSize = 11.sp
+                )
+                // 状态点
+                Box(
+                    Modifier
+                        .padding(start = 4.dp)
+                        .width(7.dp)
+                        .height(7.dp)
+                        .background(statusCol, RoundedCornerShape(50))
+                )
+            }
+            // 第二行：REQ# + 大小 + 耗时 + 响应摘要
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "REQ#${entry.id}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 9.sp
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "${entry.reqBodyBytes}→${entry.respBodyBytes}B",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 9.sp
+                )
+                if (entry.done) {
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "${entry.durationMs}ms",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.secondary,
+                        fontSize = 9.sp
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                Text(
+                    bodySummary,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 9.sp,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
 }
