@@ -79,7 +79,11 @@ public class HttpStore {
 
     /** 推送循环：有更新条目 → 批量推主进程（与 LogStore.pushLoop 同构） */
     private void pushLoop() {
-        int lastCount = 0;
+        // v1.50 P1-3: count 游标 → id 游标——环形淘汰 remove(0) 后列表前移，
+        //   count 游标 subList(lastCount, size) 会漏推中间条目；id 全局唯一单调（LogStore seq），
+        //   淘汰不影响 id 游标语义。
+        long lastPushedId = 0;
+        long backoffMs = 0; // v1.50 P2-12: 失败指数退避（9900 未起时不再每 2s 重推同批刷 DebugLog）
         while (true) {
             try {
                 Thread.sleep(2000);
@@ -88,12 +92,22 @@ public class HttpStore {
                 synchronized (lock) {
                     snap = new ArrayList<>(entries);
                 }
-                if (snap.size() <= lastCount) continue;
-                List<HttpEntry> fresh = snap.subList(lastCount, snap.size());
-                // v1.49: push 成功才推进游标——失败（9900 未起/网络异常）时该批保留待重试，
-                //   避免条目永久丢失（与 LogStore 失败重试语义一致）
+                List<HttpEntry> fresh = new ArrayList<>();
+                for (HttpEntry e : snap) {
+                    if (e.id > lastPushedId) fresh.add(e);
+                }
+                if (fresh.isEmpty()) {
+                    backoffMs = 0;
+                    continue;
+                }
+                // push 成功才推进游标——失败（9900 未起/网络异常）时该批保留待重试
                 if (pushBatch(fresh)) {
-                    lastCount = snap.size();
+                    lastPushedId = fresh.get(fresh.size() - 1).id;
+                    backoffMs = 0;
+                } else {
+                    long next = backoffMs == 0 ? 1000 : Math.min(backoffMs * 2, 30000);
+                    backoffMs = next;
+                    try { Thread.sleep(next); } catch (InterruptedException ie) { return; }
                 }
             } catch (InterruptedException ie) {
                 return;

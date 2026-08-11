@@ -45,8 +45,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.dustinky.spyprobe.HttpEntry
 import com.dustinky.spyprobe.ui.theme.codeStyle
-import org.json.JSONArray
-import org.json.JSONObject
 
 /**
  * v1.48: 小黄鸟式 HTTP 请求详情页（全屏 Dialog）
@@ -209,7 +207,7 @@ private fun OverviewView(entry: HttpEntry, expandStack: Boolean, onToggleStack: 
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             InfoCell("耗时", if (entry.done) "${entry.durationMs}ms" else "进行中", null)
-            InfoCell("大小", "${entry.reqBodyBytes}→${entry.respBodyBytes}B", null)
+            InfoCell("大小", "${fmtBytes(entry.reqBodyBytes.toLong())}→${fmtBytes(entry.respBodyBytes.toLong())}", null)
         }
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -293,7 +291,7 @@ private fun BodyView(bodyType: String, body: String) {
     var mode by remember { mutableStateOf(0) }
     var fullBody by remember { mutableStateOf(false) }
     if (body.isEmpty()) {
-        EmptyHint("无请求体")
+        EmptyHint("无内容")
         return
     }
     // 大 body 阈值：显示时截断到 4000 字符，点击"展开全部"看完整（防渲染卡顿）
@@ -324,7 +322,7 @@ private fun BodyView(bodyType: String, body: String) {
             when {
                 bodyType == "binary" && mode == 0 -> Text(hexDump(shownBody, full = fullBody), style = codeStyle, fontSize = 10.sp, softWrap = true)
                 mode == 1 && bodyType != "binary" -> {
-                    val json = formatJsonPretty(shownBody)
+                    val json = formatJson(shownBody) // v1.50 P2-11: 统一用公共 formatJson
                     if (json != null) Text(json, style = codeStyle, fontSize = 10.sp, softWrap = true)
                     else Text(shownBody, style = codeStyle, fontSize = 10.sp, softWrap = true)
                 }
@@ -477,19 +475,6 @@ private fun shareText(context: android.content.Context, entry: HttpEntry) {
     } catch (t: Throwable) {
         android.widget.Toast.makeText(context, "分享失败: $t", android.widget.Toast.LENGTH_SHORT).show()
     }
-}
-
-/** JSON 格式化（带缩进；非 JSON 返回 null） */
-private fun formatJsonPretty(line: String): String? {
-    val start = line.indexOf('{').takeIf { it >= 0 } ?: line.indexOf('[')
-    if (start < 0) return null
-    val candidate = line.substring(start)
-    return try {
-        when {
-            candidate.startsWith("[") -> JSONArray(candidate).toString(2)
-            else -> JSONObject(candidate).toString(2)
-        }
-    } catch (t: Throwable) { null }
 }
 
 /** hex dump（v1.49: full=false 截断 256B；full=true 完整显示最多 4096B 防渲染卡顿） */

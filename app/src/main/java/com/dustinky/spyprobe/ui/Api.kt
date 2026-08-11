@@ -314,20 +314,62 @@ class SpyApi(private var port: Int = 9901) {
         }
     }
 
-    /** 自己家增量日志（实时轮询主用；返回新行+next，null=自己家不可用） */
-    fun homeFetchLogs(since: Long): Pair<List<LogEntry>, Long>? {
+    /** 自己家增量日志（实时轮询主用；返回新行+next+firstSeq，null=自己家不可用）
+     *  v1.50 P0-2: firstSeq=since 模式下返回第一条的 seq（0=兼容/无数据）。
+     *  环形淘汰后 since 指向已淘汰 seq，服务端从最早剩余返回 → firstSeq > since+1 即缺口，
+     *  UI 据此清空重拉，避免旧日志重复显示。 */
+    data class HomeLogs(val logs: List<LogEntry>, val next: Long, val firstSeq: Long)
+
+    fun homeFetchLogs(since: Long): HomeLogs? {
         val resp = homeHttpGet("/api/logs?since=$since") ?: return null
         return try {
             val o = JSONObject(resp)
             val next = o.optLong("next", since)
+            val firstSeq = o.optLong("first", 0)
             val arr = o.optJSONArray("logs") ?: JSONArray()
             val list = ArrayList<LogEntry>()
             for (i in 0 until arr.length()) {
                 val e = arr.getJSONObject(i)
                 list.add(LogEntry(e.optString("time"), e.optString("tag"), e.optString("msg")))
             }
-            Pair(list, next)
+            HomeLogs(list, next, firstSeq)
         } catch (t: Throwable) { null }
+    }
+
+    /** v1.50 P0-1: 清空主进程自己家日志（实时清空按钮主路径） */
+    fun homeClear(): Boolean {
+        val resp = try {
+            val u = URL(homeBaseUrl() + "/api/clear")
+            val c = u.openConnection() as HttpURLConnection
+            c.requestMethod = "POST"
+            c.setRequestProperty("Content-Type", "application/json")
+            val homeTok = com.dustinky.spyprobe.TokenStore.homeToken()
+            if (homeTok.isNotEmpty()) c.setRequestProperty("X-Spy-Token", homeTok)
+            c.connectTimeout = 1500
+            c.readTimeout = 1500
+            c.doOutput = true
+            val os: OutputStream = c.outputStream
+            os.write("{}".toByteArray(StandardCharsets.UTF_8))
+            os.flush()
+            os.close()
+            val r = BufferedReader(InputStreamReader(c.inputStream, StandardCharsets.UTF_8))
+            val sb = StringBuilder()
+            var line: String?
+            while (r.readLine().also { line = it } != null) sb.append(line).append('\n')
+            r.close()
+            c.disconnect()
+            sb.toString()
+        } catch (t: Throwable) {
+            lastHttpError = "home POST /api/clear: ${t.javaClass.simpleName}: ${t.message}"
+            null
+        }
+        if (resp == null) {
+            com.dustinky.spyprobe.util.UiLog.log("homeClear(): null ($lastHttpError)")
+            return false
+        }
+        return try {
+            JSONObject(resp).optBoolean("ok", false)
+        } catch (t: Throwable) { false }
     }
 
     /** 自己家导出当前内存日志为纯文本（实时分享主用；不依赖目标进程在线） */

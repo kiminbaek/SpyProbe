@@ -579,6 +579,43 @@ internal fun logColor(line: String): Color {
     }
 }
 
+/** v1.50 P2-18: 失败行红色高亮——REQUEST FAILED/FAIL/ERROR 行在日志列表一眼可辨
+ *  （logColor 只认 "[TCP] FAIL" 前缀，[REQ#N] !!! REQUEST FAILED 等行原本显示灰色） */
+internal fun lineColor(line: String): Color {
+    if (line.contains("REQUEST FAILED") || line.contains(" FAIL ") || line.contains("FAILED") ||
+        line.contains("[ERR]") || line.contains(" ERROR ")) {
+        return Color(0xFFFF5252)
+    }
+    return logColor(line)
+}
+
+/** v1.50 P2-11: 提取日志行里的 JSON 片段并格式化（缩进 2 空格）；非 JSON 返回 null。
+ *  原 LogsScreen/HttpDetailScreen 各有一份重复实现，统一放这里共用。 */
+internal fun formatJson(line: String): String? {
+    val start = line.indexOf('{').takeIf { it >= 0 } ?: line.indexOf('[')
+    if (start < 0) return null
+    val candidate = line.substring(start)
+    return try {
+        when {
+            candidate.startsWith("[") -> org.json.JSONArray(candidate).toString(2)
+            else -> org.json.JSONObject(candidate).toString(2)
+        }
+    } catch (t: Throwable) {
+        null
+    }
+}
+
+/** v1.50 P2-9: 字节数格式化——7340032 → "7.0MB"，方便一眼读大小 */
+internal fun fmtBytes(n: Long): String {
+    return when {
+        n < 0 -> "?"
+        n < 1024 -> "${n}B"
+        n < 1024 * 1024 -> String.format(java.util.Locale.US, "%.1fKB", n / 1024.0)
+        n < 1024L * 1024 * 1024 -> String.format(java.util.Locale.US, "%.1fMB", n / 1048576.0)
+        else -> String.format(java.util.Locale.US, "%.1fGB", n / 1073741824.0)
+    }
+}
+
 /** v1.8: 公共过滤匹配（正则优先，非法正则 fallback 字面匹配） */
 fun matchesFilter(line: String, kw: String): Boolean {
     if (kw.isEmpty()) return true

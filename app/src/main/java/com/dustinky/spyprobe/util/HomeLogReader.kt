@@ -42,14 +42,16 @@ object HomeLogReader {
         return if (d.isDirectory) d else null
     }
 
-    /** spyprobe_logs_2026-08-09_0.log -> (date=2026-08-09, session=0)；非法返回 null */
+    /** spyprobe_logs_2026-08-09_0.log -> (date=2026-08-09, session=0)；非法返回 null
+     *  v1.50 P1-5: 兼容新格式 spyprobe_logs_<date>_<session>_<part>.log（5MB 滚动分段），
+     *   同一会话的多 part 文件归到同一 (date, session) 分组（不再假分裂成多个会话卡片）。 */
     fun parseName(name: String): Pair<String, Int>? {
         if (!name.startsWith(LOG_PREFIX) || !name.endsWith(".log")) return null
-        val core = name.substring(LOG_PREFIX.length, name.length - 4)
-        val u = core.lastIndexOf('_')
-        if (u != 10) return null
-        val date = core.substring(0, u)
-        val session = core.substring(u + 1).toIntOrNull() ?: return null
+        if (name.length < LOG_PREFIX.length + 11 + 2) return null
+        val date = name.substring(LOG_PREFIX.length, LOG_PREFIX.length + 10)
+        if (date.length != 10 || date[4] != '-' || date[7] != '-') return null
+        val rest = name.substring(LOG_PREFIX.length + 10 + 1, name.length - 4) // "3_1" 或 "3"
+        val session = rest.substringBefore('_').toIntOrNull() ?: return null
         return date to session
     }
 

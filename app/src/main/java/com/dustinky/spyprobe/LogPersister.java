@@ -53,8 +53,10 @@ public class LogPersister {
     private volatile boolean enabled = true;
     // v1.28 P1: 清空历史后通知写线程重开文件——否则写线程继续写已删除的 inode（新日志丢失直到滚动/跨天）
     private volatile boolean resetRequested = false;
-    // v1.33: 会话滚动——目标进程每启动一次（新 sessionId 推送）开新文件 spyprobe_logs_<date>_<n>.log
-    //   n 从"5MB 滚动序号"升级为"会话序号"：8:10 一次抓包=_0，8:20 又一次=_1，天然分开
+    // v1.33: 会话滚动——目标进程每启动一次（新 sessionId 推送）开新文件
+    // v1.50 P1-5: 文件名升级为 spyprobe_logs_<date>_<session>_<part>.log——
+    //   session=会话号（每次目标进程启动 +1），part=5MB 滚动序号（同一会话超 5MB 滚动）。
+    //   旧实现 _<n> 同时承担两个语义，>5MB 大会话被拆成多个"会话"（HomeLogReader 假分裂）。
     private volatile boolean sessionRollRequested = false;
     // v1.47 P1-8: 会话元数据（sessions.json）——写线程维护每个文件 count/first/last，
     //   HomeLogReader.sessions() 直接读元数据，避免历史页每次全量扫描每个日志文件（大文件/多会话卡顿）
@@ -196,7 +198,8 @@ public class LogPersister {
     private void run() {
         BufferedWriter bw = null;
         String day = null;
-        int part = 0;
+        int session = 0; // v1.50 P1-5: 会话号（每次目标进程启动 +1）
+        int part = 0;    // 5MB 滚动序号（同一会话内）
         File f = null;
         int metaCount = 0;        // 当前文件已写行数（元数据用）
         String metaFirst = "";    // 当前文件首行 t
@@ -227,6 +230,17 @@ public class LogPersister {
                         bw.flush();
                         // v1.47 P1-8: 空闲 flush 时同步元数据（实时性更好，UI 条数更准）
                         if (f != null && metaCount > 0) saveMeta(f, metaCount, metaFirst, metaLast);
+                        // v1.50 P1-7: 写线程自检——当前文件被外部删除（清空单个会话等）后重开，
+                        //   否则新日志写进已删除的 inode（目录项没了，文件"消失"直到跨天/会话滚动）
+                        if (f != null && !f.exists()) {
+                            DebugLog.get().log("Persist", "file deleted externally, reopen");
+                            try { bw.close(); } catch (Throwable t) { }
+                            bw = null;
+                            day = null;
+                            metaCount = 0;
+                            metaFirst = "";
+                            metaLast = "";
+                        }
                     }
                     continue;
                 }
@@ -238,8 +252,9 @@ public class LogPersister {
                         bw.close();
                     }
                     day = d;
-                    part = nextPart(day);
-                    f = fileOf(day, part);
+                    session = nextSession(day);
+                    part = 0;
+                    f = fileOf(day, session, part);
                     bw = open(f);
                     metaCount = 0;
                     metaFirst = "";
@@ -263,8 +278,8 @@ public class LogPersister {
                     bw.flush();
                     if (f != null && metaCount > 0) saveMeta(f, metaCount, metaFirst, metaLast);
                     bw.close();
-                    part++;
-                    f = fileOf(day, part);
+                    part++; // v1.50 P1-5: 同会话内 5MB 滚动（不换会话号）
+                    f = fileOf(day, session, part);
                     bw = open(f);
                     metaCount = 0;
                     metaFirst = "";
@@ -291,27 +306,33 @@ public class LogPersister {
         return new BufferedWriter(new OutputStreamWriter(new FileOutputStream(f, true), StandardCharsets.UTF_8));
     }
 
-    /** 当天已存在的分片最大编号 + 1（继续追加） */
-    private int nextPart(String day) {
+    /** v1.50 P1-5: 当天已存在的最大会话号 + 1（新会话开新文件 _<s>_<p>.log；兼容老单段 _<n>） */
+    private int nextSession(String day) {
         File[] fs = listDayFiles(day);
         int max = -1;
         if (fs != null) {
             for (File x : fs) {
-                String n = x.getName();
-                int idx = n.lastIndexOf('_');
-                if (idx > 0) {
-                    try {
-                        int p = Integer.parseInt(n.substring(idx + 1, n.length() - 4));
-                        if (p > max) max = p;
-                    } catch (Throwable t) { }
-                }
+                int s = parseSession(x.getName());
+                if (s > max) max = s;
             }
         }
         return max + 1;
     }
 
-    private File fileOf(String day, int part) {
-        return new File(dir, PREFIX + day + "_" + part + ".log");
+    /** 从文件名解析会话号：spyprobe_logs_<date>_<s>_<p>.log 或老格式 _<s>.log 都取第二段 */
+    private int parseSession(String name) {
+        try {
+            int dateEnd = PREFIX.length() + 10;
+            if (name.length() <= dateEnd + 2) return -1;
+            String rest = name.substring(dateEnd + 1, name.length() - 4); // 去掉 "<date>_" 和 ".log"
+            int u = rest.indexOf('_');
+            String s = u > 0 ? rest.substring(0, u) : rest;
+            return Integer.parseInt(s.trim());
+        } catch (Throwable t) { return -1; }
+    }
+
+    private File fileOf(String day, int session, int part) {
+        return new File(dir, PREFIX + day + "_" + session + "_" + part + ".log");
     }
 
     private File[] listDayFiles(String day) {

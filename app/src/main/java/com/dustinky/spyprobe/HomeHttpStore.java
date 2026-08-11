@@ -24,9 +24,13 @@ public class HomeHttpStore {
     public static HomeHttpStore get() { return INSTANCE; }
 
     private final List<HttpEntry> mem = new ArrayList<>();
+    // v1.50 P2-13: 落盘攒批——高频请求（视频流/轮询）不再每条 open/close 文件，
+    //   写线程每 2s flush 一次 pending（崩溃最多丢 2s 详情数据，内存环形仍保留）
+    private final List<HttpEntry> pending = new ArrayList<>();
     private final Object lock = new Object();
 
     private volatile File dir = null;
+    private volatile boolean writerStarted = false;
 
     private HomeHttpStore() { }
 
@@ -35,25 +39,65 @@ public class HomeHttpStore {
         if (dir != null) return;
         File d = new File(filesDir, "http_entries");
         if (d.mkdirs() || d.isDirectory()) dir = d;
+        ensureWriter();
     }
 
     public boolean isInitialized() { return dir != null; }
 
-    /** 追加条目（内存 + 落盘） */
+    private void ensureWriter() {
+        synchronized (lock) {
+            if (writerStarted) return;
+            writerStarted = true;
+            Thread t = new Thread(this::writeLoop, "SpyProbe-HttpPersist");
+            t.setDaemon(true);
+            t.start();
+        }
+    }
+
+    private void writeLoop() {
+        while (true) {
+            try {
+                Thread.sleep(2000);
+                flushPending();
+            } catch (InterruptedException ie) {
+                return;
+            } catch (Throwable t) {
+                DebugLog.get().logNoMirror("HomeHttp", "writeLoop err: " + t);
+            }
+        }
+    }
+
+    private void flushPending() {
+        List<HttpEntry> batch;
+        synchronized (lock) {
+            if (pending.isEmpty()) return;
+            batch = new ArrayList<>(pending);
+            pending.clear();
+        }
+        if (dir == null || batch.isEmpty()) return;
+        try {
+            File f = new File(dir, "http_entries_" + java.time.LocalDate.now() + ".jsonl");
+            StringBuilder sb = new StringBuilder();
+            for (HttpEntry e : batch) {
+                if (e == null) continue;
+                try { sb.append(e.toJson().toString()).append('\n'); } catch (Throwable ignored) { }
+            }
+            if (sb.length() > 0) {
+                FileOutputStream fos = new FileOutputStream(f, true);
+                fos.write(sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                fos.close();
+            }
+        } catch (Throwable ignored) { }
+    }
+
+    /** 追加条目（内存立即 + 落盘攒批） */
     public void add(HttpEntry e) {
         synchronized (lock) {
             mem.add(e);
             while (mem.size() > MAX_MEM) mem.remove(0);
+            if (e != null) pending.add(e);
         }
-        if (dir != null && e != null) {
-            try {
-                File f = new File(dir, "http_entries_" + java.time.LocalDate.now() + ".jsonl");
-                JSONObject o = e.toJson();
-                FileOutputStream fos = new FileOutputStream(f, true);
-                fos.write((o.toString() + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
-                fos.close();
-            } catch (Throwable ignored) { }
-        }
+        ensureWriter();
     }
 
     /** 按 id 查内存（实时页用；历史页走文件） */
@@ -69,6 +113,11 @@ public class HomeHttpStore {
     /** 内存全部（调试/导出用） */
     public List<HttpEntry> snapshot() {
         synchronized (lock) { return new ArrayList<>(mem); }
+    }
+
+    /** v1.50 P0-1: 清空内存环形（实时清空按钮用；文件保留历史） */
+    public void clearMem() {
+        synchronized (lock) { mem.clear(); }
     }
 
     /** 从 jsonl 文件读某天全部（历史页回溯；文件不存在返回空） */

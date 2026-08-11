@@ -320,7 +320,17 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
                 // ② 日志数据 = 9900 自己家（push_logs 推回主进程的 LogStore；目标不在线也保留历史）
                 val homeResp = withContext(Dispatchers.IO) { api.homeFetchLogs(since) }
                 if (homeResp != null) {
-                    val (newLogs, next) = homeResp
+                    val newLogs = homeResp.logs
+                    val next = homeResp.next
+                    // v1.50 P0-2: 环形淘汰缺口检测——主进程 LogStore 容量 logLimit 淘汰最旧后，
+                    //   since 指向已淘汰 seq，服务端从最早剩余返回（firstSeq > since+1）→
+                    //   旧日志会重复显示。检测到缺口：清空 UI 只留本轮新行（中间日志已在内存
+                    //   丢失，完整记录在历史页落盘文件里可查）。
+                    val gap = since > 0 && homeResp.firstSeq > since + 1
+                    if (gap) {
+                        com.dustinky.spyprobe.util.UiLog.log("轮询: LogStore 环形淘汰缺口 since=$since first=${homeResp.firstSeq}，清空重拉")
+                        _logLines.value = emptyList()
+                    }
                     since = next
                     if (newLogs.isNotEmpty()) {
                         // v1.16 P0-2: 每行分配唯一自增 seq
@@ -374,10 +384,14 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
     fun clearLogs() {
         viewModelScope.launch {
             com.dustinky.spyprobe.util.UiLog.log("clearLogs: 清空内存日志")
-            val resp = withContext(Dispatchers.IO) { api.clear() }
+            // v1.50 P0-1: 先清主进程自己家（9900，数据源）——旧实现只清 9901 目标进程，
+            //   主进程 LogStore 未清 + since=0 后下次轮询旧日志全回来（"清完立刻重新出现"）
+            val homeOk = withContext(Dispatchers.IO) { api.homeClear() }
+            // 9901 目标进程侧也清（目标在线时同步清其内存，防下次推送把旧日志带回）
+            withContext(Dispatchers.IO) { api.clear() }
             _logLines.value = emptyList()
             since = 0
-            _status.value = if (resp == null) "未连接" else "已清空"
+            _status.value = if (homeOk) "已清空" else "已清空（9900 异常）"
         }
     }
 

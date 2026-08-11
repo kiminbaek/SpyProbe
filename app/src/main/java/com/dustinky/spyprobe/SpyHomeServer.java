@@ -301,11 +301,13 @@ public class SpyHomeServer {
                     }
                     java.util.List<LogStore.Entry> all = LogStore.get().all();
                     JSONArray arr = new JSONArray();
+                    long firstSeq = 0; // v1.50 P0-2: since 模式下返回的第一条 seq（UI 检测环形淘汰缺口）
                     if (since > 0) {
                         // since 模式：返回 seq > since 的全部（增量）
                         for (LogStore.Entry e : all) {
                             if (e.seq <= since) continue;
                             if (!tagFilter.isEmpty() && !e.tag.contains(tagFilter)) continue;
+                            if (firstSeq == 0) firstSeq = e.seq;
                             JSONObject eo = new JSONObject();
                             eo.put("seq", e.seq);
                             eo.put("time", e.time);
@@ -334,6 +336,18 @@ public class SpyHomeServer {
                     o.put("total", all.size());
                     o.put("logs", arr);
                     o.put("next", LogStore.get().lastSeq());
+                    o.put("first", firstSeq); // v1.50 P0-2: 0=兼容模式/无数据；>0=since 模式首条 seq
+                    return o.toString();
+                }
+                case "/api/clear": {
+                    // v1.50 P0-1: 实时清空——主进程 LogStore + HomeHttpStore 内存。
+                    // 9901 目标进程 /api/clear 只清目标进程侧；不清 9900 则 UI 清完 since=0
+                    // 下次轮询又把旧日志全拉回来（"清完立刻重新出现"）。
+                    LogStore.get().clear();
+                    HomeHttpStore.get().clearMem();
+                    DebugLog.get().log("Home", "clear home log+http store");
+                    JSONObject o = new JSONObject();
+                    o.put("ok", true);
                     return o.toString();
                 }
                 case "/api/config": {

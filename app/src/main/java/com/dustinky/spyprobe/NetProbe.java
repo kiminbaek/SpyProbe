@@ -1028,7 +1028,10 @@ public class NetProbe {
                         String line = "[HUC] " + m + " " + u + " -> " + r + hd;
                         LogStore.get().log(TAG, line);
                         // v1.48: 轻量结构化（HUC 请求头拿不到，只记录 method/url/status/响应头）
-                        HttpEntry he = new HttpEntry("URL_CONN", HttpStore.get().nextId(), System.currentTimeMillis(),
+                        // v1.50 P1-4: id 统一用 LogStore.nextSeq()（原来独立 nextId 从 1 起，
+                        //   与 OKHTTP 的 rid=LogStore seq 同区间 → HttpStore 环形里可能同 id 冲突，
+                        //   UI find(id) 会命中错误条目）
+                        HttpEntry he = new HttpEntry("URL_CONN", LogStore.get().nextSeq(), System.currentTimeMillis(),
                                 Thread.currentThread().getName(),
                                 m, u == null ? "" : u.toString(),
                                 new java.util.TreeMap<>(), "none", "", 0,

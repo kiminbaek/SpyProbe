@@ -68,8 +68,6 @@ import com.dustinky.spyprobe.ui.theme.codeStyle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
-import org.json.JSONObject
 
 // v1.31: 历史日志三层导航重做（小黄鸟式）——
 //   ① 历史卡片列表（日期+条数+时间范围+收藏/清空）→ ② 当天日志列表（时间+tag+摘要）→ ③ 单条详情（完整内容+复制+分享+高亮）
@@ -257,9 +255,16 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     }
 
     // 统计（v1.28 P2: 仅实时模式计算——历史模式展示"历史条数"且可能上万行，全量扫描浪费）
-    val netCount = if (modeHistory) 0 else displayLines.count { (_, l) -> NET_REGEX.find(l) != null }
-    val mthCount = if (modeHistory) 0 else displayLines.count { (_, l) -> l.contains("[Mth") }
-    val errCount = if (modeHistory) 0 else displayLines.count { (_, l) -> l.contains("FAIL") || l.contains("ERROR") || l.contains("[ERR]") }
+    // v1.50 P2-8: remember 缓存——实时 3000 行 × 3 次 regex 全量扫描每轮重组都做，只在 displayLines 变化时重算
+    val netCount = remember(displayLines, modeHistory) {
+        if (modeHistory) 0 else displayLines.count { (_, l) -> NET_REGEX.find(l) != null }
+    }
+    val mthCount = remember(displayLines, modeHistory) {
+        if (modeHistory) 0 else displayLines.count { (_, l) -> l.contains("[Mth") }
+    }
+    val errCount = remember(displayLines, modeHistory) {
+        if (modeHistory) 0 else displayLines.count { (_, l) -> l.contains("FAIL") || l.contains("ERROR") || l.contains("[ERR]") }
+    }
 
     Column(modifier = modifier.fillMaxSize()) {
 
@@ -476,6 +481,8 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                     .padding(horizontal = 14.dp, vertical = 6.dp)
                             )
                             LazyColumn(
+                                // v1.50 P1-6: 绑定 listState——历史卡片层 FAB 上下滚动按钮也有效
+                                state = listState,
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .background(MaterialTheme.colorScheme.surfaceContainerLowest)
@@ -516,6 +523,9 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                         }
                     } else {
                         LazyColumn(
+                            // v1.50 P1-6: 绑定 listState——历史 LINES 层 FAB 上下滚动按钮才有效
+                            //   （旧实现未绑，按钮操作的是实时列表的 state，历史层点了没反应）
+                            state = listState,
                             modifier = Modifier
                                 .fillMaxSize()
                                 .background(MaterialTheme.colorScheme.surfaceContainerLowest)
@@ -619,7 +629,7 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                     Text(
                                         line,
                                         style = codeStyle,
-                                        color = logColor(line),
+                                        color = lineColor(line), // v1.50 P2-18: 失败行红色高亮
                                         softWrap = true,
                                         modifier = Modifier
                                             .padding(vertical = 1.dp)
@@ -803,7 +813,12 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                         return@launch
                                     }
                                     val uri = withContext(Dispatchers.IO) {
-                                        com.dustinky.spyprobe.util.ShareLogUtil.writeLogTxtFile(context, "spyprobe_logs_selected_${checkedSessions.size}", text)
+                                        // v1.50 P2-17: 文件名带日期，多天导出不混淆
+                                        com.dustinky.spyprobe.util.ShareLogUtil.writeLogTxtFile(
+                                            context,
+                                            "spyprobe_logs_selected_${java.time.LocalDate.now()}_${checkedSessions.size}",
+                                            text
+                                        )
                                     }
                                     if (uri == null) {
                                         com.dustinky.spyprobe.util.UiLog.log("LogsScreen 写文件失败: selected ${checkedSessions.size} len=${text.length}")
@@ -1020,12 +1035,15 @@ private fun HistoryLineRow(idx: Long, line: String, onClick: () -> Unit) {
             style = codeStyle,
             color = tagColor,
             fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, // v1.50 P2-19: 长 tag 截断不溢出
             modifier = Modifier.width(72.dp)
         )
         Text(
             msg,
             style = codeStyle,
-            color = MaterialTheme.colorScheme.onSurface,
+            color = if (msg.contains("FAIL") || msg.contains("ERROR")) Color(0xFFFF5252) // v1.50 P2-18: 失败红色
+            else MaterialTheme.colorScheme.onSurface,
             softWrap = true,
             maxLines = 2,
             overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
@@ -1064,7 +1082,7 @@ private fun HistoryDetailView(entry: Pair<Long, String>) {
                 Text(
                     line,
                     style = codeStyle,
-                    color = logColor(line),
+                    color = lineColor(line), // v1.50 P2-18: 失败行红色高亮
                     softWrap = true,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1242,20 +1260,7 @@ private fun LogDetailDialog(line: String, onDismiss: () -> Unit) {
     )
 }
 
-/** 提取日志行里的 JSON 片段并格式化（缩进 2 空格）；非 JSON 返回 null */
-private fun formatJson(line: String): String? {
-    val start = line.indexOf('{').takeIf { it >= 0 } ?: line.indexOf('[')
-    if (start < 0) return null
-    val candidate = line.substring(start)
-    return try {
-        when {
-            candidate.startsWith("[") -> JSONArray(candidate).toString(2)
-            else -> JSONObject(candidate).toString(2)
-        }
-    } catch (t: Throwable) {
-        null
-    }
-}
+// v1.50 P2-11: formatJson 统一到 CaptureScreen.kt（internal），本文件直接引用
 
 /** hex dump：优先还原日志行里的 "[N B hex] xxxx" 段；否则对整行 UTF-8 字节 dump（最多 256B） */
 private fun hexDump(line: String): String {
@@ -1399,7 +1404,8 @@ private fun HttpRequestCard(entry: com.dustinky.spyprobe.HttpEntry, onClick: () 
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    "${entry.reqBodyBytes}→${entry.respBodyBytes}B",
+                    // v1.50 P2-9: 大小格式化（原 7340032B 改成 7.0MB 一眼可读）
+                    "${fmtBytes(entry.reqBodyBytes.toLong())}→${fmtBytes(entry.respBodyBytes.toLong())}",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 9.sp
