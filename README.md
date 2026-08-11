@@ -15,11 +15,17 @@ SpyProbe 是一个运行在目标 App 进程内的全面探测工具，专为**�
 - ✅ **Native 层抓包**：xhook PLT/GOT hook——libc 五函数（send/recv/read/write/connect）+ 4 个 SSL 库（libssl/conscrypt/ttboringssl/libflutter）TLS 解密明文 + HTTP/2 帧解析，专治 Flutter/Unity 纯 native 网络栈（Java hook 盲区）
 - ✅ **URL 构造捕捉**：hook URL 构造 / `Uri.parse` / `URI.create` / `HttpUrl.parse`，运行期拼的所有地址一目了然（找接口/CDN 域名）
 - ✅ **WebView 调试**：自动开启 WebContentsDebugging，Chrome DevTools 可调试 H5 页面
+- ✅ **pcap 导出（v1.39+）**：native 层 TLS 明文写入标准 pcap 文件，Wireshark 直接打开看 HTTPS 明文（含视频 TS / 流媒体内容）；导出范围可选「全部（当前+历史归档）/ 仅当前会话」，支持一键清空
+- ✅ **请求重放（v1.40）**：OkHttp 请求缓存（环形 50 条），一键重放历史请求，GET/无 body 请求 100% 可靠
+- ✅ **混淆 OkHttp 自动定位（v1.40）**：`OkHttpClient.newCall` 入口 hook + 返回类型特征动态 hook + DexKit 类名兜底，全混淆 App 也能抓
+- ✅ **JSON/Hex 双视图（v1.39）**：日志详情支持 JSON 格式化 / Hex 切换，加密数据直接看字节
 
 ### 加密与证书
 - ✅ **加密算法记录**：hook `Cipher.getInstance/init/doFinal`，记录算法、密钥、IV、明文/密文（按实例跟踪完整上下文）
 - ✅ **密钥材料追踪**：SecretKeySpec / DESKeySpec / Mac（HMAC）/ SecureRandom 种子记录
 - ✅ **双向认证证书导出（mTLS）**：记录目标 App 使用 KeyStore 客户端证书的 alias、算法、主题、有效期、SHA-256 指纹（不导出私钥）
+- ✅ **SSL pinning 定位（v1.39）**：7 类证书固定触发点全标记（network_security_config pin-set / okhttp CertificatePinner / Conscrypt / X509TrustManagerExtensions / WebView…），一看日志就知道 App 用的哪种锁定
+- ✅ **native SSL 调用栈（v1.39）**：SSL_read/write 回调自动记录调用栈，定位 native 层 TLS 使用点
 
 ### 函数与逻辑
 - ✅ **函数探测**：反射枚举类方法/字段（含**静态字段当前值**、**native 方法标记**），动态 hook/unhook 任意方法，打印参数/返回值/调用栈/实例字段快照
@@ -39,6 +45,7 @@ SpyProbe 是一个运行在目标 App 进程内的全面探测工具，专为**�
 ### 反检测
 - ✅ **反检测 hook 集**：隐藏 root（File.exists/Runtime.exec/SystemProperties）与 Xposed（loadClass/StackTrace/DexPathList/Modifier），与 EnvProbe 探测互为镜像
 - ✅ **反检测增强**：File.listFiles / canRead / canExecute 过滤 root 特征文件、`Debug.isDebuggerConnected` 返回 false、magisk / KernelSU / SuperSU 检测路径全集过滤
+- ✅ **隐藏应用列表（v1.44）**：hook `getInstalledPackages` / `getInstalledApplications` / `queryIntentActivities`，对 spyprobe / LSPosed / Magisk 等返回"未安装"（系统包永不隐藏）
 
 ### 工程健壮性
 - ✅ **Hook 失败隔离**：所有探测 hook 统一包裹，单个 hook 异常不拖垮目标进程，失败留痕
@@ -48,6 +55,8 @@ SpyProbe 是一个运行在目标 App 进程内的全面探测工具，专为**�
 - ✅ **日志容量可配置**：环形缓冲上限 100-20000 条可调（默认 4096）
 - ✅ **内置更新系统**：GitHub API 多镜像回退 + SHA-256/versionCode 校验 + root 静默安装（回退系统安装器）
 - ✅ **Token 鉴权**：目标进程日志推送带 48 位随机 token，主进程校验，防止其他 App 伪造推送
+- ✅ **9901 控制面鉴权（v1.47）**：目标进程 hook/劫持/导出接口同样带 token 校验，本机任意 App 无法篡改目标进程探测状态
+- ✅ **会话条数元数据（v1.47）**：写线程维护 sessions.json，历史页免全量扫描，大日志/多会话打开秒开
 
 ## 架构
 
@@ -86,7 +95,7 @@ SpyProbe 主进程（控制台 App，数据面）
 
 ## 使用
 
-1. 安装最新版 `SpyProbe-v1.38.0.apk`（Release 页面下载）
+1. 安装最新版 `SpyProbe-v1.47.0.apk`（Release 页面下载）
 2. 在 LSPosed 中勾选目标 App 作用域
 3. 重启目标 App
 4. 打开 SpyProbe 控制台，自动连接主进程服务
@@ -102,8 +111,11 @@ SpyProbe 主进程（控制台 App，数据面）
 | `/api/config` | GET/POST | 读写全部探测开关（权威配置） |
 | `/api/status` | GET | 运行时长 / 日志条数（v1.38） |
 | `/api/logs?since=N` | GET | 增量拉日志（v1.38） |
+| `/api/export` | GET | 导出全量日志（v1.41 主进程通道） |
 | `/api/classfind?name=` | GET | DexKit 类名模糊搜索 → 方法清单（v1.38） |
+| `/api/token` | GET | 主进程 token 自举（v1.44.1，目标进程拉取鉴权用） |
 | `/api/push_logs` | POST | 目标进程日志推送（需 X-Spy-Token 鉴权） |
+| `/api/pcap_chunk` | POST | 目标进程 pcap 明文推送（需 X-Spy-Token 鉴权，v1.41） |
 
 ### 目标进程 SpyServer（127.0.0.1:9901，多进程自动偏移）
 
@@ -111,6 +123,12 @@ SpyProbe 主进程（控制台 App，数据面）
 |:-----|:-----|:-----|
 | `/api/ping` | GET | 心跳 + 包名 + 实际端口 + 日志数 + 类数 + App 版本 |
 | `/api/logs?since=N` | GET | 增量拉日志 |
+| `/api/logs/all` | GET | 全量日志（v1.41 目标进程兜底） |
+| `/api/export` | GET | 导出目标进程内存日志（v1.41 兜底） |
+| `/api/debuglog` | GET | 目标进程调试日志（v1.30.2） |
+| `/api/history/days` | GET | 历史日志日期列表（v1.33 目标进程兜底） |
+| `/api/history?day=&max=` | GET | 读某天历史（v1.33 兜底） |
+| `/api/history/clear?day=` | POST | 清空历史（day 空=全清） |
 | `/api/scan` | POST | 枚举类方法/字段 |
 | `/api/hook` | POST | 动态 hook 方法 |
 | `/api/unhook` | POST | 卸载 hook |
@@ -119,11 +137,27 @@ SpyProbe 主进程（控制台 App，数据面）
 | `/api/hijacks` | GET | 当前劫持规则 |
 | `/api/dexdump` | GET | 导出全部 dex |
 | `/api/stringfind` | POST | 字符串反查引用方法 |
+| `/api/classfind?name=` | GET | DexKit 类名模糊搜索 → 方法清单（v1.38） |
+| `/api/dexclose` | POST | 释放 DexKit |
+| `/api/config` | GET | 目标进程配置（v1.36） |
+| `/api/classes` | GET | 类加载记录（v1.36） |
+| `/api/flush_pcap` | POST | 立即 flush 目标进程 pcap 活跃会话（v1.41） |
+| `/api/replay` | POST | 请求重放（v1.40，index 参数指定历史请求） |
+| `/api/clear` | POST | 清空目标进程日志 |
 
 ## 版本历史
 
 | 版本 | 说明 |
 |:-----|:-----|
+| **v1.47** | 全量审查修复 8 P1 + 22 P2：9901 控制面 token 鉴权 / 日志推送失败指数退避 / 会话条数元数据 sessions.json / native hook 只试一次防闪退 / 大 DATA 帧分段回调 / networkSecurityConfig 收紧 127.0.0.1 / FileProvider 单文件 / 目标端口防自推 |
+| **v1.46** | 根治播放视频闪退 + pcap 0 数据（SSL_get_fd 解析方向错误，native resolve 只试一次）+ pcap 记录头字节序修复 + 2MB chunk 截断修复（MAX_BODY 1MB→4MB）+ 导出范围选择（全部/仅当前会话）+ 清空 pcap 按钮 |
+| **v1.45** | pcap 链路修复：IPv4-mapped IPv6 全拒根治 + SSL_get_fd 延迟解析（dladdr/dlopen/ELF 符号表直读三连）+ 诊断日志 |
+| **v1.44** | **隐藏应用列表**（HMA 思路）：hook getInstalledPackages/getInstalledApplications/queryIntentActivities 过滤 spyprobe/LSPosed/Magisk + push 401 根治闭环（token 自举+续期+失败重试不丢） |
+| **v1.43** | UI 优化：抓包页整页可滚动 / 批量开关（全开/全关/恢复默认）/ Root 文案降级 / 新版本弹窗（完整更新日志 + 下载/忽略） |
+| **v1.42** | 全量审查修复 15 项：addHook NPE / OkHttpReplay buffer / PcapWriter flush / pcap 流式合并 / TCP 校验和 / shareUri mimeType / 大块分段映射 |
+| **v1.41** | **日志架构大修正**：实时日志/分享改走自己家 9900（目标 App 不在线也能看已推回日志）+ pcap 独立于 nativeCapture + 5s 周期 flush + 推送失败留痕 |
+| **v1.40** | **OkHttp 混淆自动定位**（newCall 入口 + 特征动态 hook + DexKit 兜底）+ **请求重放**（环形 50 条，一键重放）+ 响应体重建（peekBody 不消费原流） |
+| **v1.39** | **pcap 导出**（Wireshark 直接看 HTTPS 明文）+ **JSON/Hex 双视图** + native SSL 调用栈 + SSL pinning 定位 |
 | **v1.38** | SSL 绕过增强：补齐 12 个证书校验绕过点（网络配置 pinning/Conscrypt/OkHttp 主机名/WebView/Cronet/xutils/httpclient/Platform）+ BoringSSL 五接口 verify 绕过 + SSL KeyLog（Wireshark 可还原明文）+ mTLS 客户端证书 dump（指纹不导出私钥）+ 加密追踪扩展（SecretKeySpec/DESKeySpec/Mac/SecureRandom）+ 反检测扩充（listFiles/isDebuggerConnected/ROOT_FILES 全集）+ WebView 调试开关 + DexKit 类名搜索 + 状态/日志查询路由 |
 | **v1.37** | 内置更新系统（GitHub 多镜像 + SHA-256 校验 + root 静默安装）/ Hook 失败隔离（HookSafe 统一包裹）/ 惰性 Hook（按配置按需加载）/ R8 入口发布前自动校验 / 日志推送 token 鉴权 |
 | **v1.36** | 全量审查修复 16 项：历史会话分组根治字典序陷阱 / 连接恢复 / Root 模式"本地优先"降级文案 / 代码清理与序列化收敛 |
