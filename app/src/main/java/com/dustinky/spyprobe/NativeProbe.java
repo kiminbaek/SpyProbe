@@ -32,18 +32,28 @@ public class NativeProbe {
 
     /** v1.35 P0-1b: 推送通道自排除——127.0.0.1:9900 是 SpyProbe 自己家日志推送端口，
      *  native send/recv 会捕获到推送 socket 数据（含全部历史日志的 JSON），必须跳过，
-     *  否则推送体被当日志记录 → 递归爆炸（上次日志 944 条 9900 记录）。 */
-    private static boolean isSelfPush(String socketInfo) {
+     *  否则推送体被当日志记录 → 递归爆炸（上次日志 944 条 9900 记录）。
+     *  v1.51.2: 扩展为自家端点识别——9900-9910 回环端口（9900 数据面 + 9901 控制面 ping），
+     *  src/dst 两端都查（双保险：native 层已过滤，Java 层兜底）。 */
+    private static boolean isSelfInternal(String socketInfo) {
         if (socketInfo == null) return false;
-        // v1.46.0 P1: 原实现查字符串开头——但 socketInfo 格式是 "srcIP:srcPort->dstIP:dstPort"，
-        //   push 流量的 src 是随机端口、dst 才是 127.0.0.1:9900，开头匹配永远拦不住 → 9900 推送
-        //   流量污染 onNativeData/pcap。改为查目标端点（箭头后）是否为 9900。
         int arrow = socketInfo.indexOf("->");
+        String src = (arrow >= 0) ? socketInfo.substring(0, arrow) : socketInfo;
         String dst = (arrow >= 0) ? socketInfo.substring(arrow + 2) : socketInfo;
-        return dst.startsWith("127.0.0.1:9900")
-                || dst.startsWith("::ffff:127.0.0.1:9900")
-                || dst.startsWith("[::1]:9900")
-                || dst.startsWith("::1:9900");
+        return isSelfEndpoint(src) || isSelfEndpoint(dst);
+    }
+    private static boolean isSelfEndpoint(String ep) {
+        if (ep == null) return false;
+        int colon = ep.lastIndexOf(':');
+        if (colon < 0) return false;
+        String ip = ep.substring(0, colon);
+        if (!(ip.startsWith("127.") || ip.startsWith("::ffff:127.") || ip.startsWith("[::1]") || ip.startsWith("::1"))) return false;
+        try {
+            int port = Integer.parseInt(ep.substring(colon + 1));
+            return port >= 9900 && port <= 9910;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     private static volatile boolean inited = false;
@@ -121,8 +131,8 @@ public class NativeProbe {
     private static boolean onNativeData(long id, boolean isWrite, ByteBuffer buf, String socketInfo, String stack, boolean isSsl) {
         try {
             if (buf == null) return false;
-            // v1.35 P0-1b: 跳过自身日志推送（127.0.0.1:9900），根治递归污染
-            if (isSelfPush(socketInfo)) return false;
+            // v1.35 P0-1b: 跳过自身日志推送 + v1.51.2: 自家控制面 9901 ping（回环 9900-9910 全跳）
+            if (isSelfInternal(socketInfo)) return false;
             // v1.45.1 诊断：每 200 次留痕一次——确认 onNativeData 在跑 / isSsl / pcapCapture 值
             if ((diagPcapCount.incrementAndGet() % 200) == 1) {
                 try { DebugLog.get().logNoMirror("PcapFeed", "onNativeData ssl=" + isSsl + " pcap=" + Config.get().pcapCapture + " info=" + (socketInfo != null ? socketInfo : "null")); } catch (Throwable ig) { }

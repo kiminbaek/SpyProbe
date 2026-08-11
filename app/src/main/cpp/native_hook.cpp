@@ -251,8 +251,58 @@ bool is_network_fd(int fd) {
     g_fd_cache[fd].store(1, std::memory_order_relaxed); return false;
 }
 
+// v1.51.2: 自家端点识别——回环 IP + 端口 9900-9910（9900=日志推送数据面，9901=控制面 ping）。
+// 主进程每 ~500ms ping 目标进程 9901，native hook 会把该往返数据全部记录成
+// [TCP <<< >>> 9901] GET /api/ping + [conn closed TCP #N] → 刷屏（用户真机截图实锤）。
+static bool is_self_loopback_port(const std::string &ep) {
+    if (ep.empty()) return false;
+    size_t colon = ep.rfind(':');
+    if (colon == std::string::npos) return false;
+    std::string ip = ep.substr(0, colon);
+    bool loopback = (ip == "127.0.0.1" || ip == "::ffff:127.0.0.1" || ip == "::1" || ip == "[::1]");
+    if (!loopback) return false;
+    int port = atoi(ep.c_str() + colon + 1);
+    return port >= 9900 && port <= 9910;
+}
+static bool is_self_internal_info(const std::string &info) {
+    if (info.empty()) return false;
+    size_t arrow = info.find("->");
+    std::string local = (arrow != std::string::npos) ? info.substr(0, arrow) : info;
+    std::string remote = (arrow != std::string::npos) ? info.substr(arrow + 2) : "";
+    return is_self_loopback_port(local) || is_self_loopback_port(remote);
+}
+
+// v1.51.2: 只读查询四元组（不写缓存）——close 时 g_socket_info_cache 已被调用方 erase，
+//   用 get_cached_socket_info 会把旧 info 写回缓存污染 fd 复用；且 close 后 fd 未真正关闭，
+//   getsockname/getpeername 仍可实查。
+static std::string peek_socket_info(int fd) {
+    if (fd <= 0) return "";
+    struct sockaddr_storage local, remote; socklen_t llen = sizeof(local), rlen = sizeof(remote);
+    char lip[INET6_ADDRSTRLEN] = {0}, rip[INET6_ADDRSTRLEN] = {0};
+    int lport = 0, rport = 0;
+    if (getsockname(fd, (struct sockaddr*)&local, &llen) != 0) return "";
+    sockaddr_to_str(&local, lip, sizeof(lip), &lport);
+    if (getpeername(fd, (struct sockaddr*)&remote, &rlen) == 0) {
+        sockaddr_to_str(&remote, rip, sizeof(rip), &rport);
+    } else {
+        strncpy(rip, "0.0.0.0", sizeof(rip) - 1);
+        rport = 0;
+    }
+    return std::string(lip) + ":" + std::to_string(lport) + "->" + std::string(rip) + ":" + std::to_string(rport);
+}
+
 void notify_kotlin_close(jlong id, bool is_ssl) {
     if (gNativeRequestHookClass == nullptr || gOnConnClosedMethod == nullptr) return;
+    // v1.51.2: 自家控制面连接关闭不通知 Java（避免 [conn closed TCP #N] 刷屏）
+    if (id > 0) {
+        int fd = 0;
+        if (is_ssl) {
+            fd = get_ssl_fd_from_hook((uintptr_t)id);
+        } else {
+            fd = (int)id;
+        }
+        if (fd > 0 && is_self_internal_info(peek_socket_info(fd))) return;
+    }
     JNIEnv *env = get_jni_env();
     if (!env) return;
     env->CallStaticVoidMethod(gNativeRequestHookClass, gOnConnClosedMethod, id, (jboolean)is_ssl);
@@ -309,6 +359,8 @@ bool callback_kotlin_chunk(jlong id, bool is_write, const void *buf, size_t len,
         info = get_cached_socket_info((int)id);
     }
     if (!info.empty()) {
+        // v1.51.2: 自家控制面（9900-9910 回环）数据不记录——9901 ping 往返刷屏根治
+        if (is_self_internal_info(info)) return false;
         jInfo = refGuard.add(env->NewStringUTF(info.c_str()));
         if (check_exception(env)) jInfo = nullptr;
     }

@@ -37,6 +37,14 @@ public class LogCatProbe {
             "ResourcesManager", "Bitmap", "Skia", "skia", "Gralloc", "Vulkan", "EGL_emulation"
     ));
 
+    /** v1.51.1: 是否 SpyProbe 自家 tag——DebugLog 三保险会打 Log.d("SpyProbeDebug", ...)，
+     *  若不过滤，自家调试日志会被 LogCatProbe 捕获成业务日志（[Log.d] SpyProbeDebug: ... 刷屏）。 */
+    private static boolean isSelfTag(Object tag) {
+        if (tag == null) return false;
+        String t = tag.toString();
+        return t.startsWith("SpyProbe") || t.equals("Dbg");
+    }
+
     /** v1.6: 是否系统噪音 tag（黑名单精确匹配，空 tag 也跳过） */
     private static boolean isSystemNoise(Object tag) {
         if (tag == null) return true;
@@ -78,6 +86,8 @@ public class LogCatProbe {
                                 Object tag = chain.getArg(0);
                                 // v1.6: 系统噪音 tag 过滤（防刷屏 + 减性能开销）
                                 if (isSystemNoise(tag)) return r;
+                                // v1.51.1: SpyProbe 自家 tag 过滤（DebugLog 三保险 Log.d 不记录成业务日志）
+                                if (isSelfTag(tag)) return r;
                                 Object msg = chain.getArg(1);
                                 String m1 = msg == null ? "null" : String.valueOf(msg);
                                 if (m1.length() > 500) m1 = m1.substring(0, 500) + "...(" + m1.length() + ")";

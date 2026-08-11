@@ -580,6 +580,9 @@ public class NetProbe {
         if (!Config.get().tcpCapture) return;
         try {
             java.net.InetSocketAddress isa = (java.net.InetSocketAddress) addr;
+            // v1.51.1: 自家内部通信过滤——目标进程推送日志到主进程 9900 / 拉配置 9900 等
+            //   TCP 连接会被 hook 的 Socket.connect 捕获，无过滤则产生 [TCP] 127.0.0.1:9900 自增长刷屏
+            if (isSelfInternal(isa)) return;
             String host = isa.getHostString();
             String ip = isa.getAddress() != null ? isa.getAddress().getHostAddress() : "?";
             LogStore.get().log(TAG, "[TCP] " + host + " (" + ip + "):" + isa.getPort()
@@ -587,11 +590,28 @@ public class NetProbe {
         } catch (Throwable t) { }
     }
 
+    /** v1.51.1: 是否 SpyProbe 自家内部端点——回环地址 + 端口段 9900-9910
+     *  （主进程数据面 9900 / 目标进程控制面 9901-9910），全部是工具自身通信，不进业务日志流 */
+    private static boolean isSelfInternal(java.net.InetSocketAddress isa) {
+        if (isa == null) return false;
+        String ip = isa.getAddress() != null ? isa.getAddress().getHostAddress() : null;
+        if (ip == null) return false;
+        boolean loopback = ip.startsWith("127.")
+                || ip.equals("::1")
+                || ip.startsWith("::ffff:127.")
+                || ip.startsWith("0:0:0:0:0:0:0:1");
+        if (!loopback) return false;
+        int p = isa.getPort();
+        return p >= 9900 && p <= 9910;
+    }
+
     /** v1.6: Socket 连接失败留痕（域名/端口 + 错误） */
     private void logSocketFail(Object addr, int timeout, Throwable err) {
         if (!Config.get().tcpCapture) return;
         try {
             java.net.InetSocketAddress isa = (java.net.InetSocketAddress) addr;
+            // v1.51.1: 自家内部通信同样过滤（推日志失败也无需进业务日志流）
+            if (isSelfInternal(isa)) return;
             String host = isa.getHostString();
             String ip = isa.getAddress() != null ? isa.getAddress().getHostAddress() : "?";
             LogStore.get().log(TAG, "[TCP] FAIL " + host + " (" + ip + "):" + isa.getPort()

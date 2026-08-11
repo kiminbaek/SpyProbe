@@ -155,7 +155,7 @@ public class SpyServer {
             //   不匹配返回 401（防本机任意 App 枚举 9901-9910 篡改 hook/导出 dex）。
             //   兼容：主进程 UI 未开（9900 不在线）→ remoteToken 拿不到 → expectedToken 空 → 不校验（与 9900 同策略）
             if (!expectedToken.isEmpty() && !expectedToken.equals(reqToken)) {
-                DebugLog.get().log("Srv", method + " " + path + " -> 401 unauthorized (token mismatch)");
+                DebugLog.get().logNoMirror("Srv", method + " " + path + " -> 401 unauthorized (token mismatch)");
                 byte[] deny = "{\"ok\":false,\"err\":\"unauthorized\"}".getBytes(StandardCharsets.UTF_8);
                 StringBuilder hd = new StringBuilder();
                 hd.append("HTTP/1.1 401 Unauthorized\r\n");
@@ -182,9 +182,11 @@ public class SpyServer {
 
             String resp = route(method, path, body);
             // v1.30.2: 每个 API 请求都写 DebugLog（方法/路径/耗时/响应大小/是否 ok），定位前端问题最直接
+            // v1.51.1: 改 logNoMirror——9901 控制面是 SpyProbe 自家心跳/控制通道（主进程每 500ms ping 一次），
+            //   镜像进 LogStore 会产生 [Dbg] [Srv] GET /api/ping 刷屏污染业务日志流。logNoMirror 仍落 DebugLog 文件可排障。
             long ms = System.currentTimeMillis() - t0;
             boolean okFlag = resp.contains("\"ok\":true");
-            DebugLog.get().log("Srv", method + " " + path + " -> " + resp.length() + "B " + ms + "ms ok=" + okFlag
+            DebugLog.get().logNoMirror("Srv", method + " " + path + " -> " + resp.length() + "B " + ms + "ms ok=" + okFlag
                     + (okFlag ? "" : " resp=" + resp.substring(0, Math.min(resp.length(), 300))));
             byte[] data = resp.getBytes(StandardCharsets.UTF_8);
             StringBuilder head = new StringBuilder();
