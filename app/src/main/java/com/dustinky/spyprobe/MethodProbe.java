@@ -283,6 +283,14 @@ public class MethodProbe {
                     || n.startsWith("sun.") || n.startsWith("kotlin.") || n.startsWith("kotlinx.")) {
                 return null; // 系统类不自动 hook
             }
+            // v1.53.1: 第三方库（Google/Firebase/AndroidX/OkHttp/ExoPlayer）不自动 hook——
+            //   真机日志实测 autoProbe 自动 hook com.google.firebase.analytics.FirebaseAnalytics x17
+            //   产生 15 行 invoke/return/stack 噪音，对分析目标 App 业务无价值。
+            if (n.startsWith("com.google.") || n.startsWith("androidx.")
+                    || n.startsWith("okhttp3.") || n.startsWith("com.squareup.")
+                    || n.startsWith("com.google.android.exoplayer2.") || n.startsWith("androidx.media3.")) {
+                return null;
+            }
             int hooked = 0;
             int skipped = 0;
             for (Method m : cls.getDeclaredMethods()) {

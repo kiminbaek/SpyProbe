@@ -502,7 +502,8 @@ private fun highlightJson(text: String): androidx.compose.ui.text.AnnotatedStrin
 
     // 匹配 JSON token：键("xxx":)、字符串值("xxx")、数字、关键字
     // 用 token 切分避免嵌套匹配
-    val tokenRegex = Regex("""("[^"\\]*(?:\\.[^"\\]*)*")(\s*:)?|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|\b(null|true|false)\b|([{}[\],])""")
+    // 标点字符类中的 [ ] 必须转义，否则外层 [ 缺闭合 → PatternSyntaxException（v1.53.1 P0 修复：点「原始」闪退）
+    val tokenRegex = Regex("""("[^"\\]*(?:\\.[^"\\]*)*")(\s*:)?|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|\b(null|true|false)\b|([{}\[\],])""")
     var last = 0
     for (m in tokenRegex.findAll(text)) {
         if (m.range.first > last) builder.append(text.substring(last, m.range.first))

@@ -93,6 +93,9 @@ public class JsonProbe {
         if (s.contains("\"sslBypass\"")) return true;
         // /api/status 响应: {"uptime":...,"logCount":...,"versionCode":...}
         if (s.contains("\"logCount\"") && s.contains("\"versionCode\"")) return true;
+        // v1.53.1: 自家 HttpStore.pushBatch 的推送 payload（目标进程内 JSONObject.toString 被本 hook
+        //   捕获 → 日志页出现 {"entries":[{"source":"TLS","id":102,... 自家数据混入）
+        if (s.contains("\"entries\"") && s.contains("\"source\":\"TLS\"")) return true;
         return false;
     }
 }

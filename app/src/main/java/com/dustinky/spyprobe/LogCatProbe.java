@@ -24,6 +24,10 @@ public class LogCatProbe {
     }
 
     // v1.6: 系统 tag 黑名单（app 进程内 Android framework 也在打 Log，排除系统噪音）
+    // v1.53.1: 扩充——真机日志实测（视频站 App）LogCatProbe 抓到的系统/Google/播放器库噪音
+    //   tag 全部入列：VRI[MainActivity](ViewRootImpl 渲染)、VideoCapabilities、GmsClient/DynamiteModule
+    //   (Google Play 服务)、DMCodecAdapterFactory/ExoPlayerImpl/SurfaceView(ExoPlayer 播放器)、
+    //   Oplus*(ColorOS)、Window*(渲染)、Firebase*(统计)、AudioManager*(音频)。
     private static final java.util.Set<String> SYSTEM_TAGS = new java.util.HashSet<>(java.util.Arrays.asList(
             "AndroidRuntime", "System", "System.err", "System.out", "ActivityManager", "ActivityTaskManager",
             "ActivityThread", "ViewRootImpl", "InputDispatcher", "Choreographer", "OpenGLRenderer",
@@ -34,7 +38,13 @@ public class LogCatProbe {
             "InputMethodManager", "InsetsController", "DecorView", "PhoneWindow",
             "AlarmManager", "JobScheduler", "DropBoxManager", "MediaCodec", "AudioTrack", "AudioFlinger",
             "OMXClient", "libprocessgroup", "SELinux", "AppOps", "Activity", "FragmentManager",
-            "ResourcesManager", "Bitmap", "Skia", "skia", "Gralloc", "Vulkan", "EGL_emulation"
+            "ResourcesManager", "Bitmap", "Skia", "skia", "Gralloc", "Vulkan", "EGL_emulation",
+            // v1.53.1 扩充（真机实测噪音 tag）
+            "VideoCapabilities", "VRI", "VRI[MainActivity]", "GmsClient", "DynamiteModule",
+            "DMCodecAdapterFactory", "ExoPlayerImpl", "SurfaceView", "OplusPredictiveBackController",
+            "OplusActivityThreadExtImpl", "WindowExtensionsImpl", "WindowLayoutComponentImpl",
+            "ViewExtract", "ProfileInstaller", "FirebaseInitProvider", "FirebaseApp", "DpmTcmClient",
+            "AudioManagerExtImpl", "AudioManager"
     ));
 
     /** v1.51.1: 是否 SpyProbe 自家 tag——DebugLog 三保险会打 Log.d("SpyProbeDebug", ...)，
@@ -52,9 +62,9 @@ public class LogCatProbe {
         if (t.isEmpty()) return true;
         // 精确匹配黑名单
         if (SYSTEM_TAGS.contains(t)) return true;
-        // 前缀模式（如 AndroidRuntime-xxx / System-xxx）
+        // 前缀模式（如 AndroidRuntime-xxx / System-xxx / VRI[MainActivity]）
         for (String s : SYSTEM_TAGS) {
-            if (t.startsWith(s + "-") || t.startsWith(s + ":")) return true;
+            if (t.startsWith(s + "-") || t.startsWith(s + ":") || t.startsWith(s + "[")) return true;
         }
         return false;
     }

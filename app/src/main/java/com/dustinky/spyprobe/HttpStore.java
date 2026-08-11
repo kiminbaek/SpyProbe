@@ -152,7 +152,10 @@ public class HttpStore {
             String statusLine = n > 0 ? new String(buf, 0, Math.min(n, 80), "UTF-8") : "";
             sock.close();
             boolean ok = statusLine.contains("200");
-            if (!ok) {
+            // v1.53.1: 成功也留痕（低频，2s 一次）——真机验证 REQ# 卡片链路是否打通
+            if (ok) {
+                DebugLog.get().logNoMirror("HttpStore", "push OK " + batch.size() + " entries");
+            } else {
                 DebugLog.get().logNoMirror("HttpStore", "push " + batch.size() + " -> " + statusLine.replace("\r\n", " "));
             }
             return ok;
