@@ -82,7 +82,9 @@ static type_SSL_set_fd orig_ssl_set_fd = nullptr;
 static std::unordered_map<uintptr_t, int> g_ssl_fd_map;
 static std::mutex g_ssl_fd_mutex;
 // v1.59: TLS 元数据 per-ssl 标记（collect_tls_meta_once 只提取一次；SSL_free 时清除）
+// v1.60: + attempts 计数（未成功时尝试上限防每次数据回调都 build）
 static std::unordered_set<uintptr_t> g_tls_meta_done;
+static std::unordered_map<uintptr_t, int> g_tls_meta_attempts;
 static std::mutex g_tls_meta_mutex;
 // v1.45.2: native_log 前置声明（callback_kotlin_chunk 在定义前使用）
 static void native_log(const char* msg);
@@ -653,7 +655,7 @@ void do_ssl_free_common(void *ssl, type_SSL_free orig) {
     // v1.45.6: 清理 SSL_set_fd 记录的 ssl→fd 映射
     { std::lock_guard<std::mutex> lock(g_ssl_fd_mutex); g_ssl_fd_map.erase(reinterpret_cast<uintptr_t>(ssl)); }
     // v1.59: 清理 TLS 元数据 per-ssl 标记（防指针复用）
-    { std::lock_guard<std::mutex> lock(g_tls_meta_mutex); g_tls_meta_done.erase(reinterpret_cast<uintptr_t>(ssl)); }
+    { std::lock_guard<std::mutex> lock(g_tls_meta_mutex); g_tls_meta_done.erase(reinterpret_cast<uintptr_t>(ssl)); g_tls_meta_attempts.erase(reinterpret_cast<uintptr_t>(ssl)); }
     h2_free(reinterpret_cast<uintptr_t>(ssl));
     notify_kotlin_close(reinterpret_cast<jlong>(ssl), true);
     orig(ssl);
@@ -1028,15 +1030,24 @@ static std::string build_tls_meta_json(const void* ssl) {
 }
 
 // v1.59: 首次数据回调提取 TLS 元数据（per-ssl 只一次）
+// v1.60 P0 修复: 原实现"首次数据回调即永久标记 done"——但首次回调是握手阶段（ClientHello/ServerHello），
+//   SSL_get1_peer_certificate 返回 null、SSL_get_version 可能尚未协商完成 → json 空 → 但 g_tls_meta_done
+//   已 insert → 后续永不提取 → 详情页 TLS/证书分区永远为空（用户截图实锤）。
+//   修法: 只有提取到**证书（sha256 非空）**才算成功才标记 done；空结果/仅 v+sni（握手早期）不标记，
+//   握手完成后的下一次数据回调再试（每次数据回调都会调本函数，见 do_ssl_write/read_common）。
+//   尝试次数上限 12 次兜底：符号解析失败/握手失败场景防每次数据回调都 build 的开销。
 static void collect_tls_meta_once(uintptr_t conn_id, void* orig_sym) {
     if (gNativeRequestHookClass == nullptr || gOnTlsMetaMethod == nullptr) return;
     {
         std::lock_guard<std::mutex> lock(g_tls_meta_mutex);
-        if (!g_tls_meta_done.insert(conn_id).second) return; // 已提取过
+        if (g_tls_meta_done.count(conn_id) > 0) return; // 已成功提取过
     }
     resolve_tls_meta_symbols(orig_sym);
     std::string json = build_tls_meta_json((const void*)conn_id);
-    if (!json.empty()) {
+    // 成功条件：json 非空 且 含证书 sha256 非空（握手完成才有；v/sni 早期也有但证书才是完整标志）
+    bool hasCert = !json.empty() && json.find("\"cert\":{") != std::string::npos
+                   && json.find("\"sha256\":\"\"") == std::string::npos;
+    if (hasCert) {
         JNIEnv* env = get_jni_env();
         if (env == nullptr) return;
         jstring jMeta = env->NewStringUTF(json.c_str());
@@ -1045,6 +1056,14 @@ static void collect_tls_meta_once(uintptr_t conn_id, void* orig_sym) {
             env->DeleteLocalRef(jMeta);
         }
         check_exception(env);
+        { std::lock_guard<std::mutex> lock(g_tls_meta_mutex); g_tls_meta_done.insert(conn_id); }
+        return;
+    }
+    // 未成功：尝试次数上限兜底（防符号解析失败时每次数据回调都 build）
+    {
+        std::lock_guard<std::mutex> lock(g_tls_meta_mutex);
+        int n = ++g_tls_meta_attempts[conn_id];
+        if (n >= 12) g_tls_meta_done.insert(conn_id); // 放弃，标记防重复尝试
     }
 }
 

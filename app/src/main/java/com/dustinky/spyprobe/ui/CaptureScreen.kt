@@ -556,7 +556,9 @@ private fun androidx.compose.foundation.layout.RowScope.SwitchItem(label: String
 }
 
 // 过滤快捷短语（v1.16 P2-11）
-internal const val NET_FILTER = "(Net|DNS|TCP|HUC|OkHttp|SSL)"
+// v1.60 P0: 加 REQ#——v1.52+ TLS 明文结构化后 REQ# 行 tag=SpyProbe.Native 不含 Net/DNS/TCP/HUC/OkHttp/SSL，
+//   导致网络统计 0 条、REQ# 卡片不进"网络"筛选（用户截图实锤 12总计/0网络）
+internal const val NET_FILTER = "(Net|DNS|TCP|HUC|OkHttp|SSL|REQ#)"
 internal const val MTH_FILTER = "(Mth)"
 
 /** v1.16 P2-9: 日志按 tag 类型着色

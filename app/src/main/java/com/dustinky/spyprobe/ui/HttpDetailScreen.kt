@@ -428,12 +428,18 @@ private fun keepAliveOf(entry: HttpEntry): String {
     return if (c.isNullOrBlank()) "-" else c
 }
 
-/** 前端 = 本机→本机代理；后端 = 代理→服务器（native socketInfo 四元组） */
+/** 前端 = 本机→本机代理；后端 = 代理→服务器（native socketInfo 四元组）
+ *  v1.60: 四元组缺失时（Conscrypt 拿不到 fd，架构限制 v1.46.0）用 URL host 兜底显示远端；
+ *   前端本地端口拿不到时显示 "-"（诚实留空，不编造） */
 private fun frontendOf(entry: HttpEntry): String =
     if (entry.srcAddr.isNotBlank()) "${entry.srcAddr}:${entry.srcPort}" else "-"
 
-private fun backendOf(entry: HttpEntry): String =
-    if (entry.dstAddr.isNotBlank()) "${entry.dstAddr}:${entry.dstPort}" else "-"
+private fun backendOf(entry: HttpEntry): String {
+    if (entry.dstAddr.isNotBlank()) return "${entry.dstAddr}:${entry.dstPort}"
+    // v1.60: 四元组缺失时兜底显示 host（URL 解析，仅展示不伪造端口）
+    val host = try { java.net.URI(entry.url).host } catch (t: Throwable) { null }
+    return if (!host.isNullOrBlank()) host else "-"
+}
 
 /** 请求/响应头大小估算（请求行或状态行 + 每行 Key: value + 空行） */
 private fun headerSizeBytes(method: String, url: String, headers: Map<String, String>, isRequest: Boolean): Long {

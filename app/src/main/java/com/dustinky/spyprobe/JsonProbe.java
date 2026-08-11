@@ -120,6 +120,13 @@ public class JsonProbe {
         //   捕获 → 日志页出现 {"entries":[{"source":"TLS","id":102,... 自家数据混入）
         // v1.54: 该项不再受长度限制——pushBatch 单批可达 38KB，必须对任意长度生效
         if (s.contains("\"entries\"") && s.contains("\"source\":\"TLS\"")) return true;
+        // v1.60 P0: /api/history/days 响应 {"ok":true,"days":[]}——EVT#1 起点，被记成 JSON 事件后触发
+        //   EventStore.push 递归（用户日志 73 行 90% 是自家 JSON 刷屏）
+        if (s.contains("\"ok\":true") && s.contains("\"days\"")) return true;
+        // v1.60 P0: EventStore.pushBatch 序列化 payload——{"entries":[{"type":"JSON","id":1,...,
+        //   "logLine":"[EVT#1][JSON]...","durationMs":0}]}。SpyEvent 独有 logLine=[EVT# + durationMs 特征，
+        //   与 HttpStore（source:TLS 无 logLine）不冲突；任意长度命中（单批几十 KB）
+        if (s.contains("\"entries\"") && s.contains("\"logLine\":\"[EVT#") && s.contains("\"durationMs\"")) return true;
         // v1.54: Glide 内存压力事件 {"type":"memoryPressure",...} 对逆向零价值（v1.53 日志 4 行）
         if (s.contains("\"type\":\"memoryPressure\"")) return true;
         return false;
