@@ -610,11 +610,18 @@ public class Config {
         }
     }
 
-    /** v1.22: 模块调试日志（仅 Config.debugEnabled=true 时写入 LogStore，带 [DBG] 前缀） */
+    /**
+     * v1.22: 模块调试日志（仅 Config.debugEnabled=true 时记录）
+     * v1.54.2 修正：改走 DebugLog（调试日志），不再写 LogStore（日志页）——
+     *   用户 2026-08-11 拍板：日志页 = 目标 App 数据；Config 的
+     *   rules/config 读写是 SpyProbe 自家操作日志，v1.52.1 全量迁移自家日志
+     *   时漏了这里（Config.debugLog 仍在写 LogStore，日志页刷
+     *   [DBG] config saved/applied from home）。
+     */
     public static void debugLog(String msg) {
         try {
             if (Config.get().debugEnabled) {
-                LogStore.get().log("DBG", msg);
+                DebugLog.get().logNoMirror("Config", msg);
             }
         } catch (Throwable t) { }
     }
