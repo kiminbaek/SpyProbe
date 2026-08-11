@@ -21,9 +21,12 @@ public class SQLiteProbe {
     static final String TAG = "SpyProbe.SQL";
 
     // v1.53: 高频 SQL 模板聚合（30s 窗口同模板重复 >=5 次 → 只记首条+汇总，防 cacheObject 之类刷屏）
+    // v1.54: 窗口 30s→60s、阈值 5→3——Glide 缓存清理任务约每 10s 一次，30s 窗口仅 3 次达不到
+    //   MIN_REPEAT=5 → 永不聚合（v1.53 日志 16+8 行 cacheObject 刷屏）。阈值 3 + 窗口 60s 覆盖
+    //   所有"周期性重复"的 SQL（缓存清理/轮询），低频业务 SQL 不受影响。
     private static final java.util.LinkedHashMap<String, SqlAgg> SQL_AGG = new java.util.LinkedHashMap<>();
-    private static final long AGG_WINDOW_MS = 30_000L;
-    private static final int AGG_MIN_REPEAT = 5;
+    private static final long AGG_WINDOW_MS = 60_000L;
+    private static final int AGG_MIN_REPEAT = 3;
     static class SqlAgg { int count; long windowStart; }
 
     private final XposedModule module;

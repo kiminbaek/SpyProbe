@@ -84,9 +84,12 @@ public class JsonProbe {
         LogStore.get().log(TAG, "[" + phase + "] hooked JSONObject/Gson x" + hooked);
     }
 
-    /** v1.53: 自家控制面 JSON 特征识别（SpyServer 9901 响应在目标进程内被本 probe 捕获 → 纯噪音） */
+    /** v1.53: 自家控制面 JSON 特征识别（SpyServer 9901 响应在目标进程内被本 probe 捕获 → 纯噪音）
+     *  v1.54: P0 修复——原实现 `s.length() > 2048 return false` 导致自家 HttpStore.pushBatch 的
+     *   大 payload（9KB~38KB，含 "entries"+"source":"TLS" 特征）被放行 → 日志页混入 6 行自家数据。
+     *   现在改为：先查特征（长度不限），只剩"完全不像自家"的才靠长度兜底。 */
     private static boolean isSelfControlPlane(String s) {
-        if (s == null || s.length() < 8 || s.length() > 2048) return false;
+        if (s == null || s.length() < 8) return false;
         // /api/ping 响应: {"ok":true,"pkg":"app.p2ee1f.p","port":9901,...}
         if (s.contains("\"ok\":true") && s.contains("\"pkg\"") && s.contains("\"port\"")) return true;
         // /api/config 响应: {"sslBypass":true,"okHttp":true,...,"debug":true}
@@ -95,7 +98,10 @@ public class JsonProbe {
         if (s.contains("\"logCount\"") && s.contains("\"versionCode\"")) return true;
         // v1.53.1: 自家 HttpStore.pushBatch 的推送 payload（目标进程内 JSONObject.toString 被本 hook
         //   捕获 → 日志页出现 {"entries":[{"source":"TLS","id":102,... 自家数据混入）
+        // v1.54: 该项不再受长度限制——pushBatch 单批可达 38KB，必须对任意长度生效
         if (s.contains("\"entries\"") && s.contains("\"source\":\"TLS\"")) return true;
+        // v1.54: Glide 内存压力事件 {"type":"memoryPressure",...} 对逆向零价值（v1.53 日志 4 行）
+        if (s.contains("\"type\":\"memoryPressure\"")) return true;
         return false;
     }
 }

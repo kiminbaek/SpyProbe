@@ -225,6 +225,13 @@ public class NativeProbe {
             if (!isSsl && total > HEX_DUMP_MAX && !isPrintable(data)) {
                 return false;
             }
+            // v1.54 P1: TLS 不可读帧（握手帧 ClientHello/ServerHello、密文块）零价值 → 过滤。
+            //   v1.52.1 只拦了"已结构化"的连接；握手帧在结构化之前到达（isSsl 且不可打印）→
+            //   v1.53 日志 3 行 "[TLS >>> ...] [126B hex] 1603..." 就是这个。可读明文（非 HTTP 的
+            //   TLS 明文协议，如 DNS over TLS）仍保留摘要，不丢失诊断信息。
+            if (isSsl && !isPrintable(data)) {
+                return false;
+            }
             LogStore.get().log(TAG, "[" + proto + " " + dir + " " + loc + (total > n ? " " + total + "B" : "") + "] " + toReadable(data, total));
             if (stack != null && !stack.isEmpty()) {
                 // v1.16 P2-6: 只对小包记录调用栈（大块传输高频刷屏；短包=握手/协议帧，栈有诊断价值）

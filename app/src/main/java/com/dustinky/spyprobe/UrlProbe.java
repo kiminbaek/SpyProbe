@@ -20,6 +20,25 @@ public class UrlProbe {
 
     private static void logUrlOnce(String url) {
         if (!Config.get().urlBuildCapture || url == null) return;
+        // v1.54 P1: 系统级 content:// URI（媒体库/GMS/厂商 provider）对逆向零价值 → 直接过滤
+        String lower = url.toLowerCase(java.util.Locale.US);
+        if (lower.startsWith("content://")) {
+            if (lower.startsWith("content://media")
+                    || lower.startsWith("content://com.google.android.gms")
+                    || lower.startsWith("content://com.oplusos")
+                    || lower.startsWith("content://com.oplus")
+                    || lower.contains(".provider.")) {
+                return;
+            }
+        }
+        // v1.54 P1: http(s) URL 与 REQ# 结构化卡片重复（TlsHttpParser 已抓完整请求含 URL）→
+        //   降级到调试日志，日志页只留 REQ# 卡片。URL 构造点仍在调试日志可查（反编译找接口地址）。
+        //   保留非 http 协议（content:// 自定义 provider 等）在日志页——它们不会成为网络请求，
+        //   对逆向（找 app 内部 provider/文件访问）仍有独立价值。
+        if (lower.startsWith("http://") || lower.startsWith("https://")) {
+            DebugLog.get().logNoMirror("URL", "[URL] " + url);
+            return;
+        }
         long now = System.currentTimeMillis();
         Long prev = sUrlSeen.get(url);
         if (prev != null && now - prev < URL_DEDUP_MS) return;

@@ -703,6 +703,22 @@ public class MethodProbe {
                 byte[] b = (byte[]) o;
                 return "byte[" + b.length + "] " + hex(b, Math.min(b.length, 64));
             }
+            // v1.54 P1: Object[]/String[] 等数组参数展开真实值（此前返回 "[Ljava.lang.String;@19a9431"
+            //   对象引用，SQL args 完全不可读 → 对逆向零价值）
+            if (o.getClass().isArray()) {
+                int len = java.lang.reflect.Array.getLength(o);
+                StringBuilder sb = new StringBuilder(o.getClass().getComponentType().getSimpleName())
+                        .append("[").append(len).append("] {");
+                int show = Math.min(len, 8);
+                for (int i = 0; i < show; i++) {
+                    if (i > 0) sb.append(", ");
+                    Object el = java.lang.reflect.Array.get(o, i);
+                    sb.append(el == null ? "null" : String.valueOf(el));
+                }
+                if (len > show) sb.append(", ...");
+                sb.append("}");
+                return sb.toString();
+            }
             String s = String.valueOf(o);
             if (s.length() > max) s = s.substring(0, max) + "...(" + s.length() + ")";
             return s;

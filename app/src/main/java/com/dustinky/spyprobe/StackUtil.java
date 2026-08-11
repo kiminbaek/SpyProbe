@@ -21,10 +21,16 @@ public class StackUtil {
 
     /** 返回紧凑调用栈（每行类.方法），适配日志单行 */
     public static String getCompact() {
+        return getCompact(12);
+    }
+
+    /** v1.54: 可指定帧数——[TCP] FAIL 12 帧在日志页刷屏（v1.53 截图 8 行栈），
+     *  连接失败只需保留到"目标 App 发起方"（hook 样板 2 帧 + app 类 3-4 帧）即可定位。 */
+    public static String getCompact(int maxFrames) {
         StackTraceElement[] stack = Thread.currentThread().getStackTrace();
         StringBuilder sb = new StringBuilder();
         int count = 0;
-        for (int i = 3; i < stack.length && count < 12; i++, count++) {
+        for (int i = 3; i < stack.length && count < maxFrames; i++, count++) {
             if (count > 0) sb.append(" <- ");
             StackTraceElement e = stack[i];
             String cn = e.getClassName();

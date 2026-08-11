@@ -39,6 +39,9 @@ public class EnvProbe {
     private final XposedModule module;
     private final ClassLoader appCl;
 
+    // v1.54 P2: 传感器日志限频（同 type 5s 内只记一次）
+    private static final java.util.Map<Integer, Long> sensorLastLog = new java.util.concurrent.ConcurrentHashMap<>();
+
     public EnvProbe(XposedModule module, ClassLoader appCl) {
         this.module = module;
         this.appCl = appCl;
@@ -310,8 +313,14 @@ public class EnvProbe {
                                     || type == Sensor.TYPE_GYROSCOPE
                                     || type == Sensor.TYPE_GRAVITY
                                     || type == Sensor.TYPE_ROTATION_VECTOR) {
-                                LogStore.get().log(TAG, "[传感器探测] registerListener type=" + type
-                                        + " (摇一摇/方向广告跳转?) <- " + StackUtil.getCompact());
+                                // v1.54 P2: 同 type 5s 限频（多次 registerListener 同传感器 → 刷屏）
+                                long now = System.currentTimeMillis();
+                                Long prev = sensorLastLog.get(type);
+                                if (prev == null || now - prev >= 5000) {
+                                    sensorLastLog.put(type, now);
+                                    LogStore.get().log(TAG, "[传感器探测] registerListener type=" + type
+                                            + " (摇一摇/方向广告跳转?) <- " + StackUtil.getCompact());
+                                }
                             }
                         }
                     }

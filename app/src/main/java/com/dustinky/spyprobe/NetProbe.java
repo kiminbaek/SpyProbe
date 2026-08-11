@@ -1101,9 +1101,12 @@ public class NetProbe {
                             String txt = new String(head, java.nio.charset.StandardCharsets.UTF_8);
                             // 只记录含 HTTP 特征/可读英文的明文段（防 TLS 1.3 帧噪音）
                             if (txt.contains("HTTP") || txt.matches("(?s)[A-Z]{3,8} /[^\r\n]*")) {
+                                // v1.54 P0: ConscryptEngine.wrap/unwrap 抓的 TLS 明文与 v1.52
+                                //   TlsHttpParser 结构化链路（REQ# 卡片）完全重复 → 日志页不再输出
+                                //   [TLS>]/[TLS<] 文本行（v1.53 日志 112 行噪音），降级调试日志供排查
                                 String line = txt.split("\r?\n")[0];
                                 if (line.length() > 160) line = line.substring(0, 160) + "...";
-                                LogStore.get().log(TAG, "[TLS" + (isWrap ? ">]" : "<] ") + line);
+                                DebugLog.get().logNoMirror("Net", "[TLS" + (isWrap ? ">]" : "<] ") + line);
                             }
                         }
                     } catch (Throwable t) { }
@@ -1168,8 +1171,9 @@ public class NetProbe {
                 if (ia.isLoopbackAddress() || ip.startsWith("10.") || ip.startsWith("192.168.")
                         || ip.startsWith("127.") || ip.startsWith("0.") || isPrivate172(ip)) return;
                 int p = port instanceof Integer ? (Integer) port : -1;
+                // v1.54 P1: 栈 12→6 帧（连接失败只需看到目标 App 发起方，系统样板帧无价值）
                 LogStore.get().log(TAG, (fail ? "[TCP] FAIL " : "[TCP] ") + ip + ":" + p
-                        + " <- " + StackUtil.getCompact());
+                        + " <- " + StackUtil.getCompact(6));
             }
         } catch (Throwable t) { }
     }

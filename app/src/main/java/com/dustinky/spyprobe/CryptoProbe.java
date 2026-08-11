@@ -51,6 +51,20 @@ public class CryptoProbe {
     // v1.15 P1-3: CTXS 强引用泄漏 —— Cipher 未 doFinal 即 GC → Ctx 永久残留。
     //   改 WeakHashMap（Cipher 不复写 equals/hashCode，可安全弱引用）+ synchronizedMap 保证线程安全。
     private static final Map<Cipher, Ctx> CTXS = Collections.synchronizedMap(new WeakHashMap<Cipher, Ctx>());
+
+    // v1.54: Crypto 同签名 5s 限频——视频分片解密同一 AES key 每组 getInstance/init/SecretKeySpec
+    //   各打一行，v1.53 日志 102 行纯重复噪音（同一 key 34 组）。按"算法+key 指纹"限频：5s 内
+    //   同指纹只记首条，key 变化立即出新条（信息不丢，刷屏根治）。
+    private static final java.util.Map<String, Long> CRYPTO_RATE = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final long CRYPTO_RATE_MS = 5000;
+    private static boolean cryptoRateLimited(String sig) {
+        long now = System.currentTimeMillis();
+        Long prev = CRYPTO_RATE.get(sig);
+        if (prev != null && now - prev < CRYPTO_RATE_MS) return true;
+        CRYPTO_RATE.put(sig, now);
+        if (CRYPTO_RATE.size() > 128) CRYPTO_RATE.clear(); // 防膨胀
+        return false;
+    }
     private static final int MAX_CAPTURE = 1024 * 1024; // 1MB 上限防刷屏
 
     public void install(String phase) {
@@ -70,7 +84,10 @@ public class CryptoProbe {
                         try {
                             Ctx ctx = CTXS.computeIfAbsent((Cipher) r, k -> new Ctx());
                             ctx.algorithm = String.valueOf(chain.getArg(0));
-                            LogStore.get().log(TAG, "[getInstance] " + ctx.algorithm);
+                            // v1.54: 同算法 5s 限频（getInstance 每次 Cipher 构造都打 → 刷屏）
+                            if (!cryptoRateLimited("gi:" + ctx.algorithm)) {
+                                LogStore.get().log(TAG, "[getInstance] " + ctx.algorithm);
+                            }
                         } catch (Throwable t) { }
                     }
                     return r;
@@ -84,7 +101,10 @@ public class CryptoProbe {
                         try {
                             Ctx ctx = CTXS.computeIfAbsent((Cipher) r, k -> new Ctx());
                             ctx.algorithm = String.valueOf(chain.getArg(0));
-                            LogStore.get().log(TAG, "[getInstance] " + ctx.algorithm + " provider=" + chain.getArg(1));
+                            // v1.54: 同算法+provider 5s 限频
+                            if (!cryptoRateLimited("gi:" + ctx.algorithm + "@" + chain.getArg(1))) {
+                                LogStore.get().log(TAG, "[getInstance] " + ctx.algorithm + " provider=" + chain.getArg(1));
+                            }
                         } catch (Throwable t) { }
                     }
                     return r;
@@ -336,9 +356,13 @@ public class CryptoProbe {
                         Object k = chain.getArg(0);
                         if (k instanceof byte[]) {
                             byte[] kb = (byte[]) k;
-                            LogStore.get().log(TAG, "[SecretKeySpec] algo=" + chain.getArg(1)
-                                    + " key=" + MethodProbe.hex(kb, Math.min(kb.length, 128))
-                                    + (kb.length > 128 ? "...(" + kb.length + "B)" : "(" + kb.length + "B)"));
+                            String sig = "sks:" + chain.getArg(1) + ":"
+                                    + MethodProbe.hex(kb, Math.min(kb.length, 128));
+                            if (!cryptoRateLimited(sig)) {
+                                LogStore.get().log(TAG, "[SecretKeySpec] algo=" + chain.getArg(1)
+                                        + " key=" + MethodProbe.hex(kb, Math.min(kb.length, 128))
+                                        + (kb.length > 128 ? "...(" + kb.length + "B)" : "(" + kb.length + "B)"));
+                            }
                         }
                     } catch (Throwable t) { }
                 }
@@ -352,9 +376,13 @@ public class CryptoProbe {
                         Object k = chain.getArg(0);
                         if (k instanceof byte[]) {
                             byte[] kb = (byte[]) k;
-                            LogStore.get().log(TAG, "[SecretKeySpec] algo=" + chain.getArg(2) + " off=" + chain.getArg(1)
-                                    + " key=" + MethodProbe.hex(kb, Math.min(kb.length, 128))
-                                    + (kb.length > 128 ? "...(" + kb.length + "B)" : "(" + kb.length + "B)"));
+                            String sig = "sks:" + chain.getArg(2) + "@" + chain.getArg(1) + ":"
+                                    + MethodProbe.hex(kb, Math.min(kb.length, 128));
+                            if (!cryptoRateLimited(sig)) {
+                                LogStore.get().log(TAG, "[SecretKeySpec] algo=" + chain.getArg(2) + " off=" + chain.getArg(1)
+                                        + " key=" + MethodProbe.hex(kb, Math.min(kb.length, 128))
+                                        + (kb.length > 128 ? "...(" + kb.length + "B)" : "(" + kb.length + "B)"));
+                            }
                         }
                     } catch (Throwable t) { }
                 }
@@ -535,6 +563,9 @@ public class CryptoProbe {
             } else if (spec instanceof AlgorithmParameterSpec) {
                 ctx.ivHex = "<" + spec.getClass().getSimpleName() + ">";
             }
+            // v1.54: 同 算法+key+iv 5s 限频（视频分片每片 init 一次 → 34 行重复）
+            String initSig = "init:" + ctx.algorithm + "|" + ctx.keyAlgo + ":" + ctx.keyHex + "|" + ctx.ivHex;
+            if (cryptoRateLimited(initSig)) return;
             LogStore.get().log(TAG, "[init] " + ctx.algorithm + " mode=" + ctx.cryptMode
                     + " key=" + (ctx.keyAlgo != null ? ctx.keyAlgo + ":" : "") + ctx.keyHex
                     + " iv=" + ctx.ivHex);
