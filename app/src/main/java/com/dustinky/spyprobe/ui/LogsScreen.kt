@@ -656,10 +656,10 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                 LogDetailDialog(line = dialogLine, onDismiss = { detailDialog = null })
             }
 
-            // v1.48: 结构化 HTTP 请求详情页（小黄鸟式）——更高优先级，先于旧弹窗判断
+            // v1.51: 结构化 HTTP 请求详情页——从 Dialog 弹窗改为全屏页（小黄鸟式）
             val httpEntry = httpDetail
             if (httpEntry != null) {
-                HttpDetailDialog(entry = httpEntry, onDismiss = { httpDetail = null })
+                HttpDetailPage(entry = httpEntry, onBack = { httpDetail = null })
             }
 
             // ===== 浮动操作按钮 =====
