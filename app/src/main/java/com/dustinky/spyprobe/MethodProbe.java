@@ -483,12 +483,14 @@ public class MethodProbe {
             shown++;
         }
         sb.append(")");
-        LogStore.get().log(TAG, sb.toString());
+        long eid = logMethodEvent(caller, sb.toString(), detail ? stack(14) : "");
 
         // v1.2: 实例字段值快照（最多 8 个字段，每个 100 字符）—— 详细模式才做
+        // v1.58: 字段并入 METHOD 事件 payload（不再单独文本行），详情页可看
+        String fieldsText = "";
         if (detail && thiz != null) {
             try {
-                StringBuilder fs = new StringBuilder("[fields] ");
+                StringBuilder fs = new StringBuilder();
                 java.lang.reflect.Field[] fields = fieldsOf(thiz.getClass());
                 int fshown = 0;
                 for (java.lang.reflect.Field f : fields) {
@@ -501,22 +503,21 @@ public class MethodProbe {
                         fshown++;
                     } catch (Throwable t) { }
                 }
-                if (fshown > 0) LogStore.get().log(TAG, fs.toString());
+                if (fshown > 0) fieldsText = fs.toString();
             } catch (Throwable t) { }
         }
 
-        // 调用栈（详细模式才做，getStackTrace 开销大）
         // v1.15 P2-1: stack()/log 加独立 try —— 若抛异常不拖垮 proceed（外层兜底会执行原方法但返回值记录丢失）
-        if (detail) {
-            try {
-                LogStore.get().log(TAG, "[stack]\n" + stack(14));
-            } catch (Throwable t) { }
-        }
-
-        // v1.31.1 P3-11: MODE_PARAM 改参后显式传 args 执行原方法（防御性，语义明确）
         Object result = paramModified[0] ? chain.proceed(args.toArray()) : chain.proceed();
+        // v1.58: 返回值并入 METHOD 事件 payload（[return] 不再单独文本行）
         try {
-            LogStore.get().log(TAG, "[return] " + str(result, detail ? 300 : 100));
+            SpyEvent ev = EventStore.get().find(eid);
+            if (ev != null) {
+                try {
+                    ev.payload.put("fields", fieldsText);
+                    ev.payload.put("ret", str(result, detail ? 300 : 100));
+                } catch (Throwable t) { }
+            }
         } catch (Throwable t) { }
         // v1.14: 记录模式（RECORD_RETURN / RECORD_BOTH）proceed 后记返回值
         if (recordRule[0] != null) {
@@ -744,5 +745,24 @@ public class MethodProbe {
             sb.append("    at ").append(st[i]).append('\n');
         }
         return sb.toString();
+    }
+
+    /** v1.58: 自定义方法探测命中 → 结构化 METHOD 事件（卡片 + 详情页）。
+     *  目标 App 方法调用记录：caller/args + 调用栈。返回事件 id（proceed 后把字段/返回值并入 payload）。 */
+    private static long logMethodEvent(String caller, String invokeLine, String stackText) {
+        try {
+            long eid = EventStore.get().nextId();
+            String msg = "[EVT#" + eid + "]" + invokeLine;
+            LogStore.get().log(TAG, msg);
+            org.json.JSONObject payload = new org.json.JSONObject();
+            payload.put("caller", caller == null ? "" : caller);
+            payload.put("invoke", invokeLine == null ? "" : invokeLine);
+            String title = invokeLine == null ? "method" : invokeLine;
+            if (title.startsWith("[invoke] ")) title = title.substring("[invoke] ".length());
+            if (title.length() > 90) title = title.substring(0, 90) + "…";
+            EventStore.get().add(new SpyEvent("METHOD", eid, System.currentTimeMillis(),
+                    title, payload, msg, stackText == null ? "" : stackText));
+            return eid;
+        } catch (Throwable t) { /* 结构化失败不影响文本日志 */ return 0; }
     }
 }

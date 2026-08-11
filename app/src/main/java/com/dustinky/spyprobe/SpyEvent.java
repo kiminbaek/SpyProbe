@@ -15,8 +15,15 @@ import org.json.JSONObject;
  *   JSON    —— JSON 序列化（source/content）
  *   CRYPTO  —— 加密操作（algo/mode/key/iv）
  *   NET     —— TCP/DNS 连接（host/ip/port/timeout/ok/fail）
- *   URL     —— URL 构造点（url/stack）
- *   CLIP    —— 剪贴板读取（content/stack）
+ *   URL     —— URL 构造点（url/source + stack）
+ *   CLIP    —— 剪贴板读取（content + stack）
+ *   LOG     —— 目标 App 自己的 Log（level/tag/msg）
+ *   ACT     —— 页面流/Intent 跳转（event/class/action/pkg/data/from）
+ *   DETECT  —— 环境检测命中（kind/detail + stack）
+ *   PREFS   —— SharedPreferences 读取（getter/key/value）
+ *   CLASS   —— 类加载（name）
+ *   METHOD  —— 自定义方法探测（caller/invoke + stack）
+ *   CERT    —— mTLS 证书访问（op/alias/summary/detail）
  *   REQ     —— HTTP 请求（与 HttpEntry 并存，暂不迁移）
  *
  * 字段约定：

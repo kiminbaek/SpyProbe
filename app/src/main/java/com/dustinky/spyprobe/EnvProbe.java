@@ -99,8 +99,7 @@ public class EnvProbe {
                         String path = ((java.io.File) f).getAbsolutePath();
                         for (String sp : SENSITIVE_PATHS) {
                             if (path.contains(sp)) {
-                                LogStore.get().log(TAG, "[Root检测] File.exists: " + path
-                                        + " -> " + r + " <- " + StackUtil.getCompact());
+                                logDetectEvent("Root检测", "File.exists: " + path + " -> " + r);
                                 break;
                             }
                         }
@@ -127,14 +126,13 @@ public class EnvProbe {
                         r = chain.proceed();
                     } catch (Throwable t) {
                         if (Config.get().envCapture && isSuspiciousCommand(chain.getArg(0))) {
-                            LogStore.get().log(TAG, "[命令探测] Runtime.exec FAIL: "
+                            logDetectEvent("命令探测", "Runtime.exec FAIL: "
                                     + commandToString(chain.getArg(0)) + " -> " + t);
                         }
                         throw t;
                     }
                     if (Config.get().envCapture && isSuspiciousCommand(chain.getArg(0))) {
-                        LogStore.get().log(TAG, "[命令探测] Runtime.exec: "
-                                + commandToString(chain.getArg(0)) + " <- " + StackUtil.getCompact());
+                        logDetectEvent("命令探测", "Runtime.exec: " + commandToString(chain.getArg(0)));
                     }
                     return r;
                 });
@@ -171,8 +169,7 @@ public class EnvProbe {
                 if (Config.get().envCapture) {
                     Object key = chain.getArg(0);
                     if (key instanceof String && SENSITIVE_PROPS.contains(key)) {
-                        LogStore.get().log(TAG, "[属性探测] System.getProperty(" + key + ") = " + r
-                                + " <- " + StackUtil.getCompact());
+                        logDetectEvent("属性探测", "System.getProperty(" + key + ") = " + r);
                     }
                 }
                 return r;
@@ -196,8 +193,8 @@ public class EnvProbe {
                         if (ks.contains("debuggable") || ks.contains("secure")
                                 || ks.contains("magisk") || ks.contains("xposed")
                                 || ks.contains("frida") || ks.contains("proxy")) {
-                            LogStore.get().log(TAG, "[属性探测] SystemProperties." + chain.getExecutable().getName()
-                                    + "(" + key + ") = " + r + " <- " + StackUtil.getCompact());
+                            logDetectEvent("属性探测", "SystemProperties." + chain.getExecutable().getName()
+                                    + "(" + key + ") = " + r);
                         }
                     }
                     return r;
@@ -237,8 +234,8 @@ public class EnvProbe {
                             } catch (Throwable t) { }
 
                             if (isVpnInterface(nm)) {
-                                LogStore.get().log(TAG, "[VPN检测] NetworkInterface." + m.getName()
-                                        + "(" + nm + ") = " + r + " <- " + StackUtil.getCompact());
+                                logDetectEvent("VPN检测", "NetworkInterface." + m.getName()
+                                        + "(" + nm + ") = " + r);
                             }
                         }
                         return r;
@@ -259,8 +256,7 @@ public class EnvProbe {
                         Object r = chain.proceed();
                         if (Config.get().envCapture && r instanceof Integer
                                 && (Integer) r == android.net.ConnectivityManager.TYPE_VPN) {
-                            LogStore.get().log(TAG, "[VPN检测] NetworkInfo.getType() = TYPE_VPN (17)"
-                                    + " <- " + StackUtil.getCompact());
+                            logDetectEvent("VPN检测", "NetworkInfo.getType() = TYPE_VPN (17)");
                         }
                         return r;
                     });
@@ -282,8 +278,7 @@ public class EnvProbe {
                                 && (Boolean) r) {
                             Object arg = chain.getArg(0);
                             if (arg instanceof Integer && (Integer) arg == 4) {
-                                LogStore.get().log(TAG, "[VPN检测] NetworkCapabilities.hasTransport(TRANSPORT_VPN)"
-                                        + " <- " + StackUtil.getCompact());
+                                logDetectEvent("VPN检测", "NetworkCapabilities.hasTransport(TRANSPORT_VPN)");
                             }
                         }
                         return r;
@@ -318,8 +313,8 @@ public class EnvProbe {
                                 Long prev = sensorLastLog.get(type);
                                 if (prev == null || now - prev >= 5000) {
                                     sensorLastLog.put(type, now);
-                                    LogStore.get().log(TAG, "[传感器探测] registerListener type=" + type
-                                            + " (摇一摇/方向广告跳转?) <- " + StackUtil.getCompact());
+                                    logDetectEvent("传感器探测", "registerListener type=" + type
+                                            + " (摇一摇/方向广告跳转?)");
                                 }
                             }
                         }
@@ -344,8 +339,7 @@ public class EnvProbe {
                         if (Config.get().envCapture) {
                             Object arg0 = chain.getArg(0);
                             if (arg0 instanceof Integer && ((Integer) arg0 & FLAG_SECURE) != 0) {
-                                LogStore.get().log(TAG, "[防截屏探测] Window." + m.getName()
-                                        + " FLAG_SECURE(0x2000) <- " + StackUtil.getCompact());
+                                logDetectEvent("防截屏探测", "Window." + m.getName() + " FLAG_SECURE(0x2000)");
                             }
                         }
                         return r;
@@ -360,8 +354,7 @@ public class EnvProbe {
                         if (Config.get().envCapture) {
                             Object arg0 = chain.getArg(0);
                             if (arg0 instanceof Integer && ((Integer) arg0 & FLAG_SECURE) != 0) {
-                                LogStore.get().log(TAG, "[防截屏探测] Dialog." + m.getName()
-                                        + " FLAG_SECURE(0x2000) <- " + StackUtil.getCompact());
+                                logDetectEvent("防截屏探测", "Dialog." + m.getName() + " FLAG_SECURE(0x2000)");
                             }
                         }
                         return r;
@@ -381,7 +374,25 @@ public class EnvProbe {
             module.hook(gpc).intercept(chain -> {
                 Object r = chain.proceed();
                 if (Config.get().envCapture && r != null) {
-                    LogStore.get().log(TAG, "[剪贴板探测] getPrimaryClip() 有内容 <- " + StackUtil.getCompact());
+                    String content = "";
+                    try {
+                        if (r instanceof android.content.ClipData) {
+                            android.content.ClipData cd = (android.content.ClipData) r;
+                            if (cd.getItemCount() > 0) {
+                                CharSequence cs = null;
+                                // ActivityThread 是 @hide，编译 classpath 没有 → 反射拿 context（coerceToText 需要）
+                                try {
+                                    java.lang.reflect.Method cur = Class.forName("android.app.ActivityThread")
+                                            .getMethod("currentApplication");
+                                    android.content.Context ctx = (android.content.Context) cur.invoke(null);
+                                    if (ctx != null) cs = cd.getItemAt(0).coerceToText(ctx);
+                                } catch (Throwable t) { }
+                                if (cs == null) cs = cd.getItemAt(0).getText();
+                                if (cs != null) content = cs.toString();
+                            }
+                        }
+                    } catch (Throwable t) { }
+                    logClipEvent(content);
                 }
                 return r;
             });
@@ -407,8 +418,7 @@ public class EnvProbe {
                     if (Config.get().envCapture && r != null) {
                         String val = String.valueOf(r);
                         if (val.length() > 24) val = val.substring(0, 24) + "...";
-                        LogStore.get().log(TAG, "[设备指纹] TelephonyManager." + m.getName()
-                                + " = " + val + " <- " + StackUtil.getCompact());
+                        logDetectEvent("设备指纹", "TelephonyManager." + m.getName() + " = " + val);
                     }
                     return r;
                 });
@@ -418,5 +428,38 @@ public class EnvProbe {
         } catch (Throwable t) {
             LogStore.get().log(TAG, "[" + phase + "] TelephonyManager hook fail: " + t);
         }
+    }
+
+    /** v1.58: 环境检测命中 → 结构化 DETECT 事件（卡片 + 详情页）。
+     *  反编译价值：知道 app 检测什么（root/xposed/VPN/防截屏/设备指纹）= 知道要绕过什么。
+     *  payload: what/kind/detail/stack */
+    private static void logDetectEvent(String kind, String detail) {
+        try {
+            long eid = EventStore.get().nextId();
+            String msg = "[EVT#" + eid + "][" + kind + "] " + detail;
+            LogStore.get().log(TAG, msg);
+            org.json.JSONObject payload = new org.json.JSONObject();
+            payload.put("kind", kind == null ? "" : kind);
+            payload.put("detail", detail == null ? "" : detail);
+            String stack = StackUtil.getCompact(10);
+            EventStore.get().add(new SpyEvent("DETECT", eid, System.currentTimeMillis(),
+                    kind, payload, msg, stack));
+        } catch (Throwable t) { /* 结构化失败不影响文本日志 */ }
+    }
+
+    /** v1.58: 剪贴板读取 → 结构化 CLIP 事件（内容 + 调用栈）。 */
+    private static void logClipEvent(String content) {
+        try {
+            long eid = EventStore.get().nextId();
+            String msg = "[EVT#" + eid + "][剪贴板探测] 有内容" + (content == null || content.isEmpty() ? "" : ": " + content);
+            LogStore.get().log(TAG, msg);
+            org.json.JSONObject payload = new org.json.JSONObject();
+            payload.put("content", content == null ? "" : content);
+            String stack = StackUtil.getCompact(10);
+            String title = content == null || content.isEmpty() ? "剪贴板读取" : content;
+            if (title.length() > 90) title = title.substring(0, 90) + "…";
+            EventStore.get().add(new SpyEvent("CLIP", eid, System.currentTimeMillis(),
+                    title, payload, msg, stack));
+        } catch (Throwable t) { /* 结构化失败不影响文本日志 */ }
     }
 }

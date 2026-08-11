@@ -83,15 +83,13 @@ public class NetProbe {
                 if (Config.get().webViewCapture) {
                     Object url = chain.getArg(0);
                     if (url != null) {
-                        LogStore.get().log(TAG, "[WebView] loadUrl: " + url);
+                        logWebUrlEvent(String.valueOf(url));
                     }
                 }
                 return r;
             });
             DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked WebView.loadUrl");
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked WebView.loadUrl");
         } catch (Throwable t) {
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] WebView.loadUrl hook fail: " + t);
             DebugLog.get().logNoMirror("Net", "[" + phase + "] WebView.loadUrl hook fail: " + t);
         }
     }
@@ -107,8 +105,35 @@ public class NetProbe {
             Long last = pinningLast.get(idx);
             if (last != null && now - last < 5000) return;
             pinningLast.put(idx, now);
-            LogStore.get().log(TAG, "[Pinning#" + idx + "] " + desc + " | caller: " + StackUtil.getCompact());
+            // v1.58: pinning 触发定位结构化（DETECT 事件，kind=pinning）——知道 App 用哪种证书锁定
+            try {
+                long eid = EventStore.get().nextId();
+                String msg = "[EVT#" + eid + "][Pinning#" + idx + "] " + desc + " | caller: " + StackUtil.getCompact();
+                LogStore.get().log(TAG, msg);
+                org.json.JSONObject payload = new org.json.JSONObject();
+                payload.put("kind", "pinning");
+                payload.put("detail", desc + " | caller: " + StackUtil.getCompact());
+                EventStore.get().add(new SpyEvent("DETECT", eid, System.currentTimeMillis(),
+                        "Pinning#" + idx, payload, msg, ""));
+            } catch (Throwable t2) { }
         } catch (Throwable ignored) { }
+    }
+
+    /** v1.58: WebView.loadUrl → 结构化 URL 事件（目标 App WebView 加载地址，逆向找 H5 接口） */
+    private void logWebUrlEvent(String url) {
+        try {
+            long eid = EventStore.get().nextId();
+            String msg = "[EVT#" + eid + "][URL] WebView.loadUrl " + url;
+            LogStore.get().log(TAG, msg);
+            org.json.JSONObject payload = new org.json.JSONObject();
+            payload.put("url", url == null ? "" : url);
+            payload.put("source", "WebView.loadUrl");
+            String title = url == null ? "WebView" : url;
+            if (title.length() > 90) title = title.substring(0, 90) + "…";
+            String stack = StackUtil.getCompact(8);
+            EventStore.get().add(new SpyEvent("URL", eid, System.currentTimeMillis(),
+                    title, payload, msg, stack));
+        } catch (Throwable t) { }
     }
 
     private void installSslBypass(String phase) {
@@ -135,9 +160,7 @@ public class NetProbe {
                 return r;
             });
             DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked SSLContext.init");
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked SSLContext.init");
         } catch (Throwable t) {
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] SSLContext.init hook fail: " + t);
             DebugLog.get().logNoMirror("Net", "[" + phase + "] SSLContext.init hook fail: " + t);
         }
 
@@ -152,9 +175,7 @@ public class NetProbe {
                 return null; // 不做校验
             });
             DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked X509TrustManager.checkServerTrusted");
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked X509TrustManager.checkServerTrusted");
         } catch (Throwable t) {
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] X509TrustManager hook fail: " + t);
             DebugLog.get().logNoMirror("Net", "[" + phase + "] X509TrustManager hook fail: " + t);
         }
 
@@ -177,13 +198,10 @@ public class NetProbe {
                     return null;
                 });
                 DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked CertificatePinner.check");
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked CertificatePinner.check");
             } else {
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] CertificatePinner.check not found");
                 DebugLog.get().logNoMirror("Net", "[" + phase + "] CertificatePinner.check not found");
             }
         } catch (Throwable t) {
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] CertificatePinner hook fail: " + t);
             DebugLog.get().logNoMirror("Net", "[" + phase + "] CertificatePinner hook fail: " + t);
         }
     }
@@ -545,9 +563,7 @@ public class NetProbe {
                 }
             });
             DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked InetAddress.getAllByName");
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked InetAddress.getAllByName");
         } catch (Throwable t) {
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] DNS hook fail: " + t);
             DebugLog.get().logNoMirror("Net", "[" + phase + "] DNS hook fail: " + t);
         }
     }
@@ -573,9 +589,7 @@ public class NetProbe {
                 }
             });
             DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked Socket.connect(SocketAddress,int)");
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked Socket.connect(SocketAddress,int)");
         } catch (Throwable t) {
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] Socket.connect(SocketAddress,int) hook fail: " + t);
             DebugLog.get().logNoMirror("Net", "[" + phase + "] Socket.connect(SocketAddress,int) hook fail: " + t);
         }
     }
@@ -836,11 +850,9 @@ public class NetProbe {
                     return resp;
                 });
                 DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked " + cn + ".proceed");
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked " + cn + ".proceed");
                 hooked = true;
                 break;
             } catch (Throwable t) {
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] " + cn + " hook fail: " + t);
                 DebugLog.get().logNoMirror("Net", "[" + phase + "] " + cn + " hook fail: " + t);
             }
         }
@@ -856,15 +868,26 @@ public class NetProbe {
                             Object code = r.getClass().getMethod("code").invoke(r);
                             Object req = r.getClass().getMethod("request").invoke(r);
                             Object url = req.getClass().getMethod("url").invoke(req);
-                            LogStore.get().log(TAG, "[RealCall] <<< " + code + " " + url);
+                            Object method = req.getClass().getMethod("method").invoke(req);
+                            // v1.58: fallback 也结构化（此前纯文本，无 REQ# 卡片）
+                            long rid = LogStore.get().nextSeq();
+                            String line = "[REQ#" + rid + "] <<< " + code + " " + url;
+                            LogStore.get().log(TAG, line);
+                            HttpEntry he = new HttpEntry("REALCALL", rid, System.currentTimeMillis(),
+                                    Thread.currentThread().getName(),
+                                    String.valueOf(method), String.valueOf(url),
+                                    new java.util.TreeMap<>(), "none", "", 0,
+                                    StackUtil.getCompact(), line);
+                            int status = 0;
+                            try { status = ((Number) code).intValue(); } catch (Throwable ignored) { }
+                            he.complete(status, "", new java.util.TreeMap<>(), "text", "", 0, 0);
+                            HttpStore.get().add(he);
                         } catch (Throwable t) { }
                     }
                     return r;
                 });
                 DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked okhttp3.RealCall.execute (fallback)");
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked okhttp3.RealCall.execute (fallback)");
             } catch (Throwable t) {
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] okhttp hook all fail: " + t);
                 DebugLog.get().logNoMirror("Net", "[" + phase + "] okhttp hook all fail: " + t);
             }
         }
@@ -888,7 +911,6 @@ public class NetProbe {
         try {
             Class<?> ohc = findOkHttpClientClass();
             if (ohc == null) {
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] OkHttpClient.newCall hook fail: class not found (混淆?)");
                 DebugLog.get().logNoMirror("Net", "[" + phase + "] OkHttpClient.newCall hook fail: class not found (混淆?)");
                 return;
             }
@@ -919,7 +941,6 @@ public class NetProbe {
                     + (chainHookedF ? " (重放缓存)" : " (混淆兜底: 请求记录+动态响应hook)"));
             DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked " + ohc.getName() + ".newCall chainHooked=" + chainHookedF);
         } catch (Throwable t) {
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] OkHttpClient.newCall hook fail: " + t);
             DebugLog.get().logNoMirror("Net", "[" + phase + "] OkHttpClient.newCall hook fail: " + t);
         }
     }
@@ -1080,7 +1101,10 @@ public class NetProbe {
                         // v1.50 P1-4: id 统一用 LogStore.nextSeq()（原来独立 nextId 从 1 起，
                         //   与 OKHTTP 的 rid=LogStore seq 同区间 → HttpStore 环形里可能同 id 冲突，
                         //   UI find(id) 会命中错误条目）
-                        HttpEntry he = new HttpEntry("URL_CONN", LogStore.get().nextSeq(), System.currentTimeMillis(),
+                        // v1.58: 日志行补 [REQ#rid] 前缀（此前 line 无标记，UI 解析不到卡片）
+                        long hucRid = LogStore.get().nextSeq();
+                        line = "[REQ#" + hucRid + "]" + line;
+                        HttpEntry he = new HttpEntry("URL_CONN", hucRid, System.currentTimeMillis(),
                                 Thread.currentThread().getName(),
                                 m, u == null ? "" : u.toString(),
                                 new java.util.TreeMap<>(), "none", "", 0,
@@ -1096,9 +1120,7 @@ public class NetProbe {
                 return r;
             });
             DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked HttpURLConnection.getResponseCode");
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked HttpURLConnection.getResponseCode");
         } catch (Throwable t) {
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] HUC hook fail: " + t);
             DebugLog.get().logNoMirror("Net", "[" + phase + "] HUC hook fail: " + t);
         }
     }
@@ -1144,9 +1166,7 @@ public class NetProbe {
                 hooked++;
             }
             DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked ConscryptEngine.wrap/unwrap x" + hooked);
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked ConscryptEngine.wrap/unwrap x" + hooked);
         } catch (Throwable t) {
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] ConscryptEngine hook fail: " + t);
             DebugLog.get().logNoMirror("Net", "[" + phase + "] ConscryptEngine hook fail: " + t);
         }
     }
@@ -1166,7 +1186,6 @@ public class NetProbe {
             }
             if (connect == null) {
                 DebugLog.get().logNoMirror("Net", "[" + phase + "] BlockGuardOs.connect not found");
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] BlockGuardOs.connect not found");
                 return;
             }
             final Method fConnect = connect;
@@ -1182,9 +1201,7 @@ public class NetProbe {
                 return r;
             });
             DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked BlockGuardOs.connect");
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked BlockGuardOs.connect");
         } catch (Throwable t) {
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] BlockGuardOs.connect hook fail: " + t);
             DebugLog.get().logNoMirror("Net", "[" + phase + "] BlockGuardOs.connect hook fail: " + t);
         }
     }
@@ -1239,7 +1256,6 @@ public class NetProbe {
             }
             if (getResponse == null) {
                 DebugLog.get().logNoMirror("Net", "[" + phase + "] CronetHttpURLConnection.getResponse not found");
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] CronetHttpURLConnection.getResponse not found");
                 return;
             }
             final Method fGetResponse = getResponse;
@@ -1253,15 +1269,23 @@ public class NetProbe {
                         int code = c.getResponseCode();
                         String url = c.getURL() != null ? c.getURL().toString() : "?";
                         if (url.length() > 200) url = url.substring(0, 200) + "...";
-                        LogStore.get().log(TAG, "[Cronet] " + c.getRequestMethod() + " " + url + " -> " + code);
+                        // v1.58: Cronet 也结构化（此前纯文本，无 REQ# 卡片）
+                        long rid = LogStore.get().nextSeq();
+                        String line = "[REQ#" + rid + "] <<< " + c.getRequestMethod() + " " + url + " -> " + code;
+                        LogStore.get().log(TAG, line);
+                        HttpEntry he = new HttpEntry("CRONET", rid, System.currentTimeMillis(),
+                                Thread.currentThread().getName(),
+                                c.getRequestMethod(), url,
+                                new java.util.TreeMap<>(), "none", "", 0,
+                                StackUtil.getCompact(), line);
+                        he.complete(code, "", new java.util.TreeMap<>(), "text", "", 0, 0);
+                        HttpStore.get().add(he);
                     }
                 } catch (Throwable t) { }
                 return r;
             });
             DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked CronetHttpURLConnection.getResponse");
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked CronetHttpURLConnection.getResponse");
         } catch (Throwable t) {
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] Cronet hook fail: " + t);
             DebugLog.get().logNoMirror("Net", "[" + phase + "] Cronet hook fail: " + t);
         }
     }

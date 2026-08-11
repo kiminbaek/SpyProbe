@@ -254,21 +254,78 @@ public class NativeProbe {
         try {
             // v1.15 P0-4: native 抓包开关
             if (!Config.get().nativeCapture) return false;
+            // v1.58: H2 请求/响应结构化（此前纯文本）——元数据进 HttpEntry，UI 渲染 REQ# 卡片
+            long key = h2Key(connId, streamId);
             if (!isResponse) {
-                LogStore.get().log(TAG, "[H2 REQ #" + streamId + "] " + method + " " + scheme + "://" + authority + path);
+                long rid = LogStore.get().nextSeq();
+                String url = scheme + "://" + authority + path;
+                String line = "[REQ#" + rid + "] >>> " + method + " " + url;
                 if (reqHdr != null && !reqHdr.isEmpty()) {
-                    LogStore.get().log(TAG, "[H2 REQ-HDR] " + reqHdr.replace("\n", " | "));
+                    line += "\n    " + reqHdr.replace("\n", "\n    ");
+                }
+                LogStore.get().log(TAG, line);
+                HttpEntry he = new HttpEntry("H2", rid, System.currentTimeMillis(),
+                        Thread.currentThread().getName(), method, url,
+                        parseH2Headers(reqHdr), "none", "", 0,
+                        StackUtil.getCompact(6), line);
+                H2_ENTRIES.put(key, he);
+                if (H2_ENTRIES.size() > 256) {
+                    // 防膨胀：极端情况下清空（最多丢几个未完成流，防内存泄漏优先）
+                    H2_ENTRIES.clear();
                 }
             } else {
-                LogStore.get().log(TAG, "[H2 RESP #" + streamId + "] " + statusCode + " " + path);
-                if (respHdr != null && !respHdr.isEmpty()) {
-                    LogStore.get().log(TAG, "[H2 RESP-HDR] " + respHdr.replace("\n", " | "));
+                HttpEntry he = H2_ENTRIES.remove(key);
+                String line;
+                if (he != null) {
+                    line = "[REQ#" + he.id + "] <<< " + statusCode + " " + path;
+                    if (respHdr != null && !respHdr.isEmpty()) {
+                        line += "\n    " + respHdr.replace("\n", "\n    ");
+                    }
+                    LogStore.get().log(TAG, line);
+                    he.complete(statusCode, "", parseH2Headers(respHdr), "text", "", 0, 0);
+                    HttpStore.get().add(he);
+                } else {
+                    // 请求元数据没捕获到（先见响应）——轻量条目
+                    long rid = LogStore.get().nextSeq();
+                    line = "[REQ#" + rid + "] <<< " + statusCode + " " + path;
+                    if (respHdr != null && !respHdr.isEmpty()) {
+                        line += "\n    " + respHdr.replace("\n", "\n    ");
+                    }
+                    LogStore.get().log(TAG, line);
+                    HttpEntry he2 = new HttpEntry("H2", rid, System.currentTimeMillis(),
+                            Thread.currentThread().getName(), "", path,
+                            new java.util.TreeMap<>(), "none", "", 0,
+                            StackUtil.getCompact(6), line);
+                    he2.complete(statusCode, "", parseH2Headers(respHdr), "text", "", 0, 0);
+                    HttpStore.get().add(he2);
                 }
             }
         } catch (Throwable ignored) {
         }
         return false; // 探测模式：不拦截
     }
+
+    /** v1.58: H2 流 key（connId 高位移开 + streamId 低 20 位） */
+    private static long h2Key(long connId, int streamId) {
+        return (connId << 20) ^ (streamId & 0xFFFFF);
+    }
+
+    /** v1.58: H2 头块 "Key: value\n..." → TreeMap */
+    private static java.util.Map<String, String> parseH2Headers(String hdr) {
+        java.util.Map<String, String> out = new java.util.TreeMap<>();
+        if (hdr == null) return out;
+        try {
+            for (String l : hdr.split("\n")) {
+                int c = l.indexOf(':');
+                if (c > 0) out.put(l.substring(0, c).trim(), l.substring(c + 1).trim());
+            }
+        } catch (Throwable t) { }
+        return out;
+    }
+
+    /** H2 流状态（未完成请求 → HttpEntry），onH2Request/onH2DataChunk 共用 */
+    private static final java.util.concurrent.ConcurrentHashMap<Long, HttpEntry> H2_ENTRIES =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     /** HTTP/2 body 数据块（isRequest=true 上行 body） */
     @SuppressWarnings("unused")

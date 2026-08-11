@@ -69,6 +69,25 @@ public class LogCatProbe {
         return false;
     }
 
+    /** v1.58: 目标 App 自己的 Log → 结构化 LOG 事件（卡片 + 详情页）。
+     *  日志行嵌入 [EVT#N]，UI 自动渲染 LOG 卡片（level/tag/msg），点开有详情。
+     *  反编译价值：app 没删的 Log 直接泄露 URL/状态/错误/逻辑走向。 */
+    private static void logLogEvent(String level, String tag, String msg) {
+        try {
+            long eid = EventStore.get().nextId();
+            String full = "[EVT#" + eid + "][Log." + level + "] " + tag + ": " + msg;
+            LogStore.get().log(TAG, full);
+            org.json.JSONObject payload = new org.json.JSONObject();
+            payload.put("level", level == null ? "" : level);
+            payload.put("tag", tag == null ? "" : tag);
+            payload.put("msg", msg == null ? "" : msg);
+            String title = (tag == null ? "" : tag) + ": " + (msg == null ? "" : msg);
+            if (title.length() > 90) title = title.substring(0, 90) + "…";
+            EventStore.get().add(new SpyEvent("LOG", eid, System.currentTimeMillis(),
+                    title, payload, full, ""));
+        } catch (Throwable t) { /* 结构化失败不影响文本日志 */ }
+    }
+
     public void install(String phase) {
         // v1.37 P0-1: 惰性安装——开关关闭时完全不装 hook（借鉴 Guise activeHookFeatures，
         //   用户关闭的探测项在目标进程零 hook 存在，减少崩溃面 + 更隐蔽 + 启动更快）
@@ -101,7 +120,7 @@ public class LogCatProbe {
                                 Object msg = chain.getArg(1);
                                 String m1 = msg == null ? "null" : String.valueOf(msg);
                                 if (m1.length() > 500) m1 = m1.substring(0, 500) + "...(" + m1.length() + ")";
-                                LogStore.get().log(TAG, "[Log." + fLv + "] " + tag + ": " + m1);
+                                logLogEvent(fLv, String.valueOf(tag), m1);
                             } catch (Throwable t) { }
                         }
                         return r;

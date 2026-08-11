@@ -41,7 +41,7 @@ public class ActivityProbe {
                 if (Config.get().activityCapture) {
                     try {
                         Object thiz = chain.getThisObject();
-                        LogStore.get().log(TAG, "[onCreate] " + (thiz == null ? "?" : thiz.getClass().getName()));
+                        logActivityEvent("onCreate", thiz == null ? "?" : thiz.getClass().getName(), null, null, null, null);
                     } catch (Throwable t) { }
                 }
                 return r;
@@ -56,7 +56,7 @@ public class ActivityProbe {
                 if (Config.get().activityCapture) {
                     try {
                         Object thiz = chain.getThisObject();
-                        LogStore.get().log(TAG, "[onResume] " + (thiz == null ? "?" : thiz.getClass().getName()));
+                        logActivityEvent("onResume", thiz == null ? "?" : thiz.getClass().getName(), null, null, null, null);
                     } catch (Throwable t) { }
                 }
                 return r;
@@ -76,13 +76,9 @@ public class ActivityProbe {
                             String action = i.getAction();
                             String pkg = i.getPackage();
                             String data = i.getDataString();
-                            StringBuilder sb = new StringBuilder("[startActivity]");
-                            if (action != null) sb.append(" action=").append(action);
-                            if (pkg != null) sb.append(" pkg=").append(pkg);
-                            if (data != null) sb.append(" data=").append(data);
                             Object thiz = chain.getThisObject();
-                            sb.append(" from=").append(thiz == null ? "?" : thiz.getClass().getSimpleName());
-                            LogStore.get().log(TAG, sb.toString());
+                            logActivityEvent("startActivity", thiz == null ? "?" : thiz.getClass().getSimpleName(),
+                                    action, pkg, data, null);
                         }
                     } catch (Throwable t) { }
                 }
@@ -91,5 +87,33 @@ public class ActivityProbe {
             hooked++;
         } catch (Throwable t) { }
         LogStore.get().log(TAG, "[" + phase + "] hooked Activity/Intent x" + hooked);
+    }
+
+    /** v1.58: Activity 生命周期 / Intent 跳转 → 结构化 ACT 事件（页面流卡片 + 详情页）。
+     *  payload: event/class/action/pkg/data/from —— 页面流对逆向帮助大（付费弹窗从哪来、跳转目标）。 */
+    private static void logActivityEvent(String event, String cls, String action, String pkg, String data, String from) {
+        try {
+            long eid = EventStore.get().nextId();
+            StringBuilder sb = new StringBuilder("[EVT#" + eid + "]");
+            sb.append("[").append(event).append("] ");
+            if (cls != null && !cls.isEmpty()) sb.append(cls);
+            if (action != null) sb.append(" action=").append(action);
+            if (pkg != null) sb.append(" pkg=").append(pkg);
+            if (data != null) sb.append(" data=").append(data);
+            if (from != null) sb.append(" from=").append(from);
+            String msg = sb.toString();
+            LogStore.get().log(TAG, msg);
+            org.json.JSONObject payload = new org.json.JSONObject();
+            payload.put("event", event == null ? "" : event);
+            payload.put("class", cls == null ? "" : cls);
+            payload.put("action", action == null ? "" : action);
+            payload.put("pkg", pkg == null ? "" : pkg);
+            payload.put("data", data == null ? "" : data);
+            payload.put("from", from == null ? "" : from);
+            String title = event + " " + (cls == null ? "" : cls);
+            if (title.length() > 90) title = title.substring(0, 90) + "…";
+            EventStore.get().add(new SpyEvent("ACT", eid, System.currentTimeMillis(),
+                    title, payload, msg, ""));
+        } catch (Throwable t) { /* 结构化失败不影响文本日志 */ }
     }
 }

@@ -18,7 +18,10 @@ public class UrlProbe {
     private static final long URL_DEDUP_MS = 3000;
     private static final java.util.Map<String, Long> sUrlSeen = new java.util.concurrent.ConcurrentHashMap<>();
 
-    private static void logUrlOnce(String url) {
+    /** v1.58: URL 构造点 → 结构化事件（URL 卡片 + 详情页）。
+     *  用户诉求：目标 App 数据 + 对逆向有帮助 → 必须结构化显现，不能只留纯文本。
+     *  日志行嵌入 [EVT#N]，UI 自动渲染 URL 卡片（绿色），点开详情页有 url/source/调用栈。 */
+    private static void logUrlEvent(String url, String source) {
         if (!Config.get().urlBuildCapture || url == null) return;
         // v1.54 P1: 系统级 content:// URI（媒体库/GMS/厂商 provider）对逆向零价值 → 直接过滤
         String lower = url.toLowerCase(java.util.Locale.US);
@@ -48,7 +51,19 @@ public class UrlProbe {
                 sUrlSeen.clear();
             }
         }
-        LogStore.get().log(TAG, "[URL] " + url);
+        try {
+            long eid = EventStore.get().nextId();
+            String msg = "[EVT#" + eid + "][URL] " + source + " " + url;
+            LogStore.get().log(TAG, msg);
+            org.json.JSONObject payload = new org.json.JSONObject();
+            payload.put("url", url == null ? "" : url);
+            payload.put("source", source == null ? "" : source);
+            String stack = StackUtil.getCompact(12);
+            String title = url;
+            if (title.length() > 90) title = title.substring(0, 90) + "…";
+            EventStore.get().add(new SpyEvent("URL", eid, now,
+                    title, payload, msg, stack));
+        } catch (Throwable t) { /* 结构化失败不影响文本日志 */ }
     }
 
     private final XposedModule module;
@@ -78,7 +93,7 @@ public class UrlProbe {
                 if (Config.get().urlBuildCapture) {
                     Object s = chain.getArg(0);
                     if (s instanceof String) {
-                        logUrlOnce((String) s);
+                        logUrlEvent((String) s, "java.net.URL");
                     }
                 }
                 return r;
@@ -96,7 +111,7 @@ public class UrlProbe {
                 if (Config.get().urlBuildCapture) {
                     Object s = chain.getArg(0);
                     if (s instanceof String) {
-                        logUrlOnce((String) s);
+                        logUrlEvent((String) s, "Uri.parse");
                     }
                 }
                 return r;
@@ -114,7 +129,7 @@ public class UrlProbe {
                 if (Config.get().urlBuildCapture) {
                     Object s = chain.getArg(0);
                     if (s instanceof String) {
-                        logUrlOnce((String) s);
+                        logUrlEvent((String) s, "URI.create");
                     }
                 }
                 return r;
@@ -132,7 +147,7 @@ public class UrlProbe {
                 if (Config.get().urlBuildCapture) {
                     Object s = chain.getArg(0);
                     if (s instanceof String) {
-                        logUrlOnce((String) s);
+                        logUrlEvent((String) s, "HttpUrl.parse");
                     }
                 }
                 return r;

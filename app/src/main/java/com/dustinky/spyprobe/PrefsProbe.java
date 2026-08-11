@@ -43,7 +43,7 @@ public class PrefsProbe {
                         if (Config.get().prefsCapture) {
                             try {
                                 Object key = chain.getArg(0);
-                                LogStore.get().log(TAG, "[" + fName + "] " + key + " -> " + MethodProbe.str(r, 120));
+                                logPrefsEvent(fName, String.valueOf(key), MethodProbe.str(r, 120));
                             } catch (Throwable t) { }
                         }
                         return r;
@@ -55,6 +55,24 @@ public class PrefsProbe {
         } catch (Throwable t) {
             LogStore.get().log(TAG, "[" + phase + "] SharedPreferencesImpl hook fail: " + t);
         }
+    }
+
+    /** v1.58: SharedPreferences 读取 → 结构化 PREFS 事件（卡片 + 详情页）。
+     *  反编译价值：知道 app 把什么状态存在本地（登录态/配置项/功能开关）。 */
+    private static void logPrefsEvent(String getter, String key, String value) {
+        try {
+            long eid = EventStore.get().nextId();
+            String msg = "[EVT#" + eid + "][" + getter + "] " + key + " -> " + value;
+            LogStore.get().log(TAG, msg);
+            org.json.JSONObject payload = new org.json.JSONObject();
+            payload.put("getter", getter == null ? "" : getter);
+            payload.put("key", key == null ? "" : key);
+            payload.put("value", value == null ? "" : value);
+            String title = getter + " " + (key == null ? "" : key);
+            if (title.length() > 90) title = title.substring(0, 90) + "…";
+            EventStore.get().add(new SpyEvent("PREFS", eid, System.currentTimeMillis(),
+                    title, payload, msg, ""));
+        } catch (Throwable t) { /* 结构化失败不影响文本日志 */ }
     }
 
     /** 找到 getter：SharedPreferencesImpl.getX(String key, T defValue) */

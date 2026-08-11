@@ -86,7 +86,8 @@ public class CryptoProbe {
                             ctx.algorithm = String.valueOf(chain.getArg(0));
                             // v1.54: 同算法 5s 限频（getInstance 每次 Cipher 构造都打 → 刷屏）
                             if (!cryptoRateLimited("gi:" + ctx.algorithm)) {
-                                LogStore.get().log(TAG, "[getInstance] " + ctx.algorithm);
+                                logCryptoEvent("GETINSTANCE", ctx.algorithm, "", "", "", "",
+                                        "[getInstance] " + ctx.algorithm);
                             }
                         } catch (Throwable t) { }
                     }
@@ -103,7 +104,8 @@ public class CryptoProbe {
                             ctx.algorithm = String.valueOf(chain.getArg(0));
                             // v1.54: 同算法+provider 5s 限频
                             if (!cryptoRateLimited("gi:" + ctx.algorithm + "@" + chain.getArg(1))) {
-                                LogStore.get().log(TAG, "[getInstance] " + ctx.algorithm + " provider=" + chain.getArg(1));
+                                logCryptoEvent("GETINSTANCE", ctx.algorithm, "", "", "", "",
+                                        "[getInstance] " + ctx.algorithm + " provider=" + chain.getArg(1));
                             }
                         } catch (Throwable t) { }
                     }
@@ -359,9 +361,10 @@ public class CryptoProbe {
                             String sig = "sks:" + chain.getArg(1) + ":"
                                     + MethodProbe.hex(kb, Math.min(kb.length, 128));
                             if (!cryptoRateLimited(sig)) {
-                                LogStore.get().log(TAG, "[SecretKeySpec] algo=" + chain.getArg(1)
-                                        + " key=" + MethodProbe.hex(kb, Math.min(kb.length, 128))
-                                        + (kb.length > 128 ? "...(" + kb.length + "B)" : "(" + kb.length + "B)"));
+                                String hexKey = MethodProbe.hex(kb, Math.min(kb.length, 128))
+                                        + (kb.length > 128 ? "...(" + kb.length + "B)" : "(" + kb.length + "B)");
+                                logCryptoEvent("KEYS", String.valueOf(chain.getArg(1)), "", hexKey, "", "",
+                                        "[SecretKeySpec] algo=" + chain.getArg(1) + " key=" + hexKey);
                             }
                         }
                     } catch (Throwable t) { }
@@ -379,9 +382,11 @@ public class CryptoProbe {
                             String sig = "sks:" + chain.getArg(2) + "@" + chain.getArg(1) + ":"
                                     + MethodProbe.hex(kb, Math.min(kb.length, 128));
                             if (!cryptoRateLimited(sig)) {
-                                LogStore.get().log(TAG, "[SecretKeySpec] algo=" + chain.getArg(2) + " off=" + chain.getArg(1)
-                                        + " key=" + MethodProbe.hex(kb, Math.min(kb.length, 128))
-                                        + (kb.length > 128 ? "...(" + kb.length + "B)" : "(" + kb.length + "B)"));
+                                String hexKey = MethodProbe.hex(kb, Math.min(kb.length, 128))
+                                        + (kb.length > 128 ? "...(" + kb.length + "B)" : "(" + kb.length + "B)");
+                                logCryptoEvent("KEYS", String.valueOf(chain.getArg(2)), "", hexKey, "", "",
+                                        "[SecretKeySpec] algo=" + chain.getArg(2) + " off=" + chain.getArg(1)
+                                                + " key=" + hexKey);
                             }
                         }
                     } catch (Throwable t) { }
@@ -401,7 +406,10 @@ public class CryptoProbe {
                         Object k = chain.getArg(0);
                         if (k instanceof byte[]) {
                             byte[] kb = (byte[]) k;
-                            LogStore.get().log(TAG, "[DESKeySpec] key=" + MethodProbe.hex(kb, Math.min(kb.length, 128)));
+                            String hexKey = MethodProbe.hex(kb, Math.min(kb.length, 128))
+                                    + (kb.length > 128 ? "...(" + kb.length + "B)" : "(" + kb.length + "B)");
+                            logCryptoEvent("KEYS", "DES", "", hexKey, "", "",
+                                    "[DESKeySpec] key=" + hexKey);
                         }
                     } catch (Throwable t) { }
                 }
@@ -415,8 +423,10 @@ public class CryptoProbe {
                         Object k = chain.getArg(0);
                         if (k instanceof byte[]) {
                             byte[] kb = (byte[]) k;
-                            LogStore.get().log(TAG, "[DESKeySpec] off=" + chain.getArg(1)
-                                    + " key=" + MethodProbe.hex(kb, Math.min(kb.length, 128)));
+                            String hexKey = MethodProbe.hex(kb, Math.min(kb.length, 128))
+                                    + (kb.length > 128 ? "...(" + kb.length + "B)" : "(" + kb.length + "B)");
+                            logCryptoEvent("KEYS", "DES", "", hexKey, "", "",
+                                    "[DESKeySpec] off=" + chain.getArg(1) + " key=" + hexKey);
                         }
                     } catch (Throwable t) { }
                 }
@@ -432,7 +442,8 @@ public class CryptoProbe {
                 module.hook(gi).intercept(chain -> {
                     Object r = chain.proceed();
                     if (Config.get().cryptoCapture && r != null) {
-                        LogStore.get().log(TAG, "[Mac.getInstance] " + chain.getArg(0));
+                        logCryptoEvent("MAC", String.valueOf(chain.getArg(0)), "", "", "", "",
+                                "[Mac.getInstance] " + chain.getArg(0));
                     }
                     return r;
                 });
@@ -452,7 +463,8 @@ public class CryptoProbe {
                                     if (enc != null) kh = MethodProbe.hex(enc, Math.min(enc.length, 128))
                                             + (enc.length > 128 ? "...(" + enc.length + "B)" : "(" + enc.length + "B)");
                                 } catch (Throwable t2) { }
-                                LogStore.get().log(TAG, "[Mac.init] algo=" + k.getAlgorithm() + " key=" + kh);
+                                logCryptoEvent("MAC", k.getAlgorithm(), "", kh, "", "",
+                                        "[Mac.init] algo=" + k.getAlgorithm() + " key=" + kh);
                             }
                         } catch (Throwable t2) { }
                     }
@@ -468,8 +480,11 @@ public class CryptoProbe {
                             Object in = chain.getArg(0);
                             if (in instanceof byte[]) {
                                 byte[] d = (byte[]) in;
-                                LogStore.get().log(TAG, "[Mac.update] " + MethodProbe.hex(d, Math.min(d.length, 64))
-                                        + (d.length > 64 ? "...(" + d.length + "B)" : "(" + d.length + "B)"));
+                                logCryptoEvent("MAC", "", "", "", "",
+                                        MethodProbe.hex(d, Math.min(d.length, 64))
+                                                + (d.length > 64 ? "...(" + d.length + "B)" : "(" + d.length + "B)"),
+                                        "[Mac.update] " + MethodProbe.hex(d, Math.min(d.length, 64))
+                                                + (d.length > 64 ? "...(" + d.length + "B)" : "(" + d.length + "B)"));
                             }
                         } catch (Throwable t2) { }
                     }
@@ -484,9 +499,11 @@ public class CryptoProbe {
                         try {
                             if (r instanceof byte[]) {
                                 byte[] d = (byte[]) r;
-                                LogStore.get().log(TAG, "[Mac.doFinal] mac=" + MethodProbe.hex(d, Math.min(d.length, 64))
-                                        + (d.length > 64 ? "...(" + d.length + "B)" : "(" + d.length + "B)"));
-                                LogStore.get().log(TAG, "[stack]\n" + MethodProbe.stack(8));
+                                logCryptoEvent("MAC", "", "", "", "",
+                                        MethodProbe.hex(d, Math.min(d.length, 64))
+                                                + (d.length > 64 ? "...(" + d.length + "B)" : "(" + d.length + "B)"),
+                                        "[Mac.doFinal] mac=" + MethodProbe.hex(d, Math.min(d.length, 64))
+                                                + (d.length > 64 ? "...(" + d.length + "B)" : "(" + d.length + "B)"));
                             }
                         } catch (Throwable t2) { }
                     }
@@ -508,8 +525,11 @@ public class CryptoProbe {
                             Object s = chain.getArg(0);
                             if (s instanceof byte[]) {
                                 byte[] d = (byte[]) s;
-                                LogStore.get().log(TAG, "[SecureRandom.setSeed] " + MethodProbe.hex(d, Math.min(d.length, 64))
-                                        + (d.length > 64 ? "...(" + d.length + "B)" : "(" + d.length + "B)"));
+                                logCryptoEvent("SEED", "", "", "", "",
+                                        MethodProbe.hex(d, Math.min(d.length, 64))
+                                                + (d.length > 64 ? "...(" + d.length + "B)" : "(" + d.length + "B)"),
+                                        "[SecureRandom.setSeed] " + MethodProbe.hex(d, Math.min(d.length, 64))
+                                                + (d.length > 64 ? "...(" + d.length + "B)" : "(" + d.length + "B)"));
                             }
                         } catch (Throwable t2) { }
                     }
@@ -522,7 +542,8 @@ public class CryptoProbe {
                     Object r = chain.proceed();
                     if (Config.get().cryptoCapture) {
                         try {
-                            LogStore.get().log(TAG, "[SecureRandom.setSeed] " + chain.getArg(0));
+                            logCryptoEvent("SEED", "", "", "", "", String.valueOf(chain.getArg(0)),
+                                    "[SecureRandom.setSeed] " + chain.getArg(0));
                         } catch (Throwable t2) { }
                     }
                     return r;

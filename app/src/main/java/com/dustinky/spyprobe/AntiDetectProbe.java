@@ -91,6 +91,23 @@ public class AntiDetectProbe {
             "me.weishu.kernelsu",                           // KernelSU
             "com.android.vending"));                        // Google Play（部分检测看商店数量）
 
+    /** v1.58: 反检测拦截命中 → 结构化 DETECT 事件（卡片 + 详情页）。
+     *  反编译价值：拦截记录 = 目标 App 检测行为清单（root/xposed/applist），
+     *  知道 app 检测什么 = 知道要绕过什么。与 EnvProbe 探测端互为镜像。 */
+    private static void logAntiEvent(String kind, String detail) {
+        try {
+            long eid = EventStore.get().nextId();
+            String msg = "[EVT#" + eid + "][" + kind + "] " + detail;
+            LogStore.get().log(TAG, msg);
+            org.json.JSONObject payload = new org.json.JSONObject();
+            payload.put("kind", kind == null ? "" : kind);
+            payload.put("detail", detail == null ? "" : detail);
+            String stack = StackUtil.getCompact(10);
+            EventStore.get().add(new SpyEvent("DETECT", eid, System.currentTimeMillis(),
+                    kind, payload, msg, stack));
+        } catch (Throwable t) { /* 结构化失败不影响文本日志 */ }
+    }
+
     /** v1.44: 判断包名是否应隐藏（系统包永不隐藏） */
     private static boolean isHiddenPkg(String pkg) {
         if (pkg == null) return false;
@@ -104,7 +121,7 @@ public class AntiDetectProbe {
         for (T item : list) {
             String pkg = pkgNameOf(item);
             if (pkg != null && isHiddenPkg(pkg)) {
-                LogStore.get().log(TAG, "[anti-applist] " + logTag + " 过滤 " + pkg);
+                logAntiEvent("anti-applist", logTag + " 过滤 " + pkg);
             } else {
                 kept.add(item);
             }
@@ -156,7 +173,7 @@ public class AntiDetectProbe {
                             if (thiz instanceof java.io.File) {
                                 String path = ((java.io.File) thiz).getPath();
                                 if (isRootFile(path)) {
-                                    LogStore.get().log(TAG, "[anti-root] File.exists(" + path + ") -> false");
+                                    logAntiEvent("anti-root", "File.exists(" + path + ") -> false");
                                     return Boolean.FALSE;
                                 }
                             }
@@ -175,7 +192,6 @@ public class AntiDetectProbe {
                             if (thiz instanceof java.io.File) {
                                 String path = ((java.io.File) thiz).getPath();
                                 if (isRootFile(path)) {
-                                    LogStore.get().log(TAG, "[anti-root] File构造(" + path + ") 已拦截");
                                     // 把路径换成无害路径（防后续 exists 命中）
                                     String fake = "/nonexistent/" + path.hashCode();
                                     try {
@@ -188,6 +204,7 @@ public class AntiDetectProbe {
                                         fb.setAccessible(true);
                                         fb.set(thiz, fake.getBytes(java.nio.charset.StandardCharsets.UTF_8));
                                     } catch (Throwable t2) { }
+                                    logAntiEvent("anti-root", "File构造(" + path + ") 已拦截");
                                 }
                             }
                             return r;
@@ -206,7 +223,7 @@ public class AntiDetectProbe {
                                 java.util.List<java.io.File> kept = new java.util.ArrayList<java.io.File>();
                                 for (java.io.File f : arr) {
                                     if (isRootFile(f.getPath())) {
-                                        LogStore.get().log(TAG, "[anti-root] File.listFiles 过滤 " + f.getPath());
+                                        logAntiEvent("anti-root", "File.listFiles 过滤 " + f.getPath());
                                     } else {
                                         kept.add(f);
                                     }
@@ -227,7 +244,7 @@ public class AntiDetectProbe {
                                 java.util.List<java.io.File> kept = new java.util.ArrayList<java.io.File>();
                                 for (java.io.File f : arr) {
                                     if (isRootFile(f.getPath())) {
-                                        LogStore.get().log(TAG, "[anti-root] File.listFiles(filter) 过滤 " + f.getPath());
+                                        logAntiEvent("anti-root", "File.listFiles(filter) 过滤 " + f.getPath());
                                     } else {
                                         kept.add(f);
                                     }
@@ -297,7 +314,7 @@ public class AntiDetectProbe {
                             // v1.19 P1-1: su 改独立 token 匹配（cmd.contains("su") 会误伤 status/measure/ensure 等）
                             if (isSuCmd(cmd) || cmd.contains("magisk") || cmd.contains("busybox")
                                     || cmd.contains("which root") || cmd.contains("whoami")) {
-                                LogStore.get().log(TAG, "[anti-root] Runtime.exec(" + cmd + ") 已拦截");
+                                logAntiEvent("anti-root", "Runtime.exec(" + cmd + ") 已拦截");
                                 return fakeProcess();
                             }
                             return chain.proceed();
@@ -320,7 +337,7 @@ public class AntiDetectProbe {
                             String key = args.get(0) == null ? "" : args.get(0).toString().toLowerCase();
                             if (key.contains("xposed") || key.contains("magisk") || key.contains("supersu")
                                     || key.contains("frida") || key.contains("substrate")) {
-                                LogStore.get().log(TAG, "[anti] SystemProperties.get(" + key + ") -> \"\"");
+                                logAntiEvent("anti-root", "SystemProperties.get(" + key + ") -> \"\"");
                                 return "";
                             }
                             return chain.proceed();
@@ -332,7 +349,7 @@ public class AntiDetectProbe {
                             String key = args.get(0) == null ? "" : args.get(0).toString().toLowerCase();
                             if (key.contains("xposed") || key.contains("magisk") || key.contains("supersu")
                                     || key.contains("frida") || key.contains("substrate")) {
-                                LogStore.get().log(TAG, "[anti] SystemProperties.get(" + key + ",def) -> \"\"");
+                                logAntiEvent("anti-root", "SystemProperties.get(" + key + ",def) -> \"\"");
                                 return "";
                             }
                             return chain.proceed();
@@ -355,7 +372,7 @@ public class AntiDetectProbe {
                         List<Object> args = chain.getArgs();
                         String name = args.get(0) == null ? "" : args.get(0).toString();
                         if (containsXposed(name)) {
-                            LogStore.get().log(TAG, "[anti-xposed] loadClass(" + name + ") -> null(类不存在)");
+                            logAntiEvent("anti-xposed", "loadClass(" + name + ") -> null(类不存在)");
                             return null;
                         }
                         return chain.proceed();
@@ -399,7 +416,7 @@ public class AntiDetectProbe {
                                 String declaring = m.getDeclaringClass().getName();
                                 if (containsXposed(declaring)) {
                                     int mod = ((Integer) chain.proceed()).intValue();
-                                    LogStore.get().log(TAG, "[anti-xposed] Method.getModifiers(" + declaring
+                                    logAntiEvent("anti-xposed", "Method.getModifiers(" + declaring
                                             + "." + m.getName() + ") 去掉 native 位");
                                     return Integer.valueOf(mod & ~Modifier.NATIVE);
                                 }
@@ -438,7 +455,7 @@ public class AntiDetectProbe {
                             List<Object> args = chain.getArgs();
                             String name = args.get(0) == null ? "" : args.get(0).toString();
                             if (name.equals("disableHooks")) {
-                                LogStore.get().log(TAG, "[anti-xposed] getDeclaredField(disableHooks) -> disableHook");
+                                logAntiEvent("anti-xposed", "getDeclaredField(disableHooks) -> disableHook");
                                 args.set(0, "disableHook");
                             }
                             return chain.proceed();
@@ -503,8 +520,7 @@ public class AntiDetectProbe {
                                 List<Object> args = chain.getArgs();
                                 String pkg = args.get(0) == null ? "" : args.get(0).toString();
                                 if (isHiddenPkg(pkg)) {
-                                    LogStore.get().log(TAG, "[anti-applist] getPackageInfo(" + pkg
-                                            + ") -> NameNotFoundException");
+                                    logAntiEvent("anti-applist", "getPackageInfo(" + pkg + ") -> NameNotFoundException");
                                     throw new android.content.pm.PackageManager.NameNotFoundException(pkg);
                                 }
                                 return chain.proceed();

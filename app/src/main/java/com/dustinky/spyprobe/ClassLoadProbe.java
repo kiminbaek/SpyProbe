@@ -72,6 +72,20 @@ public class ClassLoadProbe {
         }
     }
 
+    /** v1.58: 类加载 → 结构化 CLASS 事件（卡片 + 详情页，仅 classLogAll 开启时）。
+     *  反编译价值：知道 app 加载了哪些类 = 核心逻辑在哪。 */
+    private static void logClassEvent(String name) {
+        try {
+            long eid = EventStore.get().nextId();
+            String msg = "[EVT#" + eid + "][class] " + name;
+            LogStore.get().log(TAG, msg);
+            org.json.JSONObject payload = new org.json.JSONObject();
+            payload.put("name", name == null ? "" : name);
+            EventStore.get().add(new SpyEvent("CLASS", eid, System.currentTimeMillis(),
+                    name, payload, msg, ""));
+        } catch (Throwable t) { /* 结构化失败不影响文本日志 */ }
+    }
+
     /** 记录类名（匹配过滤器才记录；不匹配也做去重统计） */
     public void record(String name) {
         // v1.16 P1-2: 去 synchronized（loadClass 超高频，避免目标 app 启动期类加载全部串行化）；
@@ -89,7 +103,7 @@ public class ClassLoadProbe {
             if (name.contains(filter)) {
                 loaded.add(name);
                 if (Config.get().classLogAll) {
-                    LogStore.get().log(TAG, "[class] " + name);
+                    logClassEvent(name);
                 }
             }
         } else {

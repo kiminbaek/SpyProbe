@@ -10,8 +10,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -40,6 +42,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.dustinky.spyprobe.ui.theme.codeStyle
 import org.json.JSONObject
 
@@ -56,6 +60,13 @@ import org.json.JSONObject
  *   NET     —— 青（TCP/DNS 连接）
  *   URL     —— 绿（URL 构造点）
  *   CLIP    —— 琥珀（剪贴板）
+ *   LOG     —— 灰（App 自己的 Log）
+ *   ACT     —— 橙（页面流/跳转）
+ *   DETECT  —— 深红（环境检测）
+ *   PREFS   —— 靛（SharedPreferences）
+ *   CLASS   —— 蓝紫（类加载）
+ *   METHOD  —— 粉（自定义方法探测）
+ *   CERT    —— 黄绿（mTLS 证书）
  */
 
 /** v1.55: 事件类型颜色 */
@@ -66,6 +77,13 @@ internal fun eventColor(type: String): Color = when (type) {
     "NET" -> Color(0xFF00E5FF)
     "URL" -> Color(0xFF66BB6A)
     "CLIP" -> Color(0xFFFFA726)
+    "LOG" -> Color(0xFF90A4AE)
+    "ACT" -> Color(0xFFFF8A65)
+    "DETECT" -> Color(0xFFD32F2F)
+    "PREFS" -> Color(0xFF5C6BC0)
+    "CLASS" -> Color(0xFF7E57C2)
+    "METHOD" -> Color(0xFFEC407A)
+    "CERT" -> Color(0xFF9CCC65)
     else -> Color(0xFF90A4AE)
 }
 
@@ -77,6 +95,13 @@ internal fun eventTypeLabel(type: String): String = when (type) {
     "NET" -> "网络"
     "URL" -> "URL"
     "CLIP" -> "剪贴板"
+    "LOG" -> "日志"
+    "ACT" -> "页面"
+    "DETECT" -> "检测"
+    "PREFS" -> "偏好"
+    "CLASS" -> "类"
+    "METHOD" -> "方法"
+    "CERT" -> "证书"
     else -> type
 }
 
@@ -161,10 +186,11 @@ internal fun EventCard(entry: com.dustinky.spyprobe.SpyEvent, onClick: () -> Uni
     }
 }
 
-/** v1.55: payload 摘要——取 sql/args/content/host/data 等关键字段（截断 60 字符） */
+/** v1.55: payload 摘要——取 sql/args/content/host/data/url/msg 等关键字段（截断 60 字符） */
 private fun payloadSummary(p: JSONObject): String {
-    if (p == null) return ""
-    val keys = listOf("sql", "args", "content", "host", "data", "key", "err")
+    val keys = listOf("sql", "args", "content", "host", "data", "key", "err",
+        "url", "msg", "tag", "level", "kind", "detail", "name", "getter", "value",
+        "caller", "invoke", "op", "alias", "summary")
     for (k in keys) {
         val v = p.optString(k, "")
         if (v.isNotEmpty() && v != "null") {
@@ -175,8 +201,10 @@ private fun payloadSummary(p: JSONObject): String {
 }
 
 /**
- * v1.57: 通用事件详情页（全屏，小黄鸟式）——顶栏 + 顶部 Tab（总览/原始/调用栈）
- * + 总览 SectionCard 折叠分区 + JSON 高亮 + KeyValueTable。
+ * v1.57.1: 通用事件详情页（全屏 Dialog，小黄鸟式）——v1.57.0 直接嵌在日志页内容区
+ * 导致筛选栏/底栏还在上面（用户截图实锤"不是一个完整页面"）。
+ * 修复 = 与 HttpDetailPage 同构：Dialog(usePlatformDefaultWidth=false) 全屏覆盖
+ * + statusBarsPadding/navigationBarsPadding（Android 15 edge-to-edge）。
  *
  * 布局（对齐 HttpDetailPage 小黄鸟风格）：
  *   ┌─────────────────────────────────────────┐
@@ -202,7 +230,17 @@ internal fun EventDetailScreen(
     var view by remember { mutableStateOf(0) }        // 0=总览 1=原始 2=调用栈
     val col = eventColor(entry.type)
 
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    Dialog(
+        onDismissRequest = onBack,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+                .statusBarsPadding()
+                .navigationBarsPadding()
+        ) {
         // ===== 顶栏 =====
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -291,7 +329,8 @@ internal fun EventDetailScreen(
                 else -> EventStackView(entry)
             }
         }
-    }
+        } // Dialog Column 结束
+    } // Dialog 结束
 }
 
 /** v1.57: 总览 = SectionCard 折叠分区：基本信息 + payload 字段 + JSON 内容 */
@@ -450,6 +489,34 @@ private fun payloadGroups(type: String): List<PayloadGroup> = when (type) {
     )
     "CLIP" -> listOf(
         PayloadGroup("剪贴板内容", listOf("content"))
+    )
+    "LOG" -> listOf(
+        PayloadGroup("日志级别", listOf("level")),
+        PayloadGroup("标签", listOf("tag")),
+        PayloadGroup("内容", listOf("msg"))
+    )
+    "ACT" -> listOf(
+        PayloadGroup("页面事件", listOf("event", "class", "from")),
+        PayloadGroup("跳转", listOf("action", "pkg", "data"))
+    )
+    "DETECT" -> listOf(
+        PayloadGroup("检测类型", listOf("kind")),
+        PayloadGroup("详情", listOf("detail"))
+    )
+    "PREFS" -> listOf(
+        PayloadGroup("读取", listOf("getter", "key", "value"))
+    )
+    "CLASS" -> listOf(
+        PayloadGroup("类", listOf("name"))
+    )
+    "METHOD" -> listOf(
+        PayloadGroup("调用", listOf("caller", "invoke")),
+        PayloadGroup("字段快照", listOf("fields")),
+        PayloadGroup("返回值", listOf("ret"))
+    )
+    "CERT" -> listOf(
+        PayloadGroup("证书", listOf("op", "alias", "summary")),
+        PayloadGroup("详情", listOf("detail"))
     )
     else -> listOf(PayloadGroup("字段", listOf()))
 }

@@ -47,10 +47,9 @@ public class KeystoreProbe {
                     if (Config.get().keystoreCapture && r instanceof Key) {
                         try {
                             Key k = (Key) r;
-                            LogStore.get().log(TAG, "[getPrivateKey] alias=" + chain.getArg(0)
-                                    + " algo=" + k.getAlgorithm()
-                                    + " format=" + k.getFormat());
-                            LogStore.get().log(TAG, "[stack]\n" + MethodProbe.stack(8));
+                            logCertEvent("getPrivateKey", String.valueOf(chain.getArg(0)),
+                                    "algo=" + k.getAlgorithm() + " format=" + k.getFormat(),
+                                    MethodProbe.stack(8));
                         } catch (Throwable t) { }
                     }
                     return r;
@@ -65,8 +64,9 @@ public class KeystoreProbe {
                     Object r = chain.proceed();
                     if (Config.get().keystoreCapture && r instanceof X509Certificate) {
                         try {
-                            LogStore.get().log(TAG, "[getCertificate] alias=" + chain.getArg(0) + "\n"
-                                    + certSummary((X509Certificate) r));
+                            X509Certificate c = (X509Certificate) r;
+                            logCertEvent("getCertificate", String.valueOf(chain.getArg(0)),
+                                    certOneLine(c), certSummary(c));
                         } catch (Throwable t) { }
                     }
                     return r;
@@ -82,14 +82,14 @@ public class KeystoreProbe {
                     if (Config.get().keystoreCapture && r instanceof java.security.cert.Certificate[]) {
                         try {
                             java.security.cert.Certificate[] arr = (java.security.cert.Certificate[]) r;
-                            StringBuilder sb = new StringBuilder("[getCertificateChain] alias=")
-                                    .append(chain.getArg(0)).append(" len=").append(arr.length);
+                            StringBuilder sb = new StringBuilder("len=").append(arr.length);
                             for (int i = 0; i < arr.length && i < 5; i++) {
                                 if (arr[i] instanceof X509Certificate) {
                                     sb.append("\n  #").append(i).append(" ").append(certOneLine((X509Certificate) arr[i]));
                                 }
                             }
-                            LogStore.get().log(TAG, sb.toString());
+                            logCertEvent("getCertificateChain", String.valueOf(chain.getArg(0)),
+                                    "chain len=" + arr.length, sb.toString());
                         } catch (Throwable t) { }
                     }
                     return r;
@@ -101,6 +101,26 @@ public class KeystoreProbe {
         } catch (Throwable t) {
             LogStore.get().log(TAG, "[" + phase + "] KeystoreProbe install fail: " + t);
         }
+    }
+
+    /** v1.58: mTLS 证书访问 → 结构化 CERT 事件（卡片 + 详情页）。
+     *  抓包价值：双向认证需要客户端证书，dump 证书信息供人工分析/比对 adb p12。 */
+    private static void logCertEvent(String op, String alias, String summary, String detail) {
+        try {
+            long eid = EventStore.get().nextId();
+            String msg = "[EVT#" + eid + "][" + op + "] alias=" + alias
+                    + (summary == null || summary.isEmpty() ? "" : " " + summary);
+            LogStore.get().log(TAG, msg);
+            org.json.JSONObject payload = new org.json.JSONObject();
+            payload.put("op", op == null ? "" : op);
+            payload.put("alias", alias == null ? "" : alias);
+            payload.put("summary", summary == null ? "" : summary);
+            payload.put("detail", detail == null ? "" : detail);
+            String title = op + " alias=" + alias;
+            if (title.length() > 90) title = title.substring(0, 90) + "…";
+            EventStore.get().add(new SpyEvent("CERT", eid, System.currentTimeMillis(),
+                    title, payload, msg, ""));
+        } catch (Throwable t) { /* 结构化失败不影响文本日志 */ }
     }
 
     /** 证书完整摘要（主题/签发者/有效期/指纹） */
