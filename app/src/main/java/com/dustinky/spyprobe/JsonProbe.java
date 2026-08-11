@@ -83,9 +83,9 @@ public class JsonProbe {
                 hooked++;
             }
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[" + phase + "] Gson hook fail (app 可能不用 Gson): " + t);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] Gson hook fail (app 可能不用 Gson): " + t);
         }
-        LogStore.get().log(TAG, "[" + phase + "] hooked JSONObject/Gson x" + hooked);
+        DebugLog.get().logNoMirror(TAG, "[" + phase + "] hooked JSONObject/Gson x" + hooked);
     }
 
     /** v1.55: 结构化 JSON 事件——日志行嵌入 [EVT#id]，EventStore 写 SpyEvent（UI 卡片化） */

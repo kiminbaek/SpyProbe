@@ -107,9 +107,9 @@ public class EnvProbe {
                 }
                 return r;
             });
-            LogStore.get().log(TAG, "[" + phase + "] hooked File.exists");
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] hooked File.exists");
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[" + phase + "] File.exists hook fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] File.exists hook fail: " + t);
         }
     }
 
@@ -138,9 +138,9 @@ public class EnvProbe {
                 });
                 hooked++;
             }
-            LogStore.get().log(TAG, "[" + phase + "] hooked Runtime.exec x" + hooked);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] hooked Runtime.exec x" + hooked);
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[" + phase + "] Runtime.exec hook fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] Runtime.exec hook fail: " + t);
         }
     }
 
@@ -174,9 +174,9 @@ public class EnvProbe {
                 }
                 return r;
             });
-            LogStore.get().log(TAG, "[" + phase + "] hooked System.getProperty");
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] hooked System.getProperty");
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[" + phase + "] System.getProperty hook fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] System.getProperty hook fail: " + t);
         }
 
         // android.os.SystemProperties 是 @hide，反射加载
@@ -201,9 +201,9 @@ public class EnvProbe {
                 });
                 hooked++;
             }
-            LogStore.get().log(TAG, "[" + phase + "] hooked SystemProperties x" + hooked);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] hooked SystemProperties x" + hooked);
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[" + phase + "] SystemProperties hook fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] SystemProperties hook fail: " + t);
         }
     }
 
@@ -242,9 +242,9 @@ public class EnvProbe {
                     });
                 }
             }
-            LogStore.get().log(TAG, "[" + phase + "] hooked NetworkInterface");
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] hooked NetworkInterface");
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[" + phase + "] NetworkInterface hook fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] NetworkInterface hook fail: " + t);
         }
 
         try {
@@ -262,9 +262,9 @@ public class EnvProbe {
                     });
                 }
             }
-            LogStore.get().log(TAG, "[" + phase + "] hooked NetworkInfo.getType");
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] hooked NetworkInfo.getType");
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[" + phase + "] NetworkInfo hook fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] NetworkInfo hook fail: " + t);
         }
 
         try {
@@ -285,9 +285,9 @@ public class EnvProbe {
                     });
                 }
             }
-            LogStore.get().log(TAG, "[" + phase + "] hooked NetworkCapabilities.hasTransport");
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] hooked NetworkCapabilities.hasTransport");
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[" + phase + "] NetworkCapabilities hook fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] NetworkCapabilities hook fail: " + t);
         }
     }
 
@@ -323,9 +323,9 @@ public class EnvProbe {
                 });
                 hooked++;
             }
-            LogStore.get().log(TAG, "[" + phase + "] hooked SensorManager.registerListener x" + hooked);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] hooked SensorManager.registerListener x" + hooked);
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[" + phase + "] SensorManager hook fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] SensorManager hook fail: " + t);
         }
     }
 
@@ -361,9 +361,9 @@ public class EnvProbe {
                     });
                 }
             }
-            LogStore.get().log(TAG, "[" + phase + "] hooked Window/Dialog flags");
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] hooked Window/Dialog flags");
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[" + phase + "] Window flags hook fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] Window flags hook fail: " + t);
         }
     }
 
@@ -396,9 +396,9 @@ public class EnvProbe {
                 }
                 return r;
             });
-            LogStore.get().log(TAG, "[" + phase + "] hooked ClipboardManager.getPrimaryClip");
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] hooked ClipboardManager.getPrimaryClip");
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[" + phase + "] Clipboard hook fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] Clipboard hook fail: " + t);
         }
     }
 
@@ -424,9 +424,9 @@ public class EnvProbe {
                 });
                 hooked++;
             }
-            LogStore.get().log(TAG, "[" + phase + "] hooked TelephonyManager x" + hooked);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] hooked TelephonyManager x" + hooked);
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[" + phase + "] TelephonyManager hook fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] TelephonyManager hook fail: " + t);
         }
     }
 

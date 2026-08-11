@@ -334,9 +334,9 @@ public class CryptoProbe {
             // v1.38 P1-5: hooker cipher.js/hook_encryption_algo.js 借鉴——补 SecretKeySpec/DESKeySpec/Mac/SecureRandom
             installExt(phase);
 
-            LogStore.get().log(TAG, "[" + phase + "] hooked Cipher (getInstance/init/update/doFinal, v1.14 实例跟踪 + v1.15 补2重载 + v1.38 扩展)");
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] hooked Cipher (getInstance/init/update/doFinal, v1.14 实例跟踪 + v1.15 补2重载 + v1.38 扩展)");
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[" + phase + "] Cipher hook fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] Cipher hook fail: " + t);
         }
     }
 
@@ -510,7 +510,7 @@ public class CryptoProbe {
                     return r;
                 });
             } catch (Throwable t) { }
-            LogStore.get().log(TAG, "[" + phase + "] hooked Mac (getInstance/init/update/doFinal)");
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] hooked Mac (getInstance/init/update/doFinal)");
         } catch (Throwable t) { }
 
         // SecureRandom.setSeed —— 自定义种子（可预测 RNG 线索）
@@ -549,7 +549,7 @@ public class CryptoProbe {
                     return r;
                 });
             } catch (Throwable t) { }
-            LogStore.get().log(TAG, "[" + phase + "] hooked SecureRandom.setSeed");
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] hooked SecureRandom.setSeed");
         } catch (Throwable t) { }
     }
 
@@ -594,7 +594,7 @@ public class CryptoProbe {
             logCryptoEvent("INIT", ctx.algorithm, ctx.cryptMode,
                     (ctx.keyAlgo != null ? ctx.keyAlgo + ":" : "") + ctx.keyHex, ctx.ivHex, "", initMsg);
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[init] parse fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "[init] parse fail: " + t);
         }
     }
 

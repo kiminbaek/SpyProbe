@@ -54,7 +54,7 @@ public class KeystoreProbe {
                     }
                     return r;
                 });
-                LogStore.get().log(TAG, "[" + phase + "] hooked KeyStore.getPrivateKey");
+                DebugLog.get().logNoMirror(TAG, "[" + phase + "] hooked KeyStore.getPrivateKey");
             } catch (Throwable t) { }
 
             // getCertificate(String alias) —— 单证书
@@ -71,7 +71,7 @@ public class KeystoreProbe {
                     }
                     return r;
                 });
-                LogStore.get().log(TAG, "[" + phase + "] hooked KeyStore.getCertificate");
+                DebugLog.get().logNoMirror(TAG, "[" + phase + "] hooked KeyStore.getCertificate");
             } catch (Throwable t) { }
 
             // getCertificateChain(String alias) —— 证书链
@@ -94,12 +94,12 @@ public class KeystoreProbe {
                     }
                     return r;
                 });
-                LogStore.get().log(TAG, "[" + phase + "] hooked KeyStore.getCertificateChain");
+                DebugLog.get().logNoMirror(TAG, "[" + phase + "] hooked KeyStore.getCertificateChain");
             } catch (Throwable t) { }
 
-            LogStore.get().log(TAG, "[" + phase + "] KeystoreProbe installed (mTLS 证书 dump)");
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] KeystoreProbe installed (mTLS 证书 dump)");
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[" + phase + "] KeystoreProbe install fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] KeystoreProbe install fail: " + t);
         }
     }
 

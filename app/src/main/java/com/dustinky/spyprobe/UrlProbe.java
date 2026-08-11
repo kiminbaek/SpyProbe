@@ -100,7 +100,7 @@ public class UrlProbe {
             });
             hooked++;
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[" + phase + "] URL ctor hook fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] URL ctor hook fail: " + t);
         }
         // 2. android.net.Uri.parse(String) —— Android 常用
         try {
@@ -118,7 +118,7 @@ public class UrlProbe {
             });
             hooked++;
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[" + phase + "] Uri.parse hook fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] Uri.parse hook fail: " + t);
         }
         // 3. java.net.URI.create(String)
         try {
@@ -136,7 +136,7 @@ public class UrlProbe {
             });
             hooked++;
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[" + phase + "] URI.create hook fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] URI.create hook fail: " + t);
         }
         // 4. okhttp3.HttpUrl.parse(String) —— OkHttp 应用构造 URL 常用
         try {
@@ -154,8 +154,8 @@ public class UrlProbe {
             });
             hooked++;
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[" + phase + "] HttpUrl.parse hook fail (app 可能不用 OkHttp): " + t);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] HttpUrl.parse hook fail (app 可能不用 OkHttp): " + t);
         }
-        LogStore.get().log(TAG, "[" + phase + "] hooked URL/Uri/URI/HttpUrl x" + hooked);
+        DebugLog.get().logNoMirror(TAG, "[" + phase + "] hooked URL/Uri/URI/HttpUrl x" + hooked);
     }
 }

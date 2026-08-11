@@ -71,6 +71,42 @@ public class HttpEntry {
     /** 文本日志行（保留原始行，方便回看/导出） */
     public final String logLine;
 
+    // ===== v1.59: 总览页对齐小黄鸟——元数据扩展（协议/时间点/流ID/连接四元组/TLS/证书）=====
+
+    /** 协议：TLS 解析器从请求行拿真实值（HTTP/1.1 / HTTP/2）；OKHTTP 默认 HTTP/1.1 */
+    public volatile String protocol = "HTTP/1.1";
+
+    /** 请求头发送完成时刻（毫秒）；0=未知 */
+    public volatile long reqEndMs = 0;
+    /** 响应头开始到达时刻（毫秒）；0=未知 */
+    public volatile long respStartMs = 0;
+
+    /** 连接 id（native ssl 指针 / H2 connId），流 #N 展示用；0=未知 */
+    public volatile long connId = 0;
+    /** HTTP/2 stream id；0=未知 */
+    public volatile int streamId = 0;
+
+    /** 连接四元组（native socketInfo 格式 srcIP:srcPort->dstIP:dstPort 拆分） */
+    public volatile String srcAddr = "";
+    public volatile int srcPort = 0;
+    public volatile String dstAddr = "";
+    public volatile int dstPort = 0;
+
+    /** TLS 元数据（C 级 native 回调） */
+    public volatile String tlsVersion = "";
+    public volatile String sni = "";
+    public volatile String alpn = "";
+    public volatile String cipherSelected = "";
+    public volatile String cipherList = "";
+
+    /** 服务端证书（D 级 native 回调） */
+    public volatile String certSubject = "";
+    public volatile String certIssuer = "";
+    public volatile String certSerial = "";
+    public volatile String certSha256 = "";
+    public volatile String certNotBefore = "";
+    public volatile String certNotAfter = "";
+
     public HttpEntry(String source, long id, long time, String thread,
                      String method, String url,
                      Map<String, String> reqHeaders, String reqBodyType, String reqBody, int reqBodyBytes,
@@ -109,6 +145,42 @@ public class HttpEntry {
         this.respBodyBytes = respBodyBytes;
         this.durationMs = durationMs;
         this.done = true;
+    }
+
+    /** v1.59: 补充连接元数据（协议/时间点/流ID/四元组）——构建后由各数据源调用 */
+    public void setConnMeta(String protocol, long reqEndMs, long respStartMs,
+                            long connId, int streamId,
+                            String srcAddr, int srcPort, String dstAddr, int dstPort) {
+        if (protocol != null && !protocol.isEmpty()) this.protocol = protocol;
+        if (reqEndMs > 0) this.reqEndMs = reqEndMs;
+        if (respStartMs > 0) this.respStartMs = respStartMs;
+        if (connId != 0) this.connId = connId;
+        this.streamId = streamId;
+        if (srcAddr != null) this.srcAddr = srcAddr;
+        this.srcPort = srcPort;
+        if (dstAddr != null) this.dstAddr = dstAddr;
+        this.dstPort = dstPort;
+    }
+
+    /** v1.59: 补充 TLS 元数据（C 级 native） */
+    public void setTlsMeta(String tlsVersion, String sni, String alpn,
+                           String cipherSelected, String cipherList) {
+        if (tlsVersion != null) this.tlsVersion = tlsVersion;
+        if (sni != null) this.sni = sni;
+        if (alpn != null) this.alpn = alpn;
+        if (cipherSelected != null) this.cipherSelected = cipherSelected;
+        if (cipherList != null) this.cipherList = cipherList;
+    }
+
+    /** v1.59: 补充服务端证书（D 级 native） */
+    public void setCertMeta(String subject, String issuer, String serial,
+                            String sha256, String notBefore, String notAfter) {
+        if (subject != null) this.certSubject = subject;
+        if (issuer != null) this.certIssuer = issuer;
+        if (serial != null) this.certSerial = serial;
+        if (sha256 != null) this.certSha256 = sha256;
+        if (notBefore != null) this.certNotBefore = notBefore;
+        if (notAfter != null) this.certNotAfter = notAfter;
     }
 
     /** 从 url 的 ? 部分解析 query 参数（保留原始顺序，重复 key 后者覆盖） */
@@ -154,6 +226,27 @@ public class HttpEntry {
             o.put("stack", stack);
             o.put("done", done);
             o.put("logLine", logLine);
+            // v1.59: 元数据扩展
+            o.put("protocol", protocol);
+            o.put("reqEndMs", reqEndMs);
+            o.put("respStartMs", respStartMs);
+            o.put("connId", connId);
+            o.put("streamId", streamId);
+            o.put("srcAddr", srcAddr);
+            o.put("srcPort", srcPort);
+            o.put("dstAddr", dstAddr);
+            o.put("dstPort", dstPort);
+            o.put("tlsVersion", tlsVersion);
+            o.put("sni", sni);
+            o.put("alpn", alpn);
+            o.put("cipherSelected", cipherSelected);
+            o.put("cipherList", cipherList);
+            o.put("certSubject", certSubject);
+            o.put("certIssuer", certIssuer);
+            o.put("certSerial", certSerial);
+            o.put("certSha256", certSha256);
+            o.put("certNotBefore", certNotBefore);
+            o.put("certNotAfter", certNotAfter);
         } catch (Throwable t) {
             // 序列化失败不应影响主流程
         }
@@ -196,6 +289,27 @@ public class HttpEntry {
             e.respBodyBytes = o.optInt("respBodyBytes", 0);
             e.durationMs = o.optLong("durationMs", 0);
             e.done = o.optBoolean("done", false);
+            // v1.59: 元数据扩展（旧历史无字段 → optX 默认值兼容）
+            e.protocol = o.optString("protocol", "HTTP/1.1");
+            e.reqEndMs = o.optLong("reqEndMs", 0);
+            e.respStartMs = o.optLong("respStartMs", 0);
+            e.connId = o.optLong("connId", 0);
+            e.streamId = o.optInt("streamId", 0);
+            e.srcAddr = o.optString("srcAddr", "");
+            e.srcPort = o.optInt("srcPort", 0);
+            e.dstAddr = o.optString("dstAddr", "");
+            e.dstPort = o.optInt("dstPort", 0);
+            e.tlsVersion = o.optString("tlsVersion", "");
+            e.sni = o.optString("sni", "");
+            e.alpn = o.optString("alpn", "");
+            e.cipherSelected = o.optString("cipherSelected", "");
+            e.cipherList = o.optString("cipherList", "");
+            e.certSubject = o.optString("certSubject", "");
+            e.certIssuer = o.optString("certIssuer", "");
+            e.certSerial = o.optString("certSerial", "");
+            e.certSha256 = o.optString("certSha256", "");
+            e.certNotBefore = o.optString("certNotBefore", "");
+            e.certNotAfter = o.optString("certNotAfter", "");
             return e;
         } catch (Throwable t) {
             return null;

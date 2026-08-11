@@ -154,7 +154,7 @@ public class NetProbe {
                 // 显式传新参数数组，确保 libxposed 使用修改后的 TrustManager（P0 修复）
                 args.set(1, new TrustManager[]{new TrustAllX509(origX509)});
                 Object r = chain.proceed(args.toArray());
-                LogStore.get().log(TAG, "[SSL] SSLContext.init bypassed");
+                DebugLog.get().logNoMirror(TAG, "[SSL] SSLContext.init bypassed");
                 // v1.39 P2: 标准 TLS 握手入口（每次 TLS 连接都会命中）
                 pinningHit(1, "SSLContext.init (标准 TLS 握手入口)");
                 return r;
@@ -514,7 +514,7 @@ public class NetProbe {
                                     // 只在首次记录（WebView 常被大量构造）
                                     if (!webViewDebugLogged) {
                                         webViewDebugLogged = true;
-                                        LogStore.get().log(TAG, "[WebView] setWebContentsDebuggingEnabled(true) 已开启");
+                                        DebugLog.get().logNoMirror(TAG, "[WebView] setWebContentsDebuggingEnabled(true) 已开启");
                                     }
                                 } catch (Throwable t) { }
                             }
@@ -793,6 +793,8 @@ public class NetProbe {
                         LogStore.get().log(TAG, "[OkHttp] req parse fail: " + t);
                     }
                     final HttpEntry fHe = he;
+                    // v1.59: 请求头发送完成时刻（proceed 前）
+                    if (fHe != null) { fHe.reqEndMs = System.currentTimeMillis(); }
                     Object resp;
                     try {
                         resp = chainParam.proceed();
@@ -804,6 +806,8 @@ public class NetProbe {
                         if (fHe != null) { fHe.done = true; fHe.durationMs = System.currentTimeMillis() - fHe.time; }
                         throw t;
                     }
+                    // v1.59: 响应头开始到达时刻（proceed 返回，近似）
+                    if (fHe != null && fHe.respStartMs == 0) { fHe.respStartMs = System.currentTimeMillis(); }
                     try {
                         int limit = Math.max(256, Config.get().bodyLimit * 1024); // v1.25 P1-2: bodyLimit 单位 KB
                         ensureRespMethods(resp);
@@ -878,6 +882,9 @@ public class NetProbe {
                                     String.valueOf(method), String.valueOf(url),
                                     new java.util.TreeMap<>(), "none", "", 0,
                                     StackUtil.getCompact(), line);
+                            // v1.59: REALCALL 时间点（近似：响应已到，reqEnd≈respStart≈now）
+                            long nowMs = System.currentTimeMillis();
+                            he.setConnMeta("HTTP/1.1", nowMs, nowMs, 0, 0, "", 0, "", 0);
                             int status = 0;
                             try { status = ((Number) code).intValue(); } catch (Throwable ignored) { }
                             he.complete(status, "", new java.util.TreeMap<>(), "text", "", 0, 0);
@@ -1109,6 +1116,9 @@ public class NetProbe {
                                 m, u == null ? "" : u.toString(),
                                 new java.util.TreeMap<>(), "none", "", 0,
                                 StackUtil.getCompact(), line);
+                        // v1.59: URL_CONN 时间点（近似：响应已到，reqEnd≈respStart≈now）
+                        long hucNow = System.currentTimeMillis();
+                        he.setConnMeta("HTTP/1.1", hucNow, hucNow, 0, 0, "", 0, "", 0);
                         int status = 0;
                         try { status = ((Number) r).intValue(); } catch (Throwable ignored) { }
                         String msg = "";
@@ -1278,6 +1288,9 @@ public class NetProbe {
                                 c.getRequestMethod(), url,
                                 new java.util.TreeMap<>(), "none", "", 0,
                                 StackUtil.getCompact(), line);
+                        // v1.59: CRONET 时间点（近似：响应已到，reqEnd≈respStart≈now）
+                        long cronetNow = System.currentTimeMillis();
+                        he.setConnMeta("HTTP/1.1", cronetNow, cronetNow, 0, 0, "", 0, "", 0);
                         he.complete(code, "", new java.util.TreeMap<>(), "text", "", 0, 0);
                         HttpStore.get().add(he);
                     }

@@ -41,6 +41,11 @@ public class TlsHttpParser {
     private enum State { WAIT_REQ_LINE, WAIT_RESP_LINE }
 
     private final long connId; // ssl 指针（NativeProbe 回调的 id）
+    // v1.59: 连接四元组（native socketInfo "srcIP:srcPort->dstIP:dstPort" 拆分，可能为空）
+    private final String srcAddr;
+    private final int srcPort;
+    private final String dstAddr;
+    private final int dstPort;
     private final ByteArrayOutputStream reqBuf = new ByteArrayOutputStream(1024);
     private final ByteArrayOutputStream respBuf = new ByteArrayOutputStream(1024);
     private State state = State.WAIT_REQ_LINE;
@@ -53,7 +58,58 @@ public class TlsHttpParser {
     private boolean everParsed = false;
 
     public TlsHttpParser(long connId) {
+        this(connId, null);
+    }
+
+    /** v1.59: 支持携带 socketInfo（连接四元组） */
+    public TlsHttpParser(long connId, String socketInfo) {
         this.connId = connId;
+        String src = "", dst = "";
+        if (socketInfo != null) {
+            int arrow = socketInfo.indexOf("->");
+            if (arrow >= 0) { src = socketInfo.substring(0, arrow); dst = socketInfo.substring(arrow + 2); }
+            else src = socketInfo;
+        }
+        this.srcAddr = parseAddr(src);
+        this.srcPort = parsePort(src);
+        this.dstAddr = parseAddr(dst);
+        this.dstPort = parsePort(dst);
+    }
+
+    private static String parseAddr(String ep) {
+        if (ep == null || ep.isEmpty()) return "";
+        int colon = ep.lastIndexOf(':');
+        return colon > 0 ? ep.substring(0, colon) : ep;
+    }
+
+    private static int parsePort(String ep) {
+        if (ep == null || ep.isEmpty()) return 0;
+        int colon = ep.lastIndexOf(':');
+        if (colon < 0 || colon == ep.length() - 1) return 0;
+        try { return Integer.parseInt(ep.substring(colon + 1)); } catch (Throwable t) { return 0; }
+    }
+
+    // v1.59: TLS 元数据 JSON（native 提取：版本/SNI/ALPN/算法/证书）
+    private String tlsMetaJson;
+
+    /** v1.59: native 回调关联 TLS 元数据（建条目时应用） */
+    public void setTlsMeta(String json) {
+        this.tlsMetaJson = json;
+    }
+
+    /** v1.59: 把 TLS 元数据应用到 HttpEntry（TLS 板块 + 证书板块） */
+    private void applyTlsMeta(HttpEntry e) {
+        if (tlsMetaJson == null || tlsMetaJson.isEmpty()) return;
+        try {
+            org.json.JSONObject o = new org.json.JSONObject(tlsMetaJson);
+            e.setTlsMeta(o.optString("v"), o.optString("sni"), o.optString("alpn"),
+                    o.optString("cipher"), o.optString("ciphers"));
+            org.json.JSONObject cert = o.optJSONObject("cert");
+            if (cert != null) {
+                e.setCertMeta(cert.optString("subject"), cert.optString("issuer"), cert.optString("serial"),
+                        cert.optString("sha256"), cert.optString("notBefore"), cert.optString("notAfter"));
+            }
+        } catch (Throwable t) { /* 元数据解析失败不影响主链路 */ }
     }
 
     public boolean everParsed() { return everParsed; }
@@ -100,6 +156,8 @@ public class TlsHttpParser {
         String m = parts[0];
         if (!m.matches("[A-Z]+")) { resetReq(); return; } // 防二进制误判
         String target = parts[1];
+        // v1.59: 请求行第 3 段 = 协议（HTTP/1.1 / HTTP/1.0）
+        String proto = parts.length >= 3 ? parts[2] : "HTTP/1.1";
 
         // 请求头
         Map<String, String> reqHdrs = new TreeMap<>();
@@ -117,12 +175,16 @@ public class TlsHttpParser {
         }
 
         long rid = LogStore.get().nextSeq();
+        long nowMs = System.currentTimeMillis();
         String logLine = "[REQ#" + rid + "] >>> " + m + " " + fullUrl;
-        HttpEntry e = new HttpEntry("TLS", rid, System.currentTimeMillis(),
+        HttpEntry e = new HttpEntry("TLS", rid, nowMs,
                 Thread.currentThread().getName(),
                 m, fullUrl, reqHdrs,
                 HttpEntry.sniffBodyType(reqHdrs.get("Content-Type"), body), body, bodyLen,
                 "", logLine);
+        // v1.59: 协议 + 请求头发送完成时刻 + 流ID + 连接四元组 + TLS 元数据/证书
+        e.setConnMeta(proto, nowMs, 0, connId, 0, srcAddr, srcPort, dstAddr, dstPort);
+        applyTlsMeta(e);
         current = e;
         everParsed = true;
         HttpStore.get().add(e);
@@ -172,7 +234,15 @@ public class TlsHttpParser {
 
         HttpEntry e = current;
         if (e != null) {
-            long dur = System.currentTimeMillis() - e.time;
+            long nowMs = System.currentTimeMillis();
+            // v1.59: 响应头开始到达时刻（近似=头完整时刻）+ 流ID/四元组补全
+            if (e.respStartMs == 0) e.respStartMs = nowMs;
+            if (e.connId == 0) e.connId = connId;
+            if (e.srcAddr.isEmpty()) e.srcAddr = srcAddr;
+            if (e.srcPort == 0) e.srcPort = srcPort;
+            if (e.dstAddr.isEmpty()) e.dstAddr = dstAddr;
+            if (e.dstPort == 0) e.dstPort = dstPort;
+            long dur = nowMs - e.time;
             e.complete(status, statusMsg, respHdrs,
                     HttpEntry.sniffBodyType(respHdrs.get("Content-Type"), body), body, bodyLen, dur);
             lastRid = e.id;

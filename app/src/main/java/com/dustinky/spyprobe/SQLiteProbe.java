@@ -248,9 +248,9 @@ public class SQLiteProbe {
             // v1.6: queryWithFactory —— 自定义 factory 的 query
             hooked += hookQueryWithFactory(db);
 
-            LogStore.get().log(TAG, "[" + phase + "] hooked SQLiteDatabase x" + hooked);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] hooked SQLiteDatabase x" + hooked);
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[" + phase + "] SQLiteDatabase hook fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] SQLiteDatabase hook fail: " + t);
         }
     }
 
@@ -281,7 +281,7 @@ public class SQLiteProbe {
                 hooked++;
             }
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[SQL] hook " + name + " fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "[SQL] hook " + name + " fail: " + t);
         }
         return hooked;
     }
@@ -338,7 +338,7 @@ public class SQLiteProbe {
                 hooked++;
             }
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[SQL] hook query fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "[SQL] hook query fail: " + t);
         }
         return hooked;
     }
@@ -397,7 +397,7 @@ public class SQLiteProbe {
                 hooked++;
             }
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[SQL] hook queryWithFactory fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "[SQL] hook queryWithFactory fail: " + t);
         }
         return hooked;
     }

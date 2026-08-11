@@ -199,7 +199,7 @@ public class MethodProbe {
             // v1.7: 句柄 key 用具体签名（防重载全部 hook 时只挂第一个）；paramTypes 仅作 UI 过滤
             String sigKey = joinParams(c.getParameterTypes());
             if (Config.get().hasHandle(cls.getName(), "<init>", sigKey)) {
-                LogStore.get().log(TAG, "[hook] skip (already hooked): " + cls.getName() + " <init>(" + sigKey + ")");
+                DebugLog.get().logNoMirror(TAG, "[hook] skip (already hooked): " + cls.getName() + " <init>(" + sigKey + ")");
                 continue;
             }
             XposedInterface.HookHandle h = module.hook(c).intercept(MethodProbe::onInvoke);
@@ -218,10 +218,10 @@ public class MethodProbe {
             }
             if (candidates.size() > 8) note.append(" ... 共 ").append(candidates.size()).append(" 个");
             out.put("note", note.toString());
-            LogStore.get().log(TAG, "[hook] <init> 0 match, candidates: " + candidates.size());
+            DebugLog.get().logNoMirror(TAG, "[hook] <init> 0 match, candidates: " + candidates.size());
         } else {
             out.put("note", cls.getName() + " <init>");
-            LogStore.get().log(TAG, "[hook] <init> x" + hooked + " " + cls.getName());
+            DebugLog.get().logNoMirror(TAG, "[hook] <init> x" + hooked + " " + cls.getName());
         }
         return out.toString();
     }
@@ -244,7 +244,7 @@ public class MethodProbe {
             //   若用它做 key 则 hasHandle 永远查不到已 hook 句柄 → 重复 hook 无限叠加
             String sigKey = joinParams(m.getParameterTypes());
             if (Config.get().hasHandle(cls.getName(), m.getName(), sigKey)) {
-                LogStore.get().log(TAG, "[hook] skip (already hooked): " + cls.getName() + "." + m.getName() + "(" + sigKey + ")");
+                DebugLog.get().logNoMirror(TAG, "[hook] skip (already hooked): " + cls.getName() + "." + m.getName() + "(" + sigKey + ")");
                 continue;
             }
             XposedInterface.HookHandle h = module.hook(m).intercept(MethodProbe::onInvoke);
@@ -263,10 +263,10 @@ public class MethodProbe {
             }
             if (candidates.size() > 8) note.append(" ... 共 ").append(candidates.size()).append(" 个");
             out.put("note", note.toString());
-            LogStore.get().log(TAG, "[hook] " + cls.getName() + "." + methodName + " 0 match, candidates: " + candidates.size());
+            DebugLog.get().logNoMirror(TAG, "[hook] " + cls.getName() + "." + methodName + " 0 match, candidates: " + candidates.size());
         } else {
             out.put("note", cls.getName() + "." + methodName + "(" + (paramTypes == null ? "" : paramTypes) + ")");
-            LogStore.get().log(TAG, "[hook] " + cls.getName() + "." + methodName + " x" + hooked);
+            DebugLog.get().logNoMirror(TAG, "[hook] " + cls.getName() + "." + methodName + " x" + hooked);
         }
         return out.toString();
     }
@@ -324,7 +324,7 @@ public class MethodProbe {
                 }
             }
             if (hooked > 0) {
-                LogStore.get().log(TAG, "[auto] hook " + n + " x" + hooked + " (skip " + skipped + ")");
+                DebugLog.get().logNoMirror(TAG, "[auto] hook " + n + " x" + hooked + " (skip " + skipped + ")");
             }
             JSONObject out = new JSONObject();
             out.put("ok", true);
@@ -336,7 +336,7 @@ public class MethodProbe {
         } catch (ClassNotFoundException e) {
             return null;
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[auto] hook fail " + className + ": " + t);
+            DebugLog.get().logNoMirror(TAG, "[auto] hook fail " + className + ": " + t);
             return null;
         }
     }

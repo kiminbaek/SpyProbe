@@ -55,9 +55,9 @@ public class DexKitProbe {
             // 导致 DexKit 完全不可用。loadLibrary 幂等，重复调用无害。
             System.loadLibrary("dexkit");
             bridge = DexKitBridge.create(appCl, true);
-            LogStore.get().log(TAG, "DexKitBridge created for " + pkg);
+            DebugLog.get().logNoMirror(TAG, "DexKitBridge created for " + pkg);
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "DexKitBridge create fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "DexKitBridge create fail: " + t);
         } finally {
             creating = false;
         }
@@ -110,10 +110,10 @@ public class DexKitProbe {
             o.put("count", arr.length());
             o.put("totalKB", total / 1024);
             o.put("files", arr);
-            LogStore.get().log(TAG, "dex exported: " + dir.getAbsolutePath() + " files=" + arr.length());
+            DebugLog.get().logNoMirror(TAG, "dex exported: " + dir.getAbsolutePath() + " files=" + arr.length());
             return o.toString();
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "dex export fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "dex export fail: " + t);
             return err(t.toString());
         }
     }
@@ -153,10 +153,10 @@ public class DexKitProbe {
             o.put("total", methods.size());
             o.put("shown", shown);
             o.put("methods", arr);
-            LogStore.get().log(TAG, "string-find \"" + str + "\" total=" + methods.size());
+            DebugLog.get().logNoMirror(TAG, "string-find \"" + str + "\" total=" + methods.size());
             return o.toString();
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "string-find fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "string-find fail: " + t);
             return err(t.toString());
         }
     }
@@ -206,10 +206,10 @@ public class DexKitProbe {
             o.put("total", classes.size());
             o.put("shown", shown);
             o.put("classes", arr);
-            LogStore.get().log(TAG, "class-find \"" + pattern + "\" total=" + classes.size());
+            DebugLog.get().logNoMirror(TAG, "class-find \"" + pattern + "\" total=" + classes.size());
             return o.toString();
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "class-find fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "class-find fail: " + t);
             return err(t.toString());
         }
     }
@@ -260,10 +260,10 @@ public class DexKitProbe {
         try {
             if (bridge != null) bridge.close();
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "bridge close fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "bridge close fail: " + t);
         }
         bridge = null;
-        LogStore.get().log(TAG, "DexKitBridge closed");
+        DebugLog.get().logNoMirror(TAG, "DexKitBridge closed");
     }
 
     private static String joinParams(MethodData m) {

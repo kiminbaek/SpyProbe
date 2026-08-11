@@ -92,15 +92,15 @@ public class SpyServer {
                 acceptThread = new Thread(this::acceptLoop, "SpyProbe-Server");
                 acceptThread.setDaemon(true);
                 acceptThread.start();
-                LogStore.get().log(TAG, "server started on 127.0.0.1:" + p + " pkg=" + pkg);
+                DebugLog.get().logNoMirror(TAG, "server started on 127.0.0.1:" + p + " pkg=" + pkg);
                 DebugLog.get().logNoMirror("Srv", "start OK 127.0.0.1:" + p + " pkg=" + pkg);
                 return;
             } catch (Throwable t) {
-                LogStore.get().log(TAG, "port " + p + " busy, try next");
+                DebugLog.get().logNoMirror(TAG, "port " + p + " busy, try next");
                 DebugLog.get().logNoMirror("Srv", "port " + p + " bind fail: " + t);
             }
         }
-        LogStore.get().log(TAG, "server start fail: all ports 9901-9910 busy");
+        DebugLog.get().logNoMirror(TAG, "server start fail: all ports 9901-9910 busy");
         DebugLog.get().logNoMirror("Srv", "start FAIL: all ports 9901-9910 busy");
     }
 
@@ -198,7 +198,7 @@ public class SpyServer {
             out.write(data);
             out.flush();
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "conn err: " + t);
+            DebugLog.get().logNoMirror(TAG, "conn err: " + t);
         }
     }
 
@@ -385,7 +385,7 @@ public class SpyServer {
                         Config cfg = Config.get();
                         if (body != null && !body.isEmpty()) {
                             cfg.applyJson(body);
-                            LogStore.get().log(TAG, "config updated: " + body);
+                            DebugLog.get().logNoMirror(TAG, "config updated: " + body);
                             // v1.22: 开关持久化到目标 App data 目录文件（零 IPC）；v1.21 远程偏好实测失效已弃用
                             cfg.saveConfig(cfgFile);
                         }
@@ -411,7 +411,7 @@ public class SpyServer {
                         Config cfg = Config.get();
                         cfg.classFilter = filter;
                         cfg.classLogAll = logAll;
-                        LogStore.get().log(TAG, "classFilter=" + filter + " logAll=" + logAll);
+                        DebugLog.get().logNoMirror(TAG, "classFilter=" + filter + " logAll=" + logAll);
                     }
                     return clsProbe.list(filter);
                 }
@@ -458,7 +458,7 @@ public class SpyServer {
                     o.put("ok", true);
                     o.put("removedFromConfig", removed);
                     o.put("unhooked", unhooked);
-                    LogStore.get().log(TAG, "[unhook] " + cls + "." + methodName + " cfg=" + removed + " handles=" + unhooked);
+                    DebugLog.get().logNoMirror(TAG, "[unhook] " + cls + "." + methodName + " cfg=" + removed + " handles=" + unhooked);
                     return o.toString();
                 }
                 case "/api/hooks": {
@@ -486,7 +486,7 @@ public class SpyServer {
                     String params = c.optString("params", "");
                     if (c.isNull("value")) {
                         boolean removed = Config.get().removeHijack(cls, methodName, params);
-                        LogStore.get().log(TAG, "[hijack] removed " + cls + "." + methodName + " removed=" + removed);
+                        DebugLog.get().logNoMirror(TAG, "[hijack] removed " + cls + "." + methodName + " removed=" + removed);
                         if (rulesFile != null) Config.get().saveRules(rulesFile); // v1.6
                         JSONObject ro = new JSONObject();
                         ro.put("ok", true);
@@ -500,7 +500,7 @@ public class SpyServer {
                     String fieldType = c.optString("fieldType", "");
                     String fieldValue = c.optString("fieldValue", "");
                     Config.get().addRule(cls, methodName, params, mode, value, paramValue, fieldName, fieldType, fieldValue);
-                    LogStore.get().log(TAG, "[hijack] " + cls + "." + methodName + "(" + params + ") mode=" + mode
+                    DebugLog.get().logNoMirror(TAG, "[hijack] " + cls + "." + methodName + "(" + params + ") mode=" + mode
                             + " value=" + value + " pv=" + paramValue + " f=" + fieldName + ":" + fieldType + "=" + fieldValue);
                     if (rulesFile != null) Config.get().saveRules(rulesFile); // v1.6
                     JSONObject o = new JSONObject();

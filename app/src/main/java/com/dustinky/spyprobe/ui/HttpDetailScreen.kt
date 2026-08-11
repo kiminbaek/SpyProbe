@@ -70,7 +70,7 @@ import com.dustinky.spyprobe.ui.theme.codeStyle
  * 响应侧：总览 / 原始 / 响应头 / 响应体
  */
 @Composable
-fun HttpDetailPage(entry: HttpEntry, onBack: () -> Unit) {
+fun HttpDetailPage(entry: HttpEntry, onBack: () -> Unit, targetPackage: String? = null) {
     val context = LocalContext.current
     var side by remember { mutableStateOf(0) }        // 0=请求 1=响应
     var view by remember { mutableStateOf(0) }        // 0=总览 1=原始 2=参数/头 3=体
@@ -126,16 +126,8 @@ fun HttpDetailPage(entry: HttpEntry, onBack: () -> Unit) {
                     Icon(Icons.Filled.Share, contentDescription = "分享", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                 }
             }
-            // 完整 URL 小字
-            Text(
-                entry.url,
-                style = codeStyle,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 10.sp,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(horizontal = 12.dp)
-            )
+            // v1.59: 完整 URL 彩色高亮（scheme/host/path/query 分色）
+            UrlHighlight(entry.url, maxLines = 2, overflow = TextOverflow.Ellipsis)
 
             // ===== 顶部视图 Tab（浏览器式下划线，随 side 切换）=====
             val tabs = if (side == 0) listOf("总览", "原始", "参数", "请求头", "请求体")
@@ -162,14 +154,14 @@ fun HttpDetailPage(entry: HttpEntry, onBack: () -> Unit) {
             ) {
                 when (side) {
                     0 -> when (view) {
-                        0 -> OverviewView(entry, expandStack) { expandStack = !expandStack }
+                        0 -> OverviewView(entry, targetPackage, expandStack) { expandStack = !expandStack }
                         1 -> RawView(entry.rawRequest())
                         2 -> ParamsView(entry)
                         3 -> HeadersView(entry.reqHeaders)
                         else -> BodyView(entry.reqBodyType, entry.reqBody)
                     }
                     else -> when (view) {
-                        0 -> OverviewView(entry, expandStack) { expandStack = !expandStack }
+                        0 -> OverviewView(entry, targetPackage, expandStack) { expandStack = !expandStack }
                         1 -> RawView(entry.rawResponse())
                         2 -> HeadersView(entry.respHeaders)
                         else -> BodyView(entry.respBodyType, entry.respBody)
@@ -248,9 +240,10 @@ private fun BottomSwitch(label: String, selected: Boolean, onClick: () -> Unit) 
 
 // ================= 总览（折叠分区）=================
 
-/** v1.51: 总览 = SectionCard 折叠分区：状态/详情/调用栈 */
+/** v1.59: 总览 = 小黄鸟式分区：状态/时间/大小/连接/TLS/证书/应用程序/详情/URL/调用栈 */
 @Composable
-private fun OverviewView(entry: HttpEntry, expandStack: Boolean, onToggleStack: () -> Unit) {
+private fun OverviewView(entry: HttpEntry, targetPackage: String?, expandStack: Boolean, onToggleStack: () -> Unit) {
+    val context = LocalContext.current
     Column(
         Modifier
             .fillMaxSize()
@@ -258,24 +251,111 @@ private fun OverviewView(entry: HttpEntry, expandStack: Boolean, onToggleStack: 
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        // ===== 状态（方法/状态/协议/服务器/KeepAlive/流/ContentType）=====
         SectionCard(title = "状态") {
             KvRow("方法", entry.method)
+            KvRow("状态", when {
+                entry.done && entry.status > 0 -> "Completed"
+                entry.done -> "Failed"
+                else -> "进行中…"
+            })
             KvRow("状态码", if (entry.done && entry.status > 0) "${entry.status} ${entry.statusMsg}" else "…")
-            KvRow("耗时", if (entry.done) "${entry.durationMs}ms" else "进行中")
-            KvRow("大小", "${fmtBytes(entry.reqBodyBytes.toLong())} → ${fmtBytes(entry.respBodyBytes.toLong())}")
+            KvRow("协议", entry.protocol.ifBlank { "HTTP/1.1" })
+            KvRow("服务器地址", serverAddrOf(entry))
+            KvRow("Keep Alive", keepAliveOf(entry))
+            KvRow("流", if (entry.streamId > 0) "流 #${entry.streamId}" else "-")
+            KvRow("Content-Type", entry.reqHeaders["Content-Type"] ?: "-")
+            KvRow("代理协议", "-")
         }
+        // ===== 时间（请求开始/结束/耗时、响应开始/结束/耗时、总时长）=====
+        SectionCard(title = "时间") {
+            val t0 = entry.time
+            val t1 = if (entry.reqEndMs > 0) entry.reqEndMs else -1L
+            val t2 = if (entry.respStartMs > 0) entry.respStartMs else -1L
+            val t3 = if (entry.done) t0 + entry.durationMs else -1L
+            if (t1 >= 0) {
+                KvRow("请求开始", fmtTime(t0))
+                KvRow("请求结束", fmtTime(t1))
+                KvRow("请求耗时", "${t1 - t0}ms")
+            }
+            if (t2 >= 0) {
+                KvRow("响应开始", fmtTime(t2))
+                if (t3 >= 0) {
+                    KvRow("响应结束", fmtTime(t3))
+                    KvRow("响应耗时", "${t3 - t2}ms")
+                }
+            } else if (t3 >= 0) {
+                KvRow("响应结束", fmtTime(t3))
+            }
+            KvRow("总时长", if (entry.done) "${entry.durationMs}ms" else "进行中")
+        }
+        // ===== 大小（请求=头+体、响应=头+体、总计）=====
+        SectionCard(title = "大小") {
+            val reqHead = headerSizeBytes(entry.method, entry.url, entry.reqHeaders, isRequest = true)
+            val respHead = headerSizeBytes("", "", entry.respHeaders, isRequest = false)
+            KvRow("请求头", fmtBytes(reqHead))
+            KvRow("请求体", fmtBytes(entry.reqBodyBytes.toLong()))
+            KvRow("响应头", fmtBytes(respHead))
+            KvRow("响应体", fmtBytes(entry.respBodyBytes.toLong()))
+            KvRow("总计", fmtBytes(reqHead + entry.reqBodyBytes + respHead + entry.respBodyBytes))
+        }
+        // ===== 连接（ID/时间/前端/后端）=====
+        SectionCard(title = "连接") {
+            KvRow("连接 ID", if (entry.connId != 0L) "#${entry.connId}" else "-")
+            KvRow("流", if (entry.streamId > 0) "流 #${entry.streamId}" else "-")
+            KvRow("前端", frontendOf(entry))
+            KvRow("后端", backendOf(entry))
+        }
+        // ===== TLS（版本/SNI/ALPN/选择算法/算法列表）=====
+        if (entry.tlsVersion.isNotBlank() || entry.sni.isNotBlank()) {
+            SectionCard(title = "TLS") {
+                KvRow("版本", entry.tlsVersion.ifBlank { "-" })
+                KvRow("SNI", entry.sni.ifBlank { "-" })
+                KvRow("ALPN", entry.alpn.ifBlank { "-" })
+                KvRow("选择算法", entry.cipherSelected.ifBlank { "-" })
+                KvRow("算法列表", entry.cipherList.ifBlank { "-" })
+            }
+        }
+        // ===== 服务端证书（Subject/Issuer/序列号/指纹/有效期）=====
+        if (entry.certSubject.isNotBlank() || entry.certSha256.isNotBlank()) {
+            SectionCard(title = "服务端证书") {
+                KvRow("Subject", entry.certSubject.ifBlank { "-" })
+                KvRow("Issuer", entry.certIssuer.ifBlank { "-" })
+                KvRow("序列号", entry.certSerial.ifBlank { "-" })
+                KvRow("SHA-256", entry.certSha256.ifBlank { "-" })
+                val valid = if (entry.certNotBefore.isNotBlank() || entry.certNotAfter.isNotBlank())
+                    "${entry.certNotBefore} → ${entry.certNotAfter}" else "-"
+                KvRow("有效期", valid)
+            }
+        }
+        // ===== 应用程序（名称/ID）=====
+        SectionCard(title = "应用程序") {
+            KvRow("名称", appLabelOf(context, targetPackage) ?: "-")
+            KvRow("ID", targetPackage ?: "-")
+        }
+        // ===== 请求详情（来源/线程/体类型）=====
         SectionCard(title = "请求详情") {
             KvRow("来源", entry.source)
             KvRow("线程", entry.thread)
             KvRow("请求体类型", entry.reqBodyType)
             KvRow("响应体类型", entry.respBodyType)
-            KvRow("时间", java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.getDefault())
-                .format(java.util.Date(entry.time)))
         }
+        // ===== URL（彩色高亮 + 独立复制）=====
         SectionCard(title = "URL", initiallyExpanded = true) {
-            Text(entry.url, style = codeStyle, fontSize = 11.sp, softWrap = true,
-                color = MaterialTheme.colorScheme.onSurface)
+            UrlHighlight(entry.url)
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "复制 URL",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .clickable { copyText(context, entry.url) }
+                        .padding(vertical = 4.dp, horizontal = 2.dp)
+                )
+            }
         }
+        // ===== 调用栈 =====
         if (entry.stack.isNotBlank()) {
             SectionCard(
                 title = "调用栈",
@@ -287,6 +367,96 @@ private fun OverviewView(entry: HttpEntry, expandStack: Boolean, onToggleStack: 
                     color = MaterialTheme.colorScheme.onSurfaceVariant, softWrap = true)
             }
         }
+    }
+}
+
+/** v1.59: URL 彩色高亮——scheme 荧光绿 / host 青蓝 / 端口青蓝 / path 蓝紫 / query 亮红（小黄鸟式） */
+@Composable
+internal fun UrlHighlight(url: String, maxLines: Int = Int.MAX_VALUE, overflow: TextOverflow = TextOverflow.Ellipsis) {
+    val annotated = buildAnnotatedString {
+        try {
+            val u = java.net.URI(url)
+            val scheme = u.scheme
+            val host = u.host
+            val port = u.port
+            val path = u.path
+            val query = u.query
+            if (scheme != null && host != null) {
+                withStyle(SpanStyle(color = Color(0xFF00E676), fontWeight = FontWeight.Bold)) {
+                    append(scheme)
+                    append("://")
+                }
+                withStyle(SpanStyle(color = Color(0xFF00E5FF))) {
+                    append(host)
+                }
+                if (port > 0) {
+                    withStyle(SpanStyle(color = Color(0xFF00E5FF))) {
+                        append(":")
+                        append(port.toString())
+                    }
+                }
+                if (!path.isNullOrEmpty()) {
+                    withStyle(SpanStyle(color = Color(0xFF7C4DFF))) {
+                        append(path)
+                    }
+                }
+                if (!query.isNullOrEmpty()) {
+                    withStyle(SpanStyle(color = Color(0xFFFF5252))) {
+                        append("?")
+                        append(query)
+                    }
+                }
+                return@buildAnnotatedString
+            }
+            append(url)
+        } catch (t: Throwable) {
+            append(url)
+        }
+    }
+    Text(annotated, style = codeStyle, fontSize = 11.sp, softWrap = true,
+        color = MaterialTheme.colorScheme.onSurface, maxLines = maxLines, overflow = overflow)
+}
+
+// ================= v1.59 总览工具 =================
+
+/** 服务器地址：host[:port]（hostOf 已带非默认端口） */
+private fun serverAddrOf(entry: HttpEntry): String = hostOf(entry.url)
+
+/** Keep Alive：从请求/响应 Connection 头推导 */
+private fun keepAliveOf(entry: HttpEntry): String {
+    val c = entry.reqHeaders["Connection"] ?: entry.respHeaders["Connection"]
+    return if (c.isNullOrBlank()) "-" else c
+}
+
+/** 前端 = 本机→本机代理；后端 = 代理→服务器（native socketInfo 四元组） */
+private fun frontendOf(entry: HttpEntry): String =
+    if (entry.srcAddr.isNotBlank()) "${entry.srcAddr}:${entry.srcPort}" else "-"
+
+private fun backendOf(entry: HttpEntry): String =
+    if (entry.dstAddr.isNotBlank()) "${entry.dstAddr}:${entry.dstPort}" else "-"
+
+/** 请求/响应头大小估算（请求行或状态行 + 每行 Key: value + 空行） */
+private fun headerSizeBytes(method: String, url: String, headers: Map<String, String>, isRequest: Boolean): Long {
+    var n = 0L
+    if (isRequest) n += method.length + url.length + 32 // 请求行 + 协议
+    else n += 40 // 状态行 ≈ 40B
+    for ((k, v) in headers) n += k.length + v.length + 4
+    n += 2 // 头部结束空行
+    return n
+}
+
+private fun fmtTime(ms: Long): String =
+    java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.getDefault()).format(java.util.Date(ms))
+
+/** 目标包的应用名（主进程 PackageManager 可查任意已装应用；查不到就显示包名） */
+private fun appLabelOf(context: android.content.Context, pkg: String?): String? {
+    if (pkg.isNullOrBlank()) return null
+    return try {
+        val pm = context.packageManager
+        val ai = pm.getApplicationInfo(pkg, 0)
+        pm.getApplicationLabel(ai).toString()
+    } catch (t: Throwable) {
+        pkg
     }
 }
 

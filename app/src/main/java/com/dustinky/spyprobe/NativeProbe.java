@@ -61,15 +61,53 @@ public class NativeProbe {
     private static final java.util.Map<Long, TlsHttpParser> tlsParsers = new java.util.HashMap<>();
     private static final int MAX_TLS_PARSERS = 64;
 
+    // v1.59: 记录每个连接的 socketInfo（首次出现时记下，供 TlsHttpParser 建条目时带四元组）
+    private static final java.util.Map<Long, String> tlsConnSock = new java.util.HashMap<>();
+
+    // v1.59: native TLS 元数据（版本/SNI/ALPN/算法/证书 JSON）——per-conn 缓存，TlsHttpParser 建条目时关联
+    private static final java.util.Map<Long, String> tlsMetaMap = new java.util.HashMap<>();
+
+    /** native→Java：TLS 元数据回调（JSON 字符串，见 native_hook.cpp build_tls_meta_json） */
+    @SuppressWarnings("unused")
+    private static void onTlsMeta(long connId, String metaJson) {
+        if (metaJson == null || metaJson.isEmpty()) return;
+        synchronized (tlsMetaMap) {
+            if (tlsMetaMap.size() > 128) tlsMetaMap.clear(); // 防膨胀
+            tlsMetaMap.put(connId, metaJson);
+        }
+    }
+
+    /** v1.59: 取连接 TLS 元数据并清理（TlsHttpParser 消费一次） */
+    private static String takeTlsMeta(long connId) {
+        synchronized (tlsMetaMap) {
+            return tlsMetaMap.remove(connId);
+        }
+    }
+
     private static void tlsHttpFeed(long connId, boolean isWrite, byte[] data) {
+        tlsHttpFeed(connId, isWrite, data, null);
+    }
+
+    /** v1.59: 携带 socketInfo（native onNativeData 已有四元组）+ TLS 元数据关联 */
+    private static void tlsHttpFeed(long connId, boolean isWrite, byte[] data, String socketInfo) {
         if (data == null || data.length == 0) return;
         TlsHttpParser p;
         synchronized (tlsParsers) {
+            if (socketInfo != null && !socketInfo.isEmpty()) {
+                tlsConnSock.put(connId, socketInfo);
+            } else {
+                String cached = tlsConnSock.get(connId);
+                if (cached != null) socketInfo = cached;
+            }
+            String meta = takeTlsMeta(connId);
             p = tlsParsers.get(connId);
             if (p == null) {
                 if (tlsParsers.size() >= MAX_TLS_PARSERS) tlsParsers.clear(); // 极端场景兜底
-                p = new TlsHttpParser(connId);
+                p = new TlsHttpParser(connId, socketInfo);
                 tlsParsers.put(connId, p);
+            }
+            if (meta != null && !meta.isEmpty()) {
+                p.setTlsMeta(meta);
             }
         }
         p.feed(isWrite, data, data.length);
@@ -195,7 +233,7 @@ public class NativeProbe {
                     if (tlsN > 0) {
                         byte[] tlsData = new byte[tlsN];
                         dup.get(tlsData);
-                        tlsHttpFeed(id, isWrite, tlsData);
+                        tlsHttpFeed(id, isWrite, tlsData, socketInfo);
                     }
                 } catch (Throwable ignored) {
                 }
@@ -268,6 +306,9 @@ public class NativeProbe {
                         Thread.currentThread().getName(), method, url,
                         parseH2Headers(reqHdr), "none", "", 0,
                         StackUtil.getCompact(6), line);
+                // v1.59: H2 协议/流ID/时间点
+                long nowMs = System.currentTimeMillis();
+                he.setConnMeta("HTTP/2", nowMs, 0, connId, streamId, "", 0, "", 0);
                 H2_ENTRIES.put(key, he);
                 if (H2_ENTRIES.size() > 256) {
                     // 防膨胀：极端情况下清空（最多丢几个未完成流，防内存泄漏优先）
@@ -282,6 +323,8 @@ public class NativeProbe {
                         line += "\n    " + respHdr.replace("\n", "\n    ");
                     }
                     LogStore.get().log(TAG, line);
+                    // v1.59: 响应头开始时刻（近似）
+                    if (he.respStartMs == 0) he.respStartMs = System.currentTimeMillis();
                     he.complete(statusCode, "", parseH2Headers(respHdr), "text", "", 0, 0);
                     HttpStore.get().add(he);
                 } else {
@@ -359,6 +402,7 @@ public class NativeProbe {
             if (isSsl) {
                 synchronized (tlsParsers) {
                     tlsParsers.remove(id);
+                    tlsConnSock.remove(id); // v1.59: 同步清理四元组缓存
                 }
             }
             // v1.41 P0: pcap 独立于 nativeCapture——只开 pcap 时连接关闭也要 flush 会话

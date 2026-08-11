@@ -51,9 +51,9 @@ public class PrefsProbe {
                     hooked++;
                 } catch (Throwable t) { }
             }
-            LogStore.get().log(TAG, "[" + phase + "] hooked SharedPreferencesImpl getters x" + hooked);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] hooked SharedPreferencesImpl getters x" + hooked);
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[" + phase + "] SharedPreferencesImpl hook fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] SharedPreferencesImpl hook fail: " + t);
         }
     }
 

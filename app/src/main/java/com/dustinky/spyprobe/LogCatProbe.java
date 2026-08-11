@@ -129,6 +129,6 @@ public class LogCatProbe {
                 } catch (Throwable t) { }
             }
         }
-        LogStore.get().log(TAG, "[" + phase + "] hooked Log d/i/e/w/v x" + hooked);
+        DebugLog.get().logNoMirror(TAG, "[" + phase + "] hooked Log d/i/e/w/v x" + hooked);
     }
 }

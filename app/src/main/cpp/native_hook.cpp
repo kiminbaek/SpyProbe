@@ -14,6 +14,8 @@
 #include <iomanip>
 #include <sstream>
 #include <pthread.h>
+#include <cstdio>
+#include <time.h>
 #include <unordered_map>
 #include <unordered_set>
 #include <mutex>
@@ -46,6 +48,8 @@ static jmethodID gOnConnClosedMethod    = nullptr;
 static jmethodID gNativeLogMethod       = nullptr;
 // v1.38 P0-3: SSL keylog 回调 → Java NativeProbe.nativeKeylog(String)
 static jmethodID gNativeKeylogMethod    = nullptr;
+// v1.59: TLS 元数据回调 → Java NativeProbe.onTlsMeta(long, String)
+static jmethodID gOnTlsMetaMethod       = nullptr;
 
 static pthread_key_t g_thread_key;
 thread_local bool g_is_in_hook = false;
@@ -77,8 +81,13 @@ typedef int (*type_SSL_set_fd)(void *ssl, int fd);
 static type_SSL_set_fd orig_ssl_set_fd = nullptr;
 static std::unordered_map<uintptr_t, int> g_ssl_fd_map;
 static std::mutex g_ssl_fd_mutex;
+// v1.59: TLS 元数据 per-ssl 标记（collect_tls_meta_once 只提取一次；SSL_free 时清除）
+static std::unordered_set<uintptr_t> g_tls_meta_done;
+static std::mutex g_tls_meta_mutex;
 // v1.45.2: native_log 前置声明（callback_kotlin_chunk 在定义前使用）
 static void native_log(const char* msg);
+// v1.59: collect_tls_meta_once 前置声明（do_ssl_*_common 在定义前使用）
+static void collect_tls_meta_once(uintptr_t conn_id, void* orig_sym);
 // v1.45.6: get_ssl_fd_from_hook 前置声明（callback_kotlin_chunk 在定义前使用）
 static int get_ssl_fd_from_hook(uintptr_t ssl_ptr);
 
@@ -549,6 +558,8 @@ int do_ssl_write_common(void *ssl, const void *buf, int num, type_SSL_write orig
     if (real_SSL_get_fd == nullptr) resolve_ssl_get_fd_via_dladdr((void*)orig);
     ScopedHookGuard guard;
     uintptr_t conn_id = reinterpret_cast<uintptr_t>(ssl);
+    // v1.59: 首次数据回调提取 TLS 元数据（版本/SNI/ALPN/算法/证书）——per-ssl 只一次
+    collect_tls_meta_once(conn_id, (void*)orig);
     std::shared_ptr<Http2Connection> h2conn = h2_get_or_create(conn_id);
     
     std::vector<std::vector<uint8_t>> local_rst_queue;
@@ -603,6 +614,8 @@ int do_ssl_read_common(void *ssl, void *buf, int num, type_SSL_read orig) {
     // v1.45.3 P0: 首次数据回调时用 dladdr 解析 SSL_get_fd
     if (real_SSL_get_fd == nullptr) resolve_ssl_get_fd_via_dladdr((void*)orig);
     ScopedHookGuard guard;
+    // v1.59: 首次数据回调提取 TLS 元数据（版本/SNI/ALPN/算法/证书）
+    collect_tls_meta_once(reinterpret_cast<uintptr_t>(ssl), (void*)orig);
     int ret = orig(ssl, buf, num);
     if (ret > 0 && buf != nullptr) {
         uintptr_t conn_id = reinterpret_cast<uintptr_t>(ssl);
@@ -639,6 +652,8 @@ void do_ssl_free_common(void *ssl, type_SSL_free orig) {
     { std::lock_guard<std::mutex> lock(g_cache_mutex); g_stack_cache.erase(reinterpret_cast<jlong>(ssl)); }
     // v1.45.6: 清理 SSL_set_fd 记录的 ssl→fd 映射
     { std::lock_guard<std::mutex> lock(g_ssl_fd_mutex); g_ssl_fd_map.erase(reinterpret_cast<uintptr_t>(ssl)); }
+    // v1.59: 清理 TLS 元数据 per-ssl 标记（防指针复用）
+    { std::lock_guard<std::mutex> lock(g_tls_meta_mutex); g_tls_meta_done.erase(reinterpret_cast<uintptr_t>(ssl)); }
     h2_free(reinterpret_cast<uintptr_t>(ssl));
     notify_kotlin_close(reinterpret_cast<jlong>(ssl), true);
     orig(ssl);
@@ -750,6 +765,287 @@ static void resolve_ssl_get_fd_via_dladdr(void* sym) {
         }
     }
     native_log("XH pcap: SSL_get_fd resolve failed (skip scan - Conscrypt static sym, avoid crash)");
+}
+
+// ================= v1.59: TLS 元数据 + 服务端证书提取 =================
+// 总览页对齐小黄鸟：TLS 版本/SNI/ALPN/算法列表/选择算法 + 证书 Subject/Issuer/序列号/指纹/有效期。
+// 安全策略与 v1.45.3 相同：所有符号从 orig 回调函数所在库 dladdr+dlsym 解析（同库实例安全），
+// 任一符号缺失只跳过对应字段；per-ssl 只提取一次；全程空指针检查，绝不崩溃。
+typedef const char* (*type_SSL_get_version)(const void* ssl);
+typedef const char* (*type_SSL_get_servername)(const void* ssl, int type);
+typedef int  (*type_SSL_get_alpn_selected)(const void* ssl, const unsigned char** data, unsigned int* len);
+typedef void* (*type_SSL_get_current_cipher)(const void* ssl);
+typedef const char* (*type_SSL_CIPHER_get_name)(const void* cipher);
+typedef void* (*type_SSL_get_ciphers)(const void* ssl);
+typedef int  (*type_sk_SSL_CIPHER_num)(const void* sk);
+typedef void* (*type_sk_SSL_CIPHER_value)(const void* sk, int i);
+typedef void* (*type_SSL_get1_peer_certificate)(const void* ssl);
+typedef void  (*type_X509_free)(void* x509);
+typedef void* (*type_X509_get_subject_name)(const void* x509);
+typedef void* (*type_X509_get_issuer_name)(const void* x509);
+typedef int  (*type_X509_NAME_get_text_by_NID)(const void* name, int nid, char* buf, int len);
+typedef void* (*type_X509_get_serialNumber)(const void* x509);
+typedef long (*type_ASN1_INTEGER_get)(const void* a);
+typedef void* (*type_X509_get0_notBefore)(const void* x509);
+typedef void* (*type_X509_get0_notAfter)(const void* x509);
+typedef int  (*type_ASN1_TIME_to_tm)(const void* t, void* tm);
+typedef int  (*type_X509_digest)(const void* x509, const void* md, unsigned char* out, unsigned int* outlen);
+typedef const void* (*type_EVP_sha256)(void);
+
+struct TlsMetaSymbols {
+    type_SSL_get_version get_version;
+    type_SSL_get_servername get_servername;
+    type_SSL_get_alpn_selected get_alpn_selected;
+    type_SSL_get_current_cipher get_current_cipher;
+    type_SSL_CIPHER_get_name cipher_get_name;
+    type_SSL_get_ciphers get_ciphers;
+    type_sk_SSL_CIPHER_num sk_num;
+    type_sk_SSL_CIPHER_value sk_value;
+    type_SSL_get1_peer_certificate get1_peer_cert;
+    type_X509_free x509_free;
+    type_X509_get_subject_name x509_get_subject_name;
+    type_X509_get_issuer_name x509_get_issuer_name;
+    type_X509_NAME_get_text_by_NID name_get_text_by_nid;
+    type_X509_get_serialNumber x509_get_serial;
+    type_ASN1_INTEGER_get asn1_integer_get;
+    type_X509_get0_notBefore x509_get_notbefore;
+    type_X509_get0_notAfter x509_get_notafter;
+    type_ASN1_TIME_to_tm asn1_time_to_tm;
+    type_X509_digest x509_digest;
+    type_EVP_sha256 evp_sha256;
+};
+
+static TlsMetaSymbols g_tls_syms;
+static std::atomic<bool> g_tls_syms_tried{false};
+
+// OpenSSL 标准 NID（BoringSSL 相同）
+#define NID_commonName 13
+#define NID_countryName 14
+#define NID_localityName 15
+#define NID_stateOrProvinceName 16
+#define NID_organizationName 17
+#define NID_organizationalUnitName 18
+#define TLSEXT_NAMETYPE_host_name 0
+
+static void resolve_tls_meta_symbols(void* sym) {
+    if (g_tls_syms_tried.load(std::memory_order_relaxed)) return;
+    g_tls_syms_tried.store(true, std::memory_order_relaxed);
+    Dl_info info;
+    if (dladdr(sym, &info) != 0 && info.dli_fname != nullptr) {
+        void* h = dlopen(info.dli_fname, RTLD_NOW | RTLD_NOLOAD);
+        if (h != nullptr) {
+            g_tls_syms.get_version        = (type_SSL_get_version)dlsym(h, "SSL_get_version");
+            g_tls_syms.get_servername     = (type_SSL_get_servername)dlsym(h, "SSL_get_servername");
+            g_tls_syms.get_alpn_selected  = (type_SSL_get_alpn_selected)dlsym(h, "SSL_get_alpn_selected");
+            g_tls_syms.get_current_cipher = (type_SSL_get_current_cipher)dlsym(h, "SSL_get_current_cipher");
+            g_tls_syms.cipher_get_name    = (type_SSL_CIPHER_get_name)dlsym(h, "SSL_CIPHER_get_name");
+            g_tls_syms.get_ciphers        = (type_SSL_get_ciphers)dlsym(h, "SSL_get_ciphers");
+            g_tls_syms.sk_num             = (type_sk_SSL_CIPHER_num)dlsym(h, "sk_SSL_CIPHER_num");
+            g_tls_syms.sk_value           = (type_sk_SSL_CIPHER_value)dlsym(h, "sk_SSL_CIPHER_value");
+            g_tls_syms.get1_peer_cert     = (type_SSL_get1_peer_certificate)dlsym(h, "SSL_get1_peer_certificate");
+            g_tls_syms.x509_free          = (type_X509_free)dlsym(h, "X509_free");
+            g_tls_syms.x509_get_subject_name = (type_X509_get_subject_name)dlsym(h, "X509_get_subject_name");
+            g_tls_syms.x509_get_issuer_name  = (type_X509_get_issuer_name)dlsym(h, "X509_get_issuer_name");
+            g_tls_syms.name_get_text_by_nid  = (type_X509_NAME_get_text_by_NID)dlsym(h, "X509_NAME_get_text_by_NID");
+            g_tls_syms.x509_get_serial       = (type_X509_get_serialNumber)dlsym(h, "X509_get_serialNumber");
+            g_tls_syms.asn1_integer_get      = (type_ASN1_INTEGER_get)dlsym(h, "ASN1_INTEGER_get");
+            g_tls_syms.x509_get_notbefore    = (type_X509_get0_notBefore)dlsym(h, "X509_get0_notBefore");
+            g_tls_syms.x509_get_notafter     = (type_X509_get0_notAfter)dlsym(h, "X509_get0_notAfter");
+            g_tls_syms.asn1_time_to_tm       = (type_ASN1_TIME_to_tm)dlsym(h, "ASN1_TIME_to_tm");
+            g_tls_syms.x509_digest           = (type_X509_digest)dlsym(h, "X509_digest");
+            g_tls_syms.evp_sha256            = (type_EVP_sha256)dlsym(h, "EVP_sha256");
+            dlclose(h);
+        }
+    }
+    // 解析失败静默（只丢元数据，不影响抓包主链路）
+}
+
+static std::string json_escape(const std::string& s) {
+    std::ostringstream o;
+    for (size_t i = 0; i < s.size(); i++) {
+        unsigned char c = (unsigned char)s[i];
+        switch (c) {
+            case '"': o << "\\\""; break;
+            case '\\': o << "\\\\"; break;
+            case '\n': o << "\\n"; break;
+            case '\r': o << "\\r"; break;
+            case '\t': o << "\\t"; break;
+            default:
+                if (c < 0x20) o << "\\u" << std::hex << std::setw(4) << std::setfill('0') << (int)c << std::dec;
+                else o << s[i];
+        }
+    }
+    return o.str();
+}
+
+// 取证书 DN 的指定 NID 字段（最多取 3 个同名项，如多个 CN 时取第一个非空）
+static std::string x509_name_field(const void* name, int nid, type_X509_NAME_get_text_by_NID fn) {
+    char buf[256];
+    int len = fn(name, nid, buf, sizeof(buf) - 1);
+    if (len > 0) { buf[len] = 0; return std::string(buf); }
+    return "";
+}
+
+static std::string asn1_time_str(const void* t, type_ASN1_TIME_to_tm fn) {
+    struct tm tm_val;
+    memset(&tm_val, 0, sizeof(tm_val));
+    if (t != nullptr && fn != nullptr && fn(t, &tm_val) == 1) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d",
+                 tm_val.tm_year + 1900, tm_val.tm_mon + 1, tm_val.tm_mday,
+                 tm_val.tm_hour, tm_val.tm_min, tm_val.tm_sec);
+        return std::string(buf);
+    }
+    return "";
+}
+
+static std::string build_tls_meta_json(const void* ssl) {
+    const TlsMetaSymbols& s = g_tls_syms;
+    std::ostringstream o;
+    o << "{";
+
+    bool any = false;
+    if (s.get_version != nullptr) {
+        const char* v = s.get_version(ssl);
+        if (v != nullptr) { o << "\"v\":\"" << json_escape(v) << "\""; any = true; }
+    }
+    if (s.get_servername != nullptr) {
+        const char* sni = s.get_servername(ssl, TLSEXT_NAMETYPE_host_name);
+        if (sni != nullptr) {
+            if (any) o << ",";
+            o << "\"sni\":\"" << json_escape(sni) << "\""; any = true;
+        }
+    }
+    if (s.get_alpn_selected != nullptr) {
+        const unsigned char* data = nullptr;
+        unsigned int len = 0;
+        if (s.get_alpn_selected(ssl, &data, &len) == 1 && data != nullptr && len > 0) {
+            std::string alpn((const char*)data, len);
+            if (any) o << ",";
+            o << "\"alpn\":\"" << json_escape(alpn) << "\""; any = true;
+        }
+    }
+    // 选择算法 + 算法列表
+    std::string cipher_sel;
+    std::string cipher_list;
+    if (s.get_current_cipher != nullptr && s.cipher_get_name != nullptr) {
+        void* c = s.get_current_cipher(ssl);
+        if (c != nullptr) {
+            const char* name = s.cipher_get_name(c);
+            if (name != nullptr) cipher_sel = name;
+        }
+    }
+    if (s.get_ciphers != nullptr && s.sk_num != nullptr && s.sk_value != nullptr && s.cipher_get_name != nullptr) {
+        void* sk = s.get_ciphers(ssl);
+        if (sk != nullptr) {
+            int n = s.sk_num(sk);
+            if (n > 64) n = 64; // 只取前 64 个防超大
+            for (int i = 0; i < n; i++) {
+                void* c = s.sk_value(sk, i);
+                if (c != nullptr) {
+                    const char* name = s.cipher_get_name(c);
+                    if (name != nullptr) {
+                        if (!cipher_list.empty()) cipher_list += ";";
+                        cipher_list += name;
+                    }
+                }
+            }
+        }
+    }
+    if (!cipher_sel.empty()) { if (any) o << ","; o << "\"cipher\":\"" << json_escape(cipher_sel) << "\""; any = true; }
+    if (!cipher_list.empty()) { if (any) o << ","; o << "\"ciphers\":\"" << json_escape(cipher_list) << "\""; any = true; }
+
+    // 服务端证书（SSL_get1_peer_certificate 引用计数 +1，必须 X509_free）
+    if (s.get1_peer_cert != nullptr && s.x509_free != nullptr) {
+        void* x509 = s.get1_peer_cert(ssl);
+        if (x509 != nullptr) {
+            std::string subject, issuer, serial, sha256, not_before, not_after;
+            if (s.x509_get_subject_name != nullptr && s.name_get_text_by_nid != nullptr) {
+                void* sn = s.x509_get_subject_name(x509);
+                if (sn != nullptr) {
+                    std::string cn = x509_name_field(sn, NID_commonName, s.name_get_text_by_nid);
+                    std::string c  = x509_name_field(sn, NID_countryName, s.name_get_text_by_nid);
+                    std::string st = x509_name_field(sn, NID_stateOrProvinceName, s.name_get_text_by_nid);
+                    std::string l  = x509_name_field(sn, NID_localityName, s.name_get_text_by_nid);
+                    std::string o  = x509_name_field(sn, NID_organizationName, s.name_get_text_by_nid);
+                    std::string ou = x509_name_field(sn, NID_organizationalUnitName, s.name_get_text_by_nid);
+                    if (!c.empty())  subject += "C=" + c;
+                    if (!st.empty()) subject += (subject.empty() ? "" : ";") + std::string("ST=") + st;
+                    if (!l.empty())  subject += (subject.empty() ? "" : ";") + std::string("L=") + l;
+                    if (!o.empty())  subject += (subject.empty() ? "" : ";") + std::string("O=") + o;
+                    if (!ou.empty()) subject += (subject.empty() ? "" : ";") + std::string("OU=") + ou;
+                    if (!cn.empty()) subject += (subject.empty() ? "" : ";") + std::string("CN=") + cn;
+                }
+            }
+            if (s.x509_get_issuer_name != nullptr && s.name_get_text_by_nid != nullptr) {
+                void* in = s.x509_get_issuer_name(x509);
+                if (in != nullptr) {
+                    std::string cn = x509_name_field(in, NID_commonName, s.name_get_text_by_nid);
+                    std::string c  = x509_name_field(in, NID_countryName, s.name_get_text_by_nid);
+                    std::string o  = x509_name_field(in, NID_organizationName, s.name_get_text_by_nid);
+                    if (!c.empty()) issuer += "C=" + c;
+                    if (!o.empty()) issuer += (issuer.empty() ? "" : ";") + std::string("O=") + o;
+                    if (!cn.empty()) issuer += (issuer.empty() ? "" : ";") + std::string("CN=") + cn;
+                }
+            }
+            if (s.x509_get_serial != nullptr && s.asn1_integer_get != nullptr) {
+                void* a = s.x509_get_serial(x509);
+                if (a != nullptr) {
+                    long v = s.asn1_integer_get(a);
+                    char buf[40];
+                    snprintf(buf, sizeof(buf), "0x%lx", v);
+                    serial = buf;
+                }
+            }
+            if (s.x509_digest != nullptr && s.evp_sha256 != nullptr) {
+                unsigned char md[32];
+                unsigned int mdlen = 0;
+                if (s.x509_digest(x509, s.evp_sha256(), md, &mdlen) == 1 && mdlen >= 16) {
+                    std::ostringstream hx;
+                    for (unsigned int i = 0; i < mdlen; i++) {
+                        if (i) hx << ":";
+                        hx << std::uppercase << std::hex << std::setw(2) << std::setfill('0') << (int)md[i];
+                    }
+                    sha256 = hx.str();
+                }
+            }
+            if (s.x509_get_notbefore != nullptr) not_before = asn1_time_str(s.x509_get_notbefore(x509), s.asn1_time_to_tm);
+            if (s.x509_get_notafter != nullptr)  not_after  = asn1_time_str(s.x509_get_notafter(x509), s.asn1_time_to_tm);
+
+            if (any) o << ",";
+            o << "\"cert\":{\"subject\":\"" << json_escape(subject) << "\",\"issuer\":\"" << json_escape(issuer)
+              << "\",\"serial\":\"" << json_escape(serial) << "\",\"sha256\":\"" << json_escape(sha256)
+              << "\",\"notBefore\":\"" << json_escape(not_before) << "\",\"notAfter\":\"" << json_escape(not_after) << "\"}";
+            any = true;
+
+            s.x509_free(x509);
+        }
+    }
+
+    o << "}";
+    if (!any) return "";
+    return o.str();
+}
+
+// v1.59: 首次数据回调提取 TLS 元数据（per-ssl 只一次）
+static void collect_tls_meta_once(uintptr_t conn_id, void* orig_sym) {
+    if (gNativeRequestHookClass == nullptr || gOnTlsMetaMethod == nullptr) return;
+    {
+        std::lock_guard<std::mutex> lock(g_tls_meta_mutex);
+        if (!g_tls_meta_done.insert(conn_id).second) return; // 已提取过
+    }
+    resolve_tls_meta_symbols(orig_sym);
+    std::string json = build_tls_meta_json((const void*)conn_id);
+    if (!json.empty()) {
+        JNIEnv* env = get_jni_env();
+        if (env == nullptr) return;
+        jstring jMeta = env->NewStringUTF(json.c_str());
+        if (jMeta != nullptr) {
+            env->CallStaticVoidMethod(gNativeRequestHookClass, gOnTlsMetaMethod, (jlong)conn_id, jMeta);
+            env->DeleteLocalRef(jMeta);
+        }
+        check_exception(env);
+    }
 }
 
 // ================= v1.38 P0-2/P0-3: BoringSSL verify 绕过 + keylog =================
@@ -906,6 +1202,8 @@ Java_com_dustinky_spyprobe_NativeProbe_initNativeHook(JNIEnv *env, jobject thiz,
     gOnH2DataChunkMethod = env->GetStaticMethodID(clazz, "onH2DataChunk", "(JIZLjava/nio/ByteBuffer;)V");
     gCollectRespBodyMethod = env->GetStaticMethodID(clazz, "getCollectResponseBody", "()Z");
     gOnConnClosedMethod = env->GetStaticMethodID(clazz, "onConnectionClosed", "(JZ)V");
+    // v1.59: TLS 元数据回调（JSON 字符串）
+    gOnTlsMetaMethod = env->GetStaticMethodID(clazz, "onTlsMeta", "(JLjava/lang/String;)V");
     gNativeLogMethod = env->GetStaticMethodID(clazz, "nativeLog", "(Ljava/lang/String;)V");
     // v1.38 P0-3: keylog 回调方法
     gNativeKeylogMethod = env->GetStaticMethodID(clazz, "nativeKeylog", "(Ljava/lang/String;)V");

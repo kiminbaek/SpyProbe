@@ -275,7 +275,7 @@ public class AntiDetectProbe {
                             }
                             return chain.proceed();
                         });
-                LogStore.get().log(TAG, "[anti-root] hooked File.listFiles/canRead/canExecute (v1.38 P1-6)");
+                DebugLog.get().logNoMirror(TAG, "[anti-root] hooked File.listFiles/canRead/canExecute (v1.38 P1-6)");
             } catch (Throwable t) { }
 
             // v1.38 P1-6: Debug.isDebuggerConnected() -> false —— 防调试器检测（常见 root 检测前置项）
@@ -285,7 +285,7 @@ public class AntiDetectProbe {
                             if (!Config.get().antiRoot) return chain.proceed();
                             return Boolean.FALSE;
                         });
-                LogStore.get().log(TAG, "[anti-root] hooked Debug.isDebuggerConnected (v1.38 P1-6)");
+                DebugLog.get().logNoMirror(TAG, "[anti-root] hooked Debug.isDebuggerConnected (v1.38 P1-6)");
             } catch (Throwable t) { }
 
             // Runtime.exec(String) / exec(String[]) —— 拦截 su / magisk 命令
@@ -526,17 +526,17 @@ public class AntiDetectProbe {
                                 return chain.proceed();
                             });
                 } catch (Throwable t) { }
-                LogStore.get().log(TAG, "[anti-applist] hooked getInstalledPackages/getInstalledApplications/"
+                DebugLog.get().logNoMirror(TAG, "[anti-applist] hooked getInstalledPackages/getInstalledApplications/"
                         + "queryIntentActivities/getPackageInfo (HMA 借鉴, v1.44)");
             } catch (Throwable t) {
-                LogStore.get().log(TAG, "[anti-applist] hook error: " + t);
+                DebugLog.get().logNoMirror(TAG, "[anti-applist] hook error: " + t);
             }
 
-            LogStore.get().log(TAG, "[anti] AntiDetectProbe installed (antiRoot=" + Config.get().antiRoot
+            DebugLog.get().logNoMirror(TAG, "[anti] AntiDetectProbe installed (antiRoot=" + Config.get().antiRoot
                     + " antiXposed=" + Config.get().antiXposed
                     + " antiApplist=" + Config.get().antiApplist + ")");
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[anti] install error: " + t);
+            DebugLog.get().logNoMirror(TAG, "[anti] install error: " + t);
             installed = false;
         }
     }

@@ -47,9 +47,9 @@ public class ClassLoadProbe {
             final Method loadClass = ClassLoader.class.getDeclaredMethod("loadClass", String.class);
             loadClass.setAccessible(true);
             module.hook(loadClass).intercept(chain -> chain.proceed());
-            LogStore.get().log(TAG, "[" + phase + "] hooked ClassLoader.loadClass(String)");
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] hooked ClassLoader.loadClass(String)");
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[" + phase + "] ClassLoader.loadClass hook fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] ClassLoader.loadClass hook fail: " + t);
         }
 
         // hook 带 resolve 的重载（部分加载路径走这个；也是 1 参的内部实现 → 统一在此记录）
@@ -66,9 +66,9 @@ public class ClassLoadProbe {
                 }
                 return r;
             });
-            LogStore.get().log(TAG, "[" + phase + "] hooked ClassLoader.loadClass(String,boolean)");
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] hooked ClassLoader.loadClass(String,boolean)");
         } catch (Throwable t) {
-            LogStore.get().log(TAG, "[" + phase + "] ClassLoader.loadClass(String,boolean) hook fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "[" + phase + "] ClassLoader.loadClass(String,boolean) hook fail: " + t);
         }
     }
 

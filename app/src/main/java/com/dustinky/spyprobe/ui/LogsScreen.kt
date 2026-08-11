@@ -728,9 +728,10 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             }
 
             // v1.51: 结构化 HTTP 请求详情页——从 Dialog 弹窗改为全屏页（小黄鸟式）
+            // v1.59: 传目标包名（总览「应用程序」板块）
             val httpEntry = httpDetail
             if (httpEntry != null) {
-                HttpDetailPage(entry = httpEntry, onBack = { httpDetail = null })
+                HttpDetailPage(entry = httpEntry, onBack = { httpDetail = null }, targetPackage = vm.targetPkg.value)
             }
             // v1.55: 通用结构化事件详情页（SQL/JSON/Crypto/TCP/DNS 卡片）
             val evEntry = eventDetail

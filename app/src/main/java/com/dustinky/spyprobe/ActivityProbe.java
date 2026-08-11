@@ -86,7 +86,7 @@ public class ActivityProbe {
             });
             hooked++;
         } catch (Throwable t) { }
-        LogStore.get().log(TAG, "[" + phase + "] hooked Activity/Intent x" + hooked);
+        DebugLog.get().logNoMirror(TAG, "[" + phase + "] hooked Activity/Intent x" + hooked);
     }
 
     /** v1.58: Activity 生命周期 / Intent 跳转 → 结构化 ACT 事件（页面流卡片 + 详情页）。
