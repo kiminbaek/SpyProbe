@@ -242,6 +242,25 @@ public class SpyHomeServer {
                     CrashCatcher.saveFromTarget(body == null ? "(null)" : body);
                     return "{\"ok\":true}";
                 }
+                case "/api/push_event": {
+                    // v1.55: 目标进程推送通用结构化事件 → 主进程 HomeEventStore（UI 卡片/分析查询）
+                    JSONObject root = new JSONObject(body == null ? "{}" : body);
+                    JSONArray arr = root.optJSONArray("entries");
+                    int n = 0;
+                    if (arr != null) {
+                        for (int i = 0; i < arr.length(); i++) {
+                            try {
+                                JSONObject e = arr.getJSONObject(i);
+                                SpyEvent ev = SpyEvent.fromJson(e);
+                                if (ev != null) { HomeEventStore.get().add(ev); n++; }
+                            } catch (Throwable t) { }
+                        }
+                    }
+                    JSONObject o = new JSONObject();
+                    o.put("ok", true);
+                    o.put("accepted", n);
+                    return o.toString();
+                }
                 case "/api/push_logs": {
                     // 目标进程批量推送日志 → 主进程 LogStore（LogPersister 落自己家）
                     JSONObject root = new JSONObject(body == null ? "{}" : body);
@@ -350,7 +369,8 @@ public class SpyHomeServer {
                     // 下次轮询又把旧日志全拉回来（"清完立刻重新出现"）。
                     LogStore.get().clear();
                     HomeHttpStore.get().clearMem();
-                    DebugLog.get().log("Home", "clear home log+http store");
+                    HomeEventStore.get().clearMem(); // v1.55: 通用事件同步清
+                    DebugLog.get().log("Home", "clear home log+http+event store");
                     JSONObject o = new JSONObject();
                     o.put("ok", true);
                     return o.toString();

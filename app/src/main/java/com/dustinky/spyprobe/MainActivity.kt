@@ -47,6 +47,12 @@ class MainActivity : ComponentActivity() {
         } catch (t: Throwable) {
             com.dustinky.spyprobe.util.UiLog.log("Home init HomeHttpStore FAIL: $t")
         }
+        // v1.55: 通用结构化事件落盘自己家：files/event_entries/（目标进程推 SpyEvent 写这里）
+        try {
+            com.dustinky.spyprobe.HomeEventStore.get().init(applicationContext.filesDir)
+        } catch (t: Throwable) {
+            com.dustinky.spyprobe.util.UiLog.log("Home init HomeEventStore FAIL: $t")
+        }
         // v1.37 P0-5: 生成/加载推送鉴权 token（server 校验 push_logs 用；目标进程经远程偏好读取）
         try {
             com.dustinky.spyprobe.TokenStore.ensureToken(applicationContext)

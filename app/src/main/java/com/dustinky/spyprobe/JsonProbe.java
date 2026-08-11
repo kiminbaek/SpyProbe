@@ -43,8 +43,10 @@ public class JsonProbe {
                         // v1.53: 过滤自家控制面（SpyServer 9901 /api/ping、/api/config 响应在目标进程内
                         //   经 JSONObject.toString 被本 hook 捕获 → 65 行纯噪音刷屏）
                         if (isSelfControlPlane(s)) return r;
-                        if (s.length() > 300) s = s.substring(0, 300) + "...(" + s.length() + ")";
-                        LogStore.get().log(TAG, "[JSON] " + s);
+                        boolean truncated = s.length() > 300;
+                        if (truncated) s = s.substring(0, 300) + "...(" + s.length() + ")";
+                        // v1.55: 结构化 JSON 事件（卡片化）
+                        logJsonEvent("JSONObject", s, truncated);
                     } catch (Throwable t) { }
                 }
                 return r;
@@ -70,8 +72,10 @@ public class JsonProbe {
                             Object arg = chain.getArg(0);
                             String s = r == null ? "null" : r.toString();
                             if (isSelfControlPlane(s)) return r;
-                            if (s.length() > 300) s = s.substring(0, 300) + "...(" + s.length() + ")";
-                            LogStore.get().log(TAG, "[Gson] " + (arg == null ? "?" : arg.getClass().getName()) + " -> " + s);
+                            boolean truncated = s.length() > 300;
+                            if (truncated) s = s.substring(0, 300) + "...(" + s.length() + ")";
+                            // v1.55: 结构化 JSON 事件（卡片化）
+                            logJsonEvent("Gson(" + (arg == null ? "?" : arg.getClass().getName()) + ")", s, truncated);
                         } catch (Throwable t) { }
                     }
                     return r;
@@ -82,6 +86,22 @@ public class JsonProbe {
             LogStore.get().log(TAG, "[" + phase + "] Gson hook fail (app 可能不用 Gson): " + t);
         }
         LogStore.get().log(TAG, "[" + phase + "] hooked JSONObject/Gson x" + hooked);
+    }
+
+    /** v1.55: 结构化 JSON 事件——日志行嵌入 [EVT#id]，EventStore 写 SpyEvent（UI 卡片化） */
+    private static void logJsonEvent(String source, String content, boolean truncated) {
+        try {
+            long eid = EventStore.get().nextId();
+            String msg = "[EVT#" + eid + "][JSON] " + source + " -> " + content;
+            LogStore.get().log(TAG, msg);
+            org.json.JSONObject payload = new org.json.JSONObject();
+            payload.put("source", source == null ? "" : source);
+            payload.put("content", content == null ? "" : content);
+            payload.put("truncated", truncated);
+            String title = source == null ? "JSON" : source;
+            EventStore.get().add(new SpyEvent("JSON", eid, System.currentTimeMillis(),
+                    title, payload, msg, ""));
+        } catch (Throwable t) { /* 结构化失败不影响文本日志 */ }
     }
 
     /** v1.53: 自家控制面 JSON 特征识别（SpyServer 9901 响应在目标进程内被本 probe 捕获 → 纯噪音）

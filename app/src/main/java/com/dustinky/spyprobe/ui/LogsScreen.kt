@@ -215,6 +215,8 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     var detailDialog by remember { mutableStateOf<String?>(null) }
     // v1.48: 结构化 HTTP 请求详情页（小黄鸟式）——点击 [REQ#N] 请求行命中 HttpStore 时弹出
     var httpDetail by remember { mutableStateOf<com.dustinky.spyprobe.HttpEntry?>(null) }
+    // v1.55: 通用结构化事件详情页（SQL/JSON/Crypto/TCP/DNS 卡片）——点击 [EVT#N] 行命中 HomeEventStore 时弹出
+    var eventDetail by remember { mutableStateOf<com.dustinky.spyprobe.SpyEvent?>(null) }
     // v1.25 P1-3: 暂停状态从局部 remember 改为 vm（此前暂停只停自动滚动不停轮询——日志还在积累；
     //   vm.paused 同时控制轮询停止 + 自动滚动暂停，语义一致）
     val paused by vm.paused.collectAsState()
@@ -533,6 +535,7 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                         ) {
                             items(filtered, key = { it.first }) { (idx, line) ->
                                 // v1.49: 历史 LINES 层也支持 REQ# 结构化详情——内存优先，未命中按会话日期文件回溯
+                                // v1.55: 同时支持 EVT# 通用事件（历史文件回溯）
                                 val rid = parseReqId(line)
                                 val heMem = rid?.let { com.dustinky.spyprobe.HomeHttpStore.get().find(it) }
                                 if (heMem != null) {
@@ -541,27 +544,68 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                         onClick = { httpDetail = heMem }
                                     )
                                 } else {
-                                    HistoryLineRow(
-                                        idx = idx,
-                                        line = line,
-                                        onClick = {
-                                            val rid2 = parseReqId(line)
-                                            if (rid2 != null) {
-                                                val he2 = rid2?.let { com.dustinky.spyprobe.HomeHttpStore.get().find(it) }
-                                                if (he2 != null) {
-                                                    httpDetail = he2
-                                                } else {
-                                                    // 内存未命中 → 按会话日期从 http_entries 文件回溯
-                                                    val day = selectedSession?.date
-                                                    if (day != null) {
-                                                        scope.launch {
-                                                            val appCtx = context.applicationContext as android.app.Application
-                                                            val fromDay = withContext(Dispatchers.IO) {
-                                                                com.dustinky.spyprobe.HomeHttpStore.get().readDay(appCtx.filesDir, day)
-                                                                    .firstOrNull { e -> e.id == rid2 }
+                                    val eid = parseEvtId(line)
+                                    val evMem = eid?.let { com.dustinky.spyprobe.HomeEventStore.get().find(it) }
+                                    if (evMem != null) {
+                                        EventCard(
+                                            entry = evMem,
+                                            onClick = { eventDetail = evMem }
+                                        )
+                                    } else {
+                                        HistoryLineRow(
+                                            idx = idx,
+                                            line = line,
+                                            onClick = {
+                                                val rid2 = parseReqId(line)
+                                                if (rid2 != null) {
+                                                    val he2 = rid2?.let { com.dustinky.spyprobe.HomeHttpStore.get().find(it) }
+                                                    if (he2 != null) {
+                                                        httpDetail = he2
+                                                    } else {
+                                                        // 内存未命中 → 按会话日期从 http_entries 文件回溯
+                                                        val day = selectedSession?.date
+                                                        if (day != null) {
+                                                            scope.launch {
+                                                                val appCtx = context.applicationContext as android.app.Application
+                                                                val fromDay = withContext(Dispatchers.IO) {
+                                                                    com.dustinky.spyprobe.HomeHttpStore.get().readDay(appCtx.filesDir, day)
+                                                                        .firstOrNull { e -> e.id == rid2 }
+                                                                }
+                                                                if (fromDay != null) {
+                                                                    httpDetail = fromDay
+                                                                } else {
+                                                                    detailEntry = idx to line
+                                                                    historyLevel = HistoryLevel.DETAIL
+                                                                }
                                                             }
-                                                            if (fromDay != null) {
-                                                                httpDetail = fromDay
+                                                        } else {
+                                                            detailEntry = idx to line
+                                                            historyLevel = HistoryLevel.DETAIL
+                                                        }
+                                                    }
+                                                } else {
+                                                    val eid2 = parseEvtId(line)
+                                                    if (eid2 != null) {
+                                                        val ev2 = eid2?.let { com.dustinky.spyprobe.HomeEventStore.get().find(it) }
+                                                        if (ev2 != null) {
+                                                            eventDetail = ev2
+                                                        } else {
+                                                            // 内存未命中 → 按会话日期从 event_entries 文件回溯
+                                                            val day = selectedSession?.date
+                                                            if (day != null) {
+                                                                scope.launch {
+                                                                    val appCtx = context.applicationContext as android.app.Application
+                                                                    val fromDay = withContext(Dispatchers.IO) {
+                                                                        com.dustinky.spyprobe.HomeEventStore.get().readDay(appCtx.filesDir, day)
+                                                                            .firstOrNull { e -> e.id == eid2 }
+                                                                    }
+                                                                    if (fromDay != null) {
+                                                                        eventDetail = fromDay
+                                                                    } else {
+                                                                        detailEntry = idx to line
+                                                                        historyLevel = HistoryLevel.DETAIL
+                                                                    }
+                                                                }
                                                             } else {
                                                                 detailEntry = idx to line
                                                                 historyLevel = HistoryLevel.DETAIL
@@ -572,12 +616,9 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                                         historyLevel = HistoryLevel.DETAIL
                                                     }
                                                 }
-                                            } else {
-                                                detailEntry = idx to line
-                                                historyLevel = HistoryLevel.DETAIL
                                             }
-                                        }
-                                    )
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -618,6 +659,7 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                             items(filtered, key = { it.first }) { (idx, line) ->
                                 // v1.49: 实时列表请求行卡片化——含 [REQ#N] 且命中 HomeHttpStore 的行渲染为小黄鸟式微卡片
                                 //（方法色块+URL+状态码+耗时+响应体摘要），普通行保持纯文本
+                                // v1.55: 含 [EVT#N] 且命中 HomeEventStore 的行渲染为通用事件卡片（SQL/JSON/Crypto/TCP/DNS）
                                 val rid = parseReqId(line)
                                 val he = rid?.let { com.dustinky.spyprobe.HomeHttpStore.get().find(it) }
                                 if (he != null) {
@@ -626,23 +668,38 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                         onClick = { httpDetail = he }
                                     )
                                 } else {
-                                    Text(
-                                        line,
-                                        style = codeStyle,
-                                        color = lineColor(line), // v1.50 P2-18: 失败行红色高亮
-                                        softWrap = true,
-                                        modifier = Modifier
-                                            .padding(vertical = 1.dp)
-                                            .clickable {
-                                                val rid2 = parseReqId(line)
-                                                val he2 = rid2?.let { com.dustinky.spyprobe.HomeHttpStore.get().find(it) }
-                                                if (he2 != null) {
-                                                    httpDetail = he2
-                                                } else {
-                                                    detailDialog = line
+                                    val eid = parseEvtId(line)
+                                    val ev = eid?.let { com.dustinky.spyprobe.HomeEventStore.get().find(it) }
+                                    if (ev != null) {
+                                        EventCard(
+                                            entry = ev,
+                                            onClick = { eventDetail = ev }
+                                        )
+                                    } else {
+                                        Text(
+                                            line,
+                                            style = codeStyle,
+                                            color = lineColor(line), // v1.50 P2-18: 失败行红色高亮
+                                            softWrap = true,
+                                            modifier = Modifier
+                                                .padding(vertical = 1.dp)
+                                                .clickable {
+                                                    val rid2 = parseReqId(line)
+                                                    val he2 = rid2?.let { com.dustinky.spyprobe.HomeHttpStore.get().find(it) }
+                                                    if (he2 != null) {
+                                                        httpDetail = he2
+                                                    } else {
+                                                        val eid2 = parseEvtId(line)
+                                                        val ev2 = eid2?.let { com.dustinky.spyprobe.HomeEventStore.get().find(it) }
+                                                        if (ev2 != null) {
+                                                            eventDetail = ev2
+                                                        } else {
+                                                            detailDialog = line
+                                                        }
+                                                    }
                                                 }
-                                            }
-                                    )
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -660,6 +717,11 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             val httpEntry = httpDetail
             if (httpEntry != null) {
                 HttpDetailPage(entry = httpEntry, onBack = { httpDetail = null })
+            }
+            // v1.55: 通用结构化事件详情页（SQL/JSON/Crypto/TCP/DNS 卡片）
+            val evEntry = eventDetail
+            if (evEntry != null) {
+                EventDetailScreen(entry = evEntry, onBack = { eventDetail = null })
             }
 
             // ===== 浮动操作按钮 =====

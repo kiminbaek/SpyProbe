@@ -530,12 +530,16 @@ public class NetProbe {
                             sb.append(addrs[i].getHostAddress());
                         }
                         sb.append("]");
-                        LogStore.get().log(TAG, sb.toString());
+                        String msg = sb.toString();
+                        // v1.55: 结构化 Net 事件（DNS 成功）
+                        logNetEvent("DNS", String.valueOf(host), "", 0, 0, true, "", msg);
                     }
                     return r;
                 } catch (Throwable t) {
                     if (Config.get().dnsCapture) {
-                        LogStore.get().log(TAG, "[DNS] FAIL " + host + " : " + t);
+                        String msg = "[DNS] FAIL " + host + " : " + t;
+                        // v1.55: 结构化 Net 事件（DNS 失败）
+                        logNetEvent("DNS", String.valueOf(host), "", 0, 0, false, String.valueOf(t), msg);
                     }
                     throw t;
                 }
@@ -585,8 +589,10 @@ public class NetProbe {
             if (isSelfInternal(isa)) return;
             String host = isa.getHostString();
             String ip = isa.getAddress() != null ? isa.getAddress().getHostAddress() : "?";
-            LogStore.get().log(TAG, "[TCP] " + host + " (" + ip + "):" + isa.getPort()
-                    + (timeout > 0 ? " timeout=" + timeout : ""));
+            String msg = "[TCP] " + host + " (" + ip + "):" + isa.getPort()
+                    + (timeout > 0 ? " timeout=" + timeout : "");
+            // v1.55: 结构化 Net 事件（连接成功）
+            logNetEvent("TCP", host, ip, isa.getPort(), timeout, true, "", msg);
         } catch (Throwable t) { }
     }
 
@@ -614,9 +620,32 @@ public class NetProbe {
             if (isSelfInternal(isa)) return;
             String host = isa.getHostString();
             String ip = isa.getAddress() != null ? isa.getAddress().getHostAddress() : "?";
-            LogStore.get().log(TAG, "[TCP] FAIL " + host + " (" + ip + "):" + isa.getPort()
-                    + (timeout > 0 ? " timeout=" + timeout : "") + " -> " + err);
+            String msg = "[TCP] FAIL " + host + " (" + ip + "):" + isa.getPort()
+                    + (timeout > 0 ? " timeout=" + timeout : "") + " -> " + err;
+            // v1.55: 结构化 Net 事件（连接失败）
+            logNetEvent("TCP", host, ip, isa.getPort(), timeout, false, String.valueOf(err), msg);
         } catch (Throwable t) { }
+    }
+
+    /** v1.55: 结构化 Net 事件（TCP/DNS 连接）——日志行嵌入 [EVT#id]，EventStore 写 SpyEvent */
+    private static void logNetEvent(String kind, String host, String ip, int port, int timeout,
+                                    boolean ok, String err, String msg) {
+        try {
+            long eid = EventStore.get().nextId();
+            String tagged = "[EVT#" + eid + "]" + msg;
+            LogStore.get().log(TAG, tagged);
+            org.json.JSONObject payload = new org.json.JSONObject();
+            payload.put("kind", kind == null ? "" : kind);
+            payload.put("host", host == null ? "" : host);
+            payload.put("ip", ip == null ? "" : ip);
+            payload.put("port", port);
+            payload.put("timeout", timeout);
+            payload.put("ok", ok);
+            payload.put("err", err == null ? "" : err);
+            EventStore.get().add(new SpyEvent("NET", eid, System.currentTimeMillis(),
+                    (kind == null ? "" : kind) + " " + (host == null ? "" : host) + ":" + port,
+                    payload, tagged, ""));
+        } catch (Throwable t) { /* 结构化失败不影响文本日志 */ }
     }
 
     // ================= OkHttp 抓包 =================
@@ -1172,8 +1201,12 @@ public class NetProbe {
                         || ip.startsWith("127.") || ip.startsWith("0.") || isPrivate172(ip)) return;
                 int p = port instanceof Integer ? (Integer) port : -1;
                 // v1.54 P1: 栈 12→6 帧（连接失败只需看到目标 App 发起方，系统样板帧无价值）
-                LogStore.get().log(TAG, (fail ? "[TCP] FAIL " : "[TCP] ") + ip + ":" + p
-                        + " <- " + StackUtil.getCompact(6));
+                String stack = StackUtil.getCompact(6);
+                String msg = (fail ? "[TCP] FAIL " : "[TCP] ") + ip + ":" + p
+                        + " <- " + stack;
+                // v1.55: 结构化 Net 事件（底层 connect，带调用栈）
+                logNetEvent("CONNECT", ip, ip, p, -1, !fail,
+                        fail ? "connect fail" : "", msg);
             }
         } catch (Throwable t) { }
     }
