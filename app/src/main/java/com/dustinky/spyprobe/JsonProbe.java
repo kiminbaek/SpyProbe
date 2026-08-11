@@ -27,7 +27,7 @@ public class JsonProbe {
         // v1.37 P0-1: 惰性安装——开关关闭时完全不装 hook（借鉴 Guise activeHookFeatures，
         //   用户关闭的探测项在目标进程零 hook 存在，减少崩溃面 + 更隐蔽 + 启动更快）
         if (!Config.get().jsonCapture) {
-            DebugLog.get().log("Json", "install(" + phase + ") skipped: Config.get().jsonCapture == false");
+            DebugLog.get().logNoMirror("Json", "install(" + phase + ") skipped: Config.get().jsonCapture == false");
             return;
         }
         int hooked = 0;
@@ -40,6 +40,9 @@ public class JsonProbe {
                 if (Config.get().jsonCapture) {
                     try {
                         String s = r == null ? "null" : r.toString();
+                        // v1.53: 过滤自家控制面（SpyServer 9901 /api/ping、/api/config 响应在目标进程内
+                        //   经 JSONObject.toString 被本 hook 捕获 → 65 行纯噪音刷屏）
+                        if (isSelfControlPlane(s)) return r;
                         if (s.length() > 300) s = s.substring(0, 300) + "...(" + s.length() + ")";
                         LogStore.get().log(TAG, "[JSON] " + s);
                     } catch (Throwable t) { }
@@ -66,6 +69,7 @@ public class JsonProbe {
                         try {
                             Object arg = chain.getArg(0);
                             String s = r == null ? "null" : r.toString();
+                            if (isSelfControlPlane(s)) return r;
                             if (s.length() > 300) s = s.substring(0, 300) + "...(" + s.length() + ")";
                             LogStore.get().log(TAG, "[Gson] " + (arg == null ? "?" : arg.getClass().getName()) + " -> " + s);
                         } catch (Throwable t) { }
@@ -78,5 +82,17 @@ public class JsonProbe {
             LogStore.get().log(TAG, "[" + phase + "] Gson hook fail (app 可能不用 Gson): " + t);
         }
         LogStore.get().log(TAG, "[" + phase + "] hooked JSONObject/Gson x" + hooked);
+    }
+
+    /** v1.53: 自家控制面 JSON 特征识别（SpyServer 9901 响应在目标进程内被本 probe 捕获 → 纯噪音） */
+    private static boolean isSelfControlPlane(String s) {
+        if (s == null || s.length() < 8 || s.length() > 2048) return false;
+        // /api/ping 响应: {"ok":true,"pkg":"app.p2ee1f.p","port":9901,...}
+        if (s.contains("\"ok\":true") && s.contains("\"pkg\"") && s.contains("\"port\"")) return true;
+        // /api/config 响应: {"sslBypass":true,"okHttp":true,...,"debug":true}
+        if (s.contains("\"sslBypass\"")) return true;
+        // /api/status 响应: {"uptime":...,"logCount":...,"versionCode":...}
+        if (s.contains("\"logCount\"") && s.contains("\"versionCode\"")) return true;
+        return false;
     }
 }

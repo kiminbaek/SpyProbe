@@ -93,15 +93,15 @@ public class SpyServer {
                 acceptThread.setDaemon(true);
                 acceptThread.start();
                 LogStore.get().log(TAG, "server started on 127.0.0.1:" + p + " pkg=" + pkg);
-                DebugLog.get().log("Srv", "start OK 127.0.0.1:" + p + " pkg=" + pkg);
+                DebugLog.get().logNoMirror("Srv", "start OK 127.0.0.1:" + p + " pkg=" + pkg);
                 return;
             } catch (Throwable t) {
                 LogStore.get().log(TAG, "port " + p + " busy, try next");
-                DebugLog.get().log("Srv", "port " + p + " bind fail: " + t);
+                DebugLog.get().logNoMirror("Srv", "port " + p + " bind fail: " + t);
             }
         }
         LogStore.get().log(TAG, "server start fail: all ports 9901-9910 busy");
-        DebugLog.get().log("Srv", "start FAIL: all ports 9901-9910 busy");
+        DebugLog.get().logNoMirror("Srv", "start FAIL: all ports 9901-9910 busy");
     }
 
     private void acceptLoop() {

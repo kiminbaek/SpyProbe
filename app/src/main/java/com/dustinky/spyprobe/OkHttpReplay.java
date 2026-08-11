@@ -93,7 +93,7 @@ public class OkHttpReplay {
                 } catch (Throwable t) { /* one-shot body 已消费/无 body */ }
             }
         } catch (Throwable t) {
-            DebugLog.get().log("Replay", "onNewCall parse fail: " + t);
+            DebugLog.get().logNoMirror("Replay", "onNewCall parse fail: " + t);
         }
         if (url.length() > MAX_URL) url = url.substring(0, MAX_URL) + "...";
 
@@ -103,7 +103,7 @@ public class OkHttpReplay {
             Method cloneM = call.getClass().getMethod("clone");
             clone = cloneM.invoke(call);
         } catch (Throwable t) {
-            DebugLog.get().log("Replay", "clone fail: " + t);
+            DebugLog.get().logNoMirror("Replay", "clone fail: " + t);
         }
 
         final Entry e = new Entry(nextId.getAndIncrement(), System.currentTimeMillis(), method, url, body, clone);
@@ -206,7 +206,7 @@ public class OkHttpReplay {
                 LogStore.get().log(TAG, sb.toString());
             } catch (Throwable t) {
                 LogStore.get().log(TAG, "[Replay#" + e.id + "] !!! 重放失败: " + t);
-                DebugLog.get().log("Replay", "replay fail id=" + e.id + ": " + t);
+                DebugLog.get().logNoMirror("Replay", "replay fail id=" + e.id + ": " + t);
             }
         }, "SpyProbe-Replay-" + id);
         th.setDaemon(true);

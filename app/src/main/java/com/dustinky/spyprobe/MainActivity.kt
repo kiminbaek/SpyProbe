@@ -12,6 +12,12 @@ import com.dustinky.spyprobe.ui.theme.SpyProbeTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // v1.53: 全局崩溃捕获——UI 进程闪退写 files/spyprobe_crash.log，发送调试日志自动附带
+        try {
+            com.dustinky.spyprobe.CrashCatcher.installMainProcess(applicationContext)
+        } catch (t: Throwable) {
+            com.dustinky.spyprobe.util.UiLog.log("CrashCatcher init FAIL: $t")
+        }
         // v1.30.1: UI 进程自己的调试日志（导出失败原因定位）
         com.dustinky.spyprobe.util.UiLog.init(applicationContext)
         com.dustinky.spyprobe.util.UiLog.log("MainActivity onCreate, v=${BuildConfig.VERSION_NAME}")

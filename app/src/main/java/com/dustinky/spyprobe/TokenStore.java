@@ -92,7 +92,7 @@ public class TokenStore {
             sp.edit().putString(KEY_TOKEN, token).apply();
             writeFile(f, token);
             cacheToken(token);
-            DebugLog.get().log(TAG, "token generated len=" + token.length());
+            DebugLog.get().logNoMirror(TAG, "token generated len=" + token.length());
             return token;
         } catch (Throwable t) {
             Log.e(TAG, "ensureToken fail: " + t);
@@ -136,7 +136,7 @@ public class TokenStore {
                 if (!t.isEmpty()) return t;
             }
         } catch (Throwable t) {
-            try { DebugLog.get().log(TAG, "homeTokenViaHttp fail: " + t); } catch (Throwable t2) { }
+            try { DebugLog.get().logNoMirror(TAG, "homeTokenViaHttp fail: " + t); } catch (Throwable t2) { }
         }
         return "";
     }
@@ -158,7 +158,7 @@ public class TokenStore {
             String t = sp.getString(KEY_TOKEN, "");
             if (t != null && !t.isEmpty()) return t;
         } catch (Throwable t) {
-            DebugLog.get().log(TAG, "remoteToken prefs fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "remoteToken prefs fail: " + t);
         }
         try {
             android.os.ParcelFileDescriptor pfd = module.openRemoteFile(FILE_TOKEN);
@@ -175,7 +175,7 @@ public class TokenStore {
                 }
             }
         } catch (Throwable t) {
-            DebugLog.get().log(TAG, "remoteToken file fail: " + t);
+            DebugLog.get().logNoMirror(TAG, "remoteToken file fail: " + t);
         }
         return "";
     }

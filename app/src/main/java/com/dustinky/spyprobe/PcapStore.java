@@ -35,7 +35,7 @@ public class PcapStore {
         dir = new java.io.File(appFilesDir, "spyprobe_pcap");
         if (!dir.exists()) dir.mkdirs();
         current = new java.io.File(dir, "current.pcap");
-        DebugLog.get().log("Pcap", "init dir=" + dir.getAbsolutePath());
+        DebugLog.get().logNoMirror("Pcap", "init dir=" + dir.getAbsolutePath());
     }
 
     public boolean isInitialized() { return dir != null; }
@@ -56,7 +56,7 @@ public class PcapStore {
                     try { fos.close(); } catch (Throwable t2) { }
                 }
             } catch (Throwable t) {
-                DebugLog.get().log("Pcap", "append err: " + t);
+                DebugLog.get().logNoMirror("Pcap", "append err: " + t);
             }
         }
     }
@@ -73,9 +73,9 @@ public class PcapStore {
                     java.io.File archived = new java.io.File(dir, "pcap_" + ts + ".pcap");
                     if (archived.exists()) archived.delete();
                     if (!current.renameTo(archived)) {
-                        DebugLog.get().log("Pcap", "archive rename FAIL -> " + archived.getName());
+                        DebugLog.get().logNoMirror("Pcap", "archive rename FAIL -> " + archived.getName());
                     } else {
-                        DebugLog.get().log("Pcap", "archived -> " + archived.getName()
+                        DebugLog.get().logNoMirror("Pcap", "archived -> " + archived.getName()
                                 + " (" + archived.length() + "B)");
                     }
                 }
@@ -83,7 +83,7 @@ public class PcapStore {
                 // 清掉历史过大的归档（保留最近 5 个，防占盘）
                 cleanOld();
             } catch (Throwable t) {
-                DebugLog.get().log("Pcap", "onSessionStart err: " + t);
+                DebugLog.get().logNoMirror("Pcap", "onSessionStart err: " + t);
             }
         }
     }
@@ -130,7 +130,7 @@ public class PcapStore {
                         int n;
                         while ((n = fis.read(chunk)) > 0) {
                             if (out.size() + n > MAX_EXPORT_BYTES) {
-                                DebugLog.get().log("Pcap", "export aborted: merged > 256MB");
+                                DebugLog.get().logNoMirror("Pcap", "export aborted: merged > 256MB");
                                 return null;
                             }
                             out.write(chunk, 0, n);
@@ -143,7 +143,7 @@ public class PcapStore {
                 if (files == 0) return null;
                 return out.toByteArray();
             } catch (Throwable t) {
-                DebugLog.get().log("Pcap", "export err: " + t);
+                DebugLog.get().logNoMirror("Pcap", "export err: " + t);
                 return null;
             }
         }
@@ -158,7 +158,7 @@ public class PcapStore {
                 long len = current.length();
                 if (len <= 24) return null; // 只有全局头=无记录
                 if (len > MAX_EXPORT_BYTES) {
-                    DebugLog.get().log("Pcap", "exportCurrent aborted: > 256MB");
+                    DebugLog.get().logNoMirror("Pcap", "exportCurrent aborted: > 256MB");
                     return null;
                 }
                 byte[] data = new byte[(int) len];
@@ -175,7 +175,7 @@ public class PcapStore {
                 if (off <= 24) return null;
                 return data; // current.pcap 自带 24B 全局头，直接是合法 pcap
             } catch (Throwable t) {
-                DebugLog.get().log("Pcap", "exportCurrent err: " + t);
+                DebugLog.get().logNoMirror("Pcap", "exportCurrent err: " + t);
                 return null;
             }
         }
@@ -194,9 +194,9 @@ public class PcapStore {
                     }
                 }
             } catch (Throwable t) {
-                DebugLog.get().log("Pcap", "clear err: " + t);
+                DebugLog.get().logNoMirror("Pcap", "clear err: " + t);
             }
-            DebugLog.get().log("Pcap", "clearAll -> deleted " + n + " pcap files");
+            DebugLog.get().logNoMirror("Pcap", "clearAll -> deleted " + n + " pcap files");
             return n;
         }
     }

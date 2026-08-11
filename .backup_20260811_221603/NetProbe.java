@@ -52,7 +52,7 @@ public class NetProbe {
      *   注意：early 阶段 Config 尚未从主进程拉取，走默认值（全开）；late 阶段（配置加载后）
      *   若某项被用户关闭，这里跳过不装。 */
     public void install(String phase) {
-        DebugLog.get().logNoMirror("Net", "install(" + phase + ") 开始");
+        DebugLog.get().log("Net", "install(" + phase + ") 开始");
         if (Config.get().sslBypass) {
             installSslBypass(phase);
             // v1.38 P0-1: hooker just_trust_me 清单核对——补 12 个 SSL 绕过点
@@ -70,7 +70,7 @@ public class NetProbe {
         if (Config.get().tlsCapture) installTlsCapture(phase);
         if (Config.get().connectCapture) installConnectCapture(phase);
         if (Config.get().cronetCapture) installCronetCapture(phase);
-        DebugLog.get().logNoMirror("Net", "install(" + phase + ") 完成");
+        DebugLog.get().log("Net", "install(" + phase + ") 完成");
     }
 
     // ================= WebView.loadUrl 记录（v1.3）=================
@@ -88,11 +88,11 @@ public class NetProbe {
                 }
                 return r;
             });
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked WebView.loadUrl");
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked WebView.loadUrl");
+            LogStore.get().log(TAG, "[" + phase + "] hooked WebView.loadUrl");
+            DebugLog.get().log("Net", "[" + phase + "] hooked WebView.loadUrl");
         } catch (Throwable t) {
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] WebView.loadUrl hook fail: " + t);
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] WebView.loadUrl hook fail: " + t);
+            LogStore.get().log(TAG, "[" + phase + "] WebView.loadUrl hook fail: " + t);
+            DebugLog.get().log("Net", "[" + phase + "] WebView.loadUrl hook fail: " + t);
         }
     }
 
@@ -134,11 +134,11 @@ public class NetProbe {
                 pinningHit(1, "SSLContext.init (标准 TLS 握手入口)");
                 return r;
             });
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked SSLContext.init");
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked SSLContext.init");
+            LogStore.get().log(TAG, "[" + phase + "] hooked SSLContext.init");
+            DebugLog.get().log("Net", "[" + phase + "] hooked SSLContext.init");
         } catch (Throwable t) {
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] SSLContext.init hook fail: " + t);
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] SSLContext.init hook fail: " + t);
+            LogStore.get().log(TAG, "[" + phase + "] SSLContext.init hook fail: " + t);
+            DebugLog.get().log("Net", "[" + phase + "] SSLContext.init hook fail: " + t);
         }
 
         // 2. X509TrustManager.checkServerTrusted → 直接返回（信任所有证书）
@@ -151,11 +151,11 @@ public class NetProbe {
                 pinningHit(2, "X509TrustManager.checkServerTrusted (证书链校验点)");
                 return null; // 不做校验
             });
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked X509TrustManager.checkServerTrusted");
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked X509TrustManager.checkServerTrusted");
+            LogStore.get().log(TAG, "[" + phase + "] hooked X509TrustManager.checkServerTrusted");
+            DebugLog.get().log("Net", "[" + phase + "] hooked X509TrustManager.checkServerTrusted");
         } catch (Throwable t) {
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] X509TrustManager hook fail: " + t);
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] X509TrustManager hook fail: " + t);
+            LogStore.get().log(TAG, "[" + phase + "] X509TrustManager hook fail: " + t);
+            DebugLog.get().log("Net", "[" + phase + "] X509TrustManager hook fail: " + t);
         }
 
         // 3. okhttp CertificatePinner.check → 直接返回（绕过证书固定）
@@ -176,15 +176,15 @@ public class NetProbe {
                     pinningHit(3, "okhttp3.CertificatePinner.check (证书固定 pinner!)");
                     return null;
                 });
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked CertificatePinner.check");
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked CertificatePinner.check");
+                LogStore.get().log(TAG, "[" + phase + "] hooked CertificatePinner.check");
+                DebugLog.get().log("Net", "[" + phase + "] hooked CertificatePinner.check");
             } else {
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] CertificatePinner.check not found");
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] CertificatePinner.check not found");
+                LogStore.get().log(TAG, "[" + phase + "] CertificatePinner.check not found");
+                DebugLog.get().log("Net", "[" + phase + "] CertificatePinner.check not found");
             }
         } catch (Throwable t) {
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] CertificatePinner hook fail: " + t);
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] CertificatePinner hook fail: " + t);
+            LogStore.get().log(TAG, "[" + phase + "] CertificatePinner hook fail: " + t);
+            DebugLog.get().log("Net", "[" + phase + "] CertificatePinner hook fail: " + t);
         }
     }
 
@@ -217,7 +217,7 @@ public class NetProbe {
                 return null;
             });
             ok++;
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked NetworkSecurityTrustManager.checkPins");
+            LogStore.get().log(TAG, "[" + phase + "] hooked NetworkSecurityTrustManager.checkPins");
         } catch (Throwable t) { }
 
         // 2. com.android.org.conscrypt.TrustManagerImpl.checkServerTrusted (3 重载)
@@ -244,7 +244,7 @@ public class NetProbe {
                 });
                 ok++;
             } catch (Throwable t) { }
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked TrustManagerImpl.checkServerTrusted x3");
+            LogStore.get().log(TAG, "[" + phase + "] hooked TrustManagerImpl.checkServerTrusted x3");
         } catch (Throwable t) { }
 
         // 3. TrustManagerImpl.checkTrusted (2 签名) / checkTrustedRecursive —— 链验证内部入口
@@ -277,7 +277,7 @@ public class NetProbe {
                 });
                 ok++;
             } catch (Throwable t) { }
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked TrustManagerImpl.checkTrusted(+Recursive)");
+            LogStore.get().log(TAG, "[" + phase + "] hooked TrustManagerImpl.checkTrusted(+Recursive)");
         } catch (Throwable t) { }
 
         // 4. X509TrustManagerExtensions.checkServerTrusted —— 带 host 的扩展校验
@@ -293,7 +293,7 @@ public class NetProbe {
                 return null;
             });
             ok++;
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked X509TrustManagerExtensions.checkServerTrusted");
+            LogStore.get().log(TAG, "[" + phase + "] hooked X509TrustManagerExtensions.checkServerTrusted");
         } catch (Throwable t) { }
 
         // 5. okhttp3.internal.tls.OkHostnameVerifier.verify —— 主机名校验（证书 CN/SAN 匹配域名）
@@ -327,7 +327,7 @@ public class NetProbe {
                 });
                 ok++;
             } catch (Throwable t) { }
-            if (ok > 0) DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked OkHostnameVerifier.verify");
+            if (ok > 0) LogStore.get().log(TAG, "[" + phase + "] hooked OkHostnameVerifier.verify");
         } catch (Throwable t) { }
 
         // 6. com.squareup.okhttp.OkHttpClient.setCertificatePinner —— 老 okhttp (2.x) 证书固定
@@ -344,7 +344,7 @@ public class NetProbe {
                 return chain.proceed();
             });
             ok++;
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked squareup OkHttpClient.setCertificatePinner");
+            LogStore.get().log(TAG, "[" + phase + "] hooked squareup OkHttpClient.setCertificatePinner");
         } catch (Throwable t) { }
 
         // 7. xutils RequestParams.setSslSocketFactory / setHostnameVerifier —— 记日志（xutils 库）
@@ -388,7 +388,7 @@ public class NetProbe {
                     ok++;
                 } catch (Throwable t) { }
             }
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked AbstractVerifier.verify");
+            LogStore.get().log(TAG, "[" + phase + "] hooked AbstractVerifier.verify");
         } catch (Throwable t) { }
 
         // 9. WebViewClient.onReceivedSslError —— WebView SSL 错误放行
@@ -409,7 +409,7 @@ public class NetProbe {
                 return null;
             });
             ok++;
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked WebViewClient.onReceivedSslError (proceed)");
+            LogStore.get().log(TAG, "[" + phase + "] hooked WebViewClient.onReceivedSslError (proceed)");
         } catch (Throwable t) { }
 
         // 10. CronetEngine$Builder.addPublicKeyPins + enablePublicKeyPinningBypassForLocalTrustAnchors —— Cronet pinning
@@ -442,7 +442,7 @@ public class NetProbe {
                 } catch (Throwable t) { }
             } catch (Throwable t) { }
         }
-        DebugLog.get().logNoMirror("Net", "[" + phase + "] SSL bypass ext: " + ok + " hook points installed");
+        LogStore.get().log(TAG, "[" + phase + "] SSL bypass ext: " + ok + " hook points installed");
 
         // 11. com.android.org.conscrypt.Platform.checkServerTrusted (4 重载) —— Conscrypt 底层校验入口
         //     （SSLContext.init 已替换 TM，但部分库直接调 Platform.checkServerTrusted）
@@ -467,11 +467,11 @@ public class NetProbe {
             }
             if (n > 0) {
                 ok++;
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked Platform.checkServerTrusted x" + n);
+                LogStore.get().log(TAG, "[" + phase + "] hooked Platform.checkServerTrusted x" + n);
             }
         } catch (Throwable t) { }
 
-        DebugLog.get().logNoMirror("Net", "[" + phase + "] SSL bypass ext total: " + ok + " (含子点，部分 ROM 无对应类属正常)");
+        LogStore.get().log(TAG, "[" + phase + "] SSL bypass ext total: " + ok + " (含子点，部分 ROM 无对应类属正常)");
     }
 
     // ================= v1.38 P2-7: WebView debug 开启（hooker webview_enable_debug 借鉴）=================
@@ -505,9 +505,9 @@ public class NetProbe {
                     });
                 } catch (Throwable t) { }
             }
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked WebView.<init> (debug enabled)");
+            LogStore.get().log(TAG, "[" + phase + "] hooked WebView.<init> (debug enabled)");
         } catch (Throwable t) {
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] WebView debug hook fail: " + t);
+            LogStore.get().log(TAG, "[" + phase + "] WebView debug hook fail: " + t);
         }
     }
     private static volatile boolean webViewDebugLogged = false;
@@ -540,11 +540,11 @@ public class NetProbe {
                     throw t;
                 }
             });
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked InetAddress.getAllByName");
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked InetAddress.getAllByName");
+            LogStore.get().log(TAG, "[" + phase + "] hooked InetAddress.getAllByName");
+            DebugLog.get().log("Net", "[" + phase + "] hooked InetAddress.getAllByName");
         } catch (Throwable t) {
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] DNS hook fail: " + t);
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] DNS hook fail: " + t);
+            LogStore.get().log(TAG, "[" + phase + "] DNS hook fail: " + t);
+            DebugLog.get().log("Net", "[" + phase + "] DNS hook fail: " + t);
         }
     }
 
@@ -568,11 +568,11 @@ public class NetProbe {
                     throw t;
                 }
             });
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked Socket.connect(SocketAddress,int)");
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked Socket.connect(SocketAddress,int)");
+            LogStore.get().log(TAG, "[" + phase + "] hooked Socket.connect(SocketAddress,int)");
+            DebugLog.get().log("Net", "[" + phase + "] hooked Socket.connect(SocketAddress,int)");
         } catch (Throwable t) {
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] Socket.connect(SocketAddress,int) hook fail: " + t);
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] Socket.connect(SocketAddress,int) hook fail: " + t);
+            LogStore.get().log(TAG, "[" + phase + "] Socket.connect(SocketAddress,int) hook fail: " + t);
+            DebugLog.get().log("Net", "[" + phase + "] Socket.connect(SocketAddress,int) hook fail: " + t);
         }
     }
 
@@ -806,13 +806,13 @@ public class NetProbe {
                     }
                     return resp;
                 });
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked " + cn + ".proceed");
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked " + cn + ".proceed");
+                LogStore.get().log(TAG, "[" + phase + "] hooked " + cn + ".proceed");
+                DebugLog.get().log("Net", "[" + phase + "] hooked " + cn + ".proceed");
                 hooked = true;
                 break;
             } catch (Throwable t) {
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] " + cn + " hook fail: " + t);
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] " + cn + " hook fail: " + t);
+                LogStore.get().log(TAG, "[" + phase + "] " + cn + " hook fail: " + t);
+                DebugLog.get().log("Net", "[" + phase + "] " + cn + " hook fail: " + t);
             }
         }
         if (!hooked) {
@@ -832,11 +832,11 @@ public class NetProbe {
                     }
                     return r;
                 });
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked okhttp3.RealCall.execute (fallback)");
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked okhttp3.RealCall.execute (fallback)");
+                LogStore.get().log(TAG, "[" + phase + "] hooked okhttp3.RealCall.execute (fallback)");
+                DebugLog.get().log("Net", "[" + phase + "] hooked okhttp3.RealCall.execute (fallback)");
             } catch (Throwable t) {
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] okhttp hook all fail: " + t);
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] okhttp hook all fail: " + t);
+                LogStore.get().log(TAG, "[" + phase + "] okhttp hook all fail: " + t);
+                DebugLog.get().log("Net", "[" + phase + "] okhttp hook all fail: " + t);
             }
         }
         // v1.40 P0/P1: OkHttpClient.newCall hook ——
@@ -859,8 +859,8 @@ public class NetProbe {
         try {
             Class<?> ohc = findOkHttpClientClass();
             if (ohc == null) {
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] OkHttpClient.newCall hook fail: class not found (混淆?)");
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] OkHttpClient.newCall hook fail: class not found (混淆?)");
+                LogStore.get().log(TAG, "[" + phase + "] OkHttpClient.newCall hook fail: class not found (混淆?)");
+                DebugLog.get().log("Net", "[" + phase + "] OkHttpClient.newCall hook fail: class not found (混淆?)");
                 return;
             }
             Class<?> reqCls = Class.forName("okhttp3.Request", false, appCl);
@@ -881,17 +881,17 @@ public class NetProbe {
                     try {
                         hookDynamicOkHttpCall(call);
                     } catch (Throwable t) {
-                        DebugLog.get().logNoMirror("Net", "dynamic call hook fail: " + t);
+                        DebugLog.get().log("Net", "dynamic call hook fail: " + t);
                     }
                 }
                 return call;
             });
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked " + ohc.getName() + ".newCall"
+            LogStore.get().log(TAG, "[" + phase + "] hooked " + ohc.getName() + ".newCall"
                     + (chainHookedF ? " (重放缓存)" : " (混淆兜底: 请求记录+动态响应hook)"));
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked " + ohc.getName() + ".newCall chainHooked=" + chainHookedF);
+            DebugLog.get().log("Net", "[" + phase + "] hooked " + ohc.getName() + ".newCall chainHooked=" + chainHookedF);
         } catch (Throwable t) {
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] OkHttpClient.newCall hook fail: " + t);
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] OkHttpClient.newCall hook fail: " + t);
+            LogStore.get().log(TAG, "[" + phase + "] OkHttpClient.newCall hook fail: " + t);
+            DebugLog.get().log("Net", "[" + phase + "] OkHttpClient.newCall hook fail: " + t);
         }
     }
 
@@ -1012,8 +1012,8 @@ public class NetProbe {
         }
         if (hooked > 0) {
             dynamicHookedCalls.add(key);
-            DebugLog.get().logNoMirror("Net", "[OkHttp-混淆] 动态 hooked " + key + " 响应记录 x" + hooked);
-            DebugLog.get().logNoMirror("Net", "dynamic hooked " + key + " x" + hooked);
+            LogStore.get().log(TAG, "[OkHttp-混淆] 动态 hooked " + key + " 响应记录 x" + hooked);
+            DebugLog.get().log("Net", "dynamic hooked " + key + " x" + hooked);
         }
     }
 
@@ -1066,11 +1066,11 @@ public class NetProbe {
                 }
                 return r;
             });
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked HttpURLConnection.getResponseCode");
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked HttpURLConnection.getResponseCode");
+            LogStore.get().log(TAG, "[" + phase + "] hooked HttpURLConnection.getResponseCode");
+            DebugLog.get().log("Net", "[" + phase + "] hooked HttpURLConnection.getResponseCode");
         } catch (Throwable t) {
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] HUC hook fail: " + t);
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] HUC hook fail: " + t);
+            LogStore.get().log(TAG, "[" + phase + "] HUC hook fail: " + t);
+            DebugLog.get().log("Net", "[" + phase + "] HUC hook fail: " + t);
         }
     }
 
@@ -1111,11 +1111,11 @@ public class NetProbe {
                 });
                 hooked++;
             }
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked ConscryptEngine.wrap/unwrap x" + hooked);
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked ConscryptEngine.wrap/unwrap x" + hooked);
+            LogStore.get().log(TAG, "[" + phase + "] hooked ConscryptEngine.wrap/unwrap x" + hooked);
+            DebugLog.get().log("Net", "[" + phase + "] hooked ConscryptEngine.wrap/unwrap x" + hooked);
         } catch (Throwable t) {
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] ConscryptEngine hook fail: " + t);
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] ConscryptEngine hook fail: " + t);
+            LogStore.get().log(TAG, "[" + phase + "] ConscryptEngine hook fail: " + t);
+            DebugLog.get().log("Net", "[" + phase + "] ConscryptEngine hook fail: " + t);
         }
     }
 
@@ -1133,8 +1133,8 @@ public class NetProbe {
                 }
             }
             if (connect == null) {
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] BlockGuardOs.connect not found");
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] BlockGuardOs.connect not found");
+                LogStore.get().log(TAG, "[" + phase + "] BlockGuardOs.connect not found");
+                DebugLog.get().log("Net", "[" + phase + "] BlockGuardOs.connect not found");
                 return;
             }
             final Method fConnect = connect;
@@ -1149,11 +1149,11 @@ public class NetProbe {
                 if (Config.get().connectCapture) logConnectArgs(chain, false);
                 return r;
             });
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked BlockGuardOs.connect");
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked BlockGuardOs.connect");
+            LogStore.get().log(TAG, "[" + phase + "] hooked BlockGuardOs.connect");
+            DebugLog.get().log("Net", "[" + phase + "] hooked BlockGuardOs.connect");
         } catch (Throwable t) {
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] BlockGuardOs.connect hook fail: " + t);
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] BlockGuardOs.connect hook fail: " + t);
+            LogStore.get().log(TAG, "[" + phase + "] BlockGuardOs.connect hook fail: " + t);
+            DebugLog.get().log("Net", "[" + phase + "] BlockGuardOs.connect hook fail: " + t);
         }
     }
 
@@ -1201,8 +1201,8 @@ public class NetProbe {
                 }
             }
             if (getResponse == null) {
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] CronetHttpURLConnection.getResponse not found");
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] CronetHttpURLConnection.getResponse not found");
+                LogStore.get().log(TAG, "[" + phase + "] CronetHttpURLConnection.getResponse not found");
+                DebugLog.get().log("Net", "[" + phase + "] CronetHttpURLConnection.getResponse not found");
                 return;
             }
             final Method fGetResponse = getResponse;
@@ -1221,11 +1221,11 @@ public class NetProbe {
                 } catch (Throwable t) { }
                 return r;
             });
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked CronetHttpURLConnection.getResponse");
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked CronetHttpURLConnection.getResponse");
+            LogStore.get().log(TAG, "[" + phase + "] hooked CronetHttpURLConnection.getResponse");
+            DebugLog.get().log("Net", "[" + phase + "] hooked CronetHttpURLConnection.getResponse");
         } catch (Throwable t) {
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] Cronet hook fail: " + t);
-            DebugLog.get().logNoMirror("Net", "[" + phase + "] Cronet hook fail: " + t);
+            LogStore.get().log(TAG, "[" + phase + "] Cronet hook fail: " + t);
+            DebugLog.get().log("Net", "[" + phase + "] Cronet hook fail: " + t);
         }
     }
 }

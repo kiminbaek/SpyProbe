@@ -49,7 +49,7 @@ public class UrlProbe {
         // v1.37 P0-1: 惰性安装——开关关闭时完全不装 hook（借鉴 Guise activeHookFeatures，
         //   用户关闭的探测项在目标进程零 hook 存在，减少崩溃面 + 更隐蔽 + 启动更快）
         if (!Config.get().urlBuildCapture) {
-            DebugLog.get().log("Url", "install(" + phase + ") skipped: Config.get().urlBuildCapture == false");
+            DebugLog.get().logNoMirror("Url", "install(" + phase + ") skipped: Config.get().urlBuildCapture == false");
             return;
         }
         int hooked = 0;

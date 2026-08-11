@@ -25,7 +25,7 @@ public class PrefsProbe {
         // v1.37 P0-1: 惰性安装——开关关闭时完全不装 hook（借鉴 Guise activeHookFeatures，
         //   用户关闭的探测项在目标进程零 hook 存在，减少崩溃面 + 更隐蔽 + 启动更快）
         if (!Config.get().prefsCapture) {
-            DebugLog.get().log("Prefs", "install(" + phase + ") skipped: Config.get().prefsCapture == false");
+            DebugLog.get().logNoMirror("Prefs", "install(" + phase + ") skipped: Config.get().prefsCapture == false");
             return;
         }
         String[] getters = {"getString", "getBoolean", "getInt", "getLong", "getFloat", "getStringSet"};

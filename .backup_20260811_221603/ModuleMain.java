@@ -35,10 +35,8 @@ public class ModuleMain extends XposedModule {
     @Override
     public void onPackageReady(PackageReadyParam param) {
         log(Log.INFO, TAG, "onPackageReady: " + param.getPackageName());
-        DebugLog.get().logNoMirror("ModuleMain", "onPackageReady pkg=" + param.getPackageName()
+        DebugLog.get().log("ModuleMain", "onPackageReady pkg=" + param.getPackageName()
                 + " cl=" + (param.getClassLoader() != null ? "ok" : "null"));
-        // v1.53: 目标进程崩溃捕获——Java 层未捕获异常 push 回主进程 9900，调试日志能抓到闪退
-        CrashCatcher.installTargetProcess();
         final String pkg = param.getPackageName();
         final ClassLoader cl = param.getClassLoader();
 
@@ -68,7 +66,7 @@ public class ModuleMain extends XposedModule {
         // v1.31.6 P0-1: 早期 currentApplication() 可能为 null → cfgFile 可能解析为 null；
         //   Config.loadConfig/saveConfig 已支持 file==null 时动态重解析，这里仅作日志与 rulesFile 参考
         final java.io.File cfgFile = Config.get().resolveCfgFile();
-        DebugLog.get().logNoMirror("ModuleMain", "cfgFile=" + (cfgFile != null ? cfgFile.getAbsolutePath() : "null"));
+        DebugLog.get().log("ModuleMain", "cfgFile=" + (cfgFile != null ? cfgFile.getAbsolutePath() : "null"));
         // v1.29: 日志持久化初始化（DebugLog 三保险：内存环形 + 落盘 + logcat）
         // v1.29 修复：原实现 currentApplication() 返回 null 时静默跳过 → dir=null 一行不写盘且无痕迹。
         // 现在：立即尝试 + 延迟重试（1s/3s/10s），任何失败写 DebugLog。
@@ -78,7 +76,7 @@ public class ModuleMain extends XposedModule {
         // v1.32: 日志推回主进程（SpyProbe 自己家）——目标进程不再落盘目标 App data（历史日志在主进程家，免 root）
         // v1.37 P0-5: 从模块远程偏好取 token 随推送鉴权（防其他 App 伪造日志灌入主进程）
         String pushToken = TokenStore.remoteToken(this);
-        DebugLog.get().logNoMirror("ModuleMain", "push token=" + (pushToken.isEmpty() ? "(none, 老主进程兼容)" : "len " + pushToken.length()));
+        DebugLog.get().log("ModuleMain", "push token=" + (pushToken.isEmpty() ? "(none, 老主进程兼容)" : "len " + pushToken.length()));
         // v1.44.1 P0: 传 token provider——推送失败(401)时 LogStore/PcapWriter 自动重拉 token 再重试，
         //   根治 libxposed 跨进程读静默空导致"卸载重装后 401 永远抓不了日志"的问题
         LogStore.get().enablePushHome(pushToken, () -> TokenStore.remoteToken(this));
@@ -97,10 +95,10 @@ public class ModuleMain extends XposedModule {
             if (earlyCfg != null && !earlyCfg.isEmpty()) {
                 Config.get().applyJson(earlyCfg);
                 earlyCfgLoaded[0] = true;
-                DebugLog.get().logNoMirror("ModuleMain", "config loaded from HOME (early, for lazy hook)");
+                DebugLog.get().log("ModuleMain", "config loaded from HOME (early, for lazy hook)");
             }
         } catch (Throwable t) {
-            DebugLog.get().logNoMirror("ModuleMain", "early config fetch FAIL: " + t);
+            DebugLog.get().log("ModuleMain", "early config fetch FAIL: " + t);
         }
 
         // 立即装网络 hook
@@ -122,7 +120,7 @@ public class ModuleMain extends XposedModule {
                 HookSafe.install("ModuleMain", "clsProbe.install(late)", () -> clsProbe.install("late"));
             } catch (Throwable t) {
                 log(Log.ERROR, TAG, "class probe install error: " + t);
-                DebugLog.get().logNoMirror("ModuleMain", "clsProbe.install FAIL: " + t);
+                DebugLog.get().log("ModuleMain", "clsProbe.install FAIL: " + t);
             }
 
             // t=2000ms: 加密/Activity/JSON/SharedPreferences + 环境检测 + server
@@ -141,17 +139,17 @@ public class ModuleMain extends XposedModule {
                         if (homeCfg != null && !homeCfg.isEmpty()) {
                             Config.get().applyJson(homeCfg);
                             homeLoaded = true;
-                            DebugLog.get().logNoMirror("ModuleMain", "config loaded from HOME (:9900)");
+                            DebugLog.get().log("ModuleMain", "config loaded from HOME (:9900)");
                         }
                     } catch (Throwable t) {
-                        DebugLog.get().logNoMirror("ModuleMain", "fetch home config FAIL: " + t);
+                        DebugLog.get().log("ModuleMain", "fetch home config FAIL: " + t);
                     }
                 }
                 if (!homeLoaded) {
                     Config.get().loadConfig(cfgFile);
-                    DebugLog.get().logNoMirror("ModuleMain", "config loaded from target data (fallback)");
+                    DebugLog.get().log("ModuleMain", "config loaded from target data (fallback)");
                 }
-                DebugLog.get().logNoMirror("ModuleMain", "loadConfig done ssl=" + Config.get().sslBypass
+                DebugLog.get().log("ModuleMain", "loadConfig done ssl=" + Config.get().sslBypass
                         + " native=" + Config.get().nativeCapture + " debug=" + Config.get().debugEnabled);
                 // v1.10: native 层抓包（libc + SSL_write/SSL_read + HTTP/2），越早装越好
                 // v1.37 P0-2: HookSafe 统一包裹（NativeProbe.init 内部也有自己的 try-catch）
@@ -169,15 +167,15 @@ public class ModuleMain extends XposedModule {
                 HookSafe.install("ModuleMain", "anti.install()", () -> anti.install());
             } catch (Throwable t) {
                 log(Log.ERROR, TAG, "deferred probe install error: " + t);
-                DebugLog.get().logNoMirror("ModuleMain", "deferred install FAIL: " + t);
+                DebugLog.get().log("ModuleMain", "deferred install FAIL: " + t);
             }
             // v1.23: server 启动独立 try-catch——无论探测装没装上，server 必须起来（UI 才能连）
             try {
-                DebugLog.get().logNoMirror("ModuleMain", "installing server.start()");
+                DebugLog.get().log("ModuleMain", "installing server.start()");
                 server.start();
             } catch (Throwable t) {
                 log(Log.ERROR, TAG, "server start error: " + t);
-                DebugLog.get().logNoMirror("ModuleMain", "server.start FAIL: " + t);
+                DebugLog.get().log("ModuleMain", "server.start FAIL: " + t);
             }
 
             // t=2500ms: SQLite 记录
@@ -186,7 +184,7 @@ public class ModuleMain extends XposedModule {
                 HookSafe.install("ModuleMain", "sqlite.install(late)", () -> sqlite.install("late"));
             } catch (Throwable t) {
                 log(Log.ERROR, TAG, "sqlite probe install error: " + t);
-                DebugLog.get().logNoMirror("ModuleMain", "sqlite FAIL: " + t);
+                DebugLog.get().log("ModuleMain", "sqlite FAIL: " + t);
             }
 
             // t=5000ms: DexKit 初始化（导出 dex / 字符串反查，等类加载稳定）+ 持久化 hook/hijack 规则重挂
@@ -199,31 +197,31 @@ public class ModuleMain extends XposedModule {
                 boolean loaded = Config.get().loadRules(rulesFile);
                 if (loaded) {
                     log(Log.INFO, TAG, "loaded persisted hook rules, re-hooking...");
-                    DebugLog.get().logNoMirror("ModuleMain", "rules loaded, re-hooking " + Config.get().hooks.size());
+                    DebugLog.get().log("ModuleMain", "rules loaded, re-hooking " + Config.get().hooks.size());
                 } else {
-                    DebugLog.get().logNoMirror("ModuleMain", "no rules loaded (first run?)");
+                    DebugLog.get().log("ModuleMain", "no rules loaded (first run?)");
                 }
                 for (Config.HookSpec spec : Config.get().hooks) {
                     if (!spec.enabled) continue;
                     try {
                         mth.hookMethod(spec.className, spec.methodName, spec.paramTypes);
                     } catch (Throwable t) {
-                        DebugLog.get().logNoMirror(TAG, "re-hook fail: " + spec.className + "." + spec.methodName + " : " + t);
-                        DebugLog.get().logNoMirror("ModuleMain", "re-hook FAIL " + spec.className + "." + spec.methodName + ": " + t);
+                        LogStore.get().log(TAG, "re-hook fail: " + spec.className + "." + spec.methodName + " : " + t);
+                        DebugLog.get().log("ModuleMain", "re-hook FAIL " + spec.className + "." + spec.methodName + ": " + t);
                     }
                 }
-                if (loaded) DebugLog.get().logNoMirror(TAG, "re-hook done, rules=" + Config.get().hooks.size()
+                if (loaded) LogStore.get().log(TAG, "re-hook done, rules=" + Config.get().hooks.size()
                         + " hijacks=" + Config.get().hijacks.size());
-                DebugLog.get().logNoMirror("ModuleMain", "re-hook done rules=" + Config.get().hooks.size()
+                DebugLog.get().log("ModuleMain", "re-hook done rules=" + Config.get().hooks.size()
                         + " hijacks=" + Config.get().hijacks.size());
             } catch (Throwable t) {
                 log(Log.ERROR, TAG, "re-hook error: " + t);
-                DebugLog.get().logNoMirror("ModuleMain", "re-hook error: " + t);
+                DebugLog.get().log("ModuleMain", "re-hook error: " + t);
             }
         }, "SpyProbe-Scheduler").start();
 
         log(Log.INFO, TAG, "SpyProbe ready for " + pkg);
-        DebugLog.get().logNoMirror("ModuleMain", "onPackageReady 流程编排完成 pkg=" + pkg);
+        DebugLog.get().log("ModuleMain", "onPackageReady 流程编排完成 pkg=" + pkg);
     }
 
     /** v1.32: 从主进程（SpyProbe 自己家）拉权威配置；主进程不在线返回 null

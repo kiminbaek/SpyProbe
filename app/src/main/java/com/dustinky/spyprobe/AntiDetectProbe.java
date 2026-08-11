@@ -140,7 +140,7 @@ public class AntiDetectProbe {
         // v1.37 P0-1: 惰性安装——antiRoot/antiXposed 都关闭时完全不装反检测 hook
         // v1.44: 加 antiApplist 条件（三开关全关才跳过）
         if (!Config.get().antiRoot && !Config.get().antiXposed && !Config.get().antiApplist) {
-            DebugLog.get().log("AntiDetect", "install() skipped: antiRoot/antiXposed/antiApplist all false");
+            DebugLog.get().logNoMirror("AntiDetect", "install() skipped: antiRoot/antiXposed/antiApplist all false");
             return;
         }
         if (installed) return;

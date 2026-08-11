@@ -35,7 +35,7 @@ public class KeystoreProbe {
 
     public void install(String phase) {
         if (!Config.get().keystoreCapture) {
-            DebugLog.get().log("Keystore", "install(" + phase + ") skipped: keystoreCapture == false");
+            DebugLog.get().logNoMirror("Keystore", "install(" + phase + ") skipped: keystoreCapture == false");
             return;
         }
         try {

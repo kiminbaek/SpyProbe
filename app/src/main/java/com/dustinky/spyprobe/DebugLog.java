@@ -180,6 +180,15 @@ public class DebugLog {
             } else {
                 sb.append("---- no debug file yet (filesDir 未拿到)\n");
             }
+            // v1.53: 附加崩溃记录（主进程 files/spyprobe_crash.log；目标进程崩溃 push 回来也写这里）
+            try {
+                String crash = CrashCatcher.readCrashLog();
+                if (crash != null) {
+                    sb.append("---- crash log (spyprobe_crash.log) ----\n").append(crash);
+                }
+            } catch (Throwable t) {
+                sb.append("(read crash log fail: ").append(t).append(")\n");
+            }
             return sb.toString();
         }
     }

@@ -237,6 +237,11 @@ public class SpyHomeServer {
                     o.put("accepted", n);
                     return o.toString();
                 }
+                case "/api/push_crash": {
+                    // v1.53: 目标进程崩溃 → CrashCatcher 推回主进程落盘（调试日志导出自动附带）
+                    CrashCatcher.saveFromTarget(body == null ? "(null)" : body);
+                    return "{\"ok\":true}";
+                }
                 case "/api/push_logs": {
                     // 目标进程批量推送日志 → 主进程 LogStore（LogPersister 落自己家）
                     JSONObject root = new JSONObject(body == null ? "{}" : body);

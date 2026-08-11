@@ -3,6 +3,7 @@ package com.dustinky.spyprobe;
 import android.content.ContentValues;
 
 import java.lang.reflect.Method;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -19,17 +20,91 @@ public class SQLiteProbe {
 
     static final String TAG = "SpyProbe.SQL";
 
+    // v1.53: 高频 SQL 模板聚合（30s 窗口同模板重复 >=5 次 → 只记首条+汇总，防 cacheObject 之类刷屏）
+    private static final java.util.LinkedHashMap<String, SqlAgg> SQL_AGG = new java.util.LinkedHashMap<>();
+    private static final long AGG_WINDOW_MS = 30_000L;
+    private static final int AGG_MIN_REPEAT = 5;
+    static class SqlAgg { int count; long windowStart; }
+
     private final XposedModule module;
 
     public SQLiteProbe(XposedModule module) {
         this.module = module;
     }
 
+    /**
+     * v1.53: 日志降噪判断——SQLite 驱动内部调用直接过滤，高频模板聚合。
+     * 返回 true 表示这条该记（首次出现/低频重复），false 表示跳过（驱动内部调用/窗口内高频）。
+     */
+    static boolean shouldLog(String sql) {
+        if (sql == null) return false;
+        String t = sql.trim();
+        if (t.isEmpty()) return false;
+        // ① SQLiteDatabase 驱动内部实现（每次写操作后自动查，对逆向零价值）→ 直接过滤
+        String up = t.toUpperCase(Locale.US);
+        if (up.equals("SELECT CHANGES()")
+                || up.startsWith("SELECT CHANGES(),")
+                || up.equals("SELECT CHANGES(), LAST_INSERT_ROWID()")) {
+            return false;
+        }
+        // ② 高频模板聚合
+        String tpl = normalizeSql(t);
+        long now = System.currentTimeMillis();
+        synchronized (SQL_AGG) {
+            SqlAgg a = SQL_AGG.get(tpl);
+            if (a == null) {
+                a = new SqlAgg();
+                a.count = 1;
+                a.windowStart = now;
+                SQL_AGG.put(tpl, a);
+                if (SQL_AGG.size() > 64) {
+                    // 防无界增长：淘汰最旧模板（LinkedHashMap 迭代序=插入序）
+                    java.util.Iterator<SqlAgg> it = SQL_AGG.values().iterator();
+                    if (it.hasNext()) it.next();
+                    if (SQL_AGG.size() > 64) SQL_AGG.remove(SQL_AGG.keySet().iterator().next());
+                }
+                return true;  // 模板首次出现 → 记全量
+            }
+            a.count++;
+            if (now - a.windowStart >= AGG_WINDOW_MS) {
+                if (a.count >= AGG_MIN_REPEAT) {
+                    LogStore.get().log(TAG, "[SQL] " + tpl + " —— 30s 内重复 " + a.count + " 次，已聚合（防刷屏）");
+                }
+                SQL_AGG.remove(tpl);
+                return false;
+            }
+            if (a.count >= AGG_MIN_REPEAT) return false;  // 窗口内高频 → 抑制，等窗口结束汇总
+            return true;  // 低频重复（<5 次）逐条记
+        }
+    }
+
+    /** 归一化 SQL：去字符串字面量/数字/空白 → 模板 key */
+    private static String normalizeSql(String sql) {
+        String s = sql;
+        StringBuilder sb = new StringBuilder(s.length());
+        boolean inStr = false;
+        char q = 0;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (inStr) {
+                if (c == q) {
+                    if (i + 1 < s.length() && s.charAt(i + 1) == q) { i++; continue; }
+                    inStr = false;
+                }
+                continue;
+            }
+            if (c == '\'' || c == '"') { inStr = true; q = c; sb.append('?'); continue; }
+            if (Character.isDigit(c)) { sb.append('?'); while (i + 1 < s.length() && Character.isDigit(s.charAt(i + 1))) i++; continue; }
+            sb.append(c);
+        }
+        return sb.toString().replaceAll("\\s+", " ").trim();
+    }
+
     public void install(String phase) {
         // v1.37 P0-1: 惰性安装——开关关闭时完全不装 hook（借鉴 Guise activeHookFeatures，
         //   用户关闭的探测项在目标进程零 hook 存在，减少崩溃面 + 更隐蔽 + 启动更快）
         if (!Config.get().sqliteCapture) {
-            DebugLog.get().log("SQLite", "install(" + phase + ") skipped: Config.get().sqliteCapture == false");
+            DebugLog.get().logNoMirror("SQLite", "install(" + phase + ") skipped: Config.get().sqliteCapture == false");
             return;
         }
         try {
@@ -38,39 +113,53 @@ public class SQLiteProbe {
 
             // execSQL(String) / execSQL(String, Object[])
             hooked += hookByName(db, "execSQL", 1, (chain, name) -> {
-                StringBuilder sb = new StringBuilder("[SQL] execSQL: ").append(chain.getArg(0));
+                String sql = String.valueOf(chain.getArg(0));
+                if (!shouldLog(sql)) return;
+                StringBuilder sb = new StringBuilder("[SQL] execSQL: ").append(sql);
                 if (chain.getArgs().size() > 1) sb.append("  args=").append(MethodProbe.str(chain.getArg(1), 200));
                 LogStore.get().log(TAG, sb.toString());
             });
             hooked += hookByName(db, "execSQL", 2, (chain, name) -> {
-                LogStore.get().log(TAG, "[SQL] execSQL: " + chain.getArg(0) + "  args=" + MethodProbe.str(chain.getArg(1), 200));
+                String sql = String.valueOf(chain.getArg(0));
+                if (!shouldLog(sql)) return;
+                LogStore.get().log(TAG, "[SQL] execSQL: " + sql + "  args=" + MethodProbe.str(chain.getArg(1), 200));
             });
 
             // insert(String table, String nullColumnHack, ContentValues values)
             hooked += hookByName(db, "insert", 3, (chain, name) -> {
-                LogStore.get().log(TAG, "[SQL] INSERT INTO " + chain.getArg(0) + " " + cv(chain.getArg(2)));
+                String sql = "INSERT INTO " + chain.getArg(0);
+                if (!shouldLog(sql)) return;
+                LogStore.get().log(TAG, "[SQL] " + sql + " " + cv(chain.getArg(2)));
             });
 
             // update(String table, ContentValues values, String whereClause, String[] whereArgs)
             hooked += hookByName(db, "update", 4, (chain, name) -> {
-                LogStore.get().log(TAG, "[SQL] UPDATE " + chain.getArg(0) + " " + cv(chain.getArg(1))
+                String sql = "UPDATE " + chain.getArg(0);
+                if (!shouldLog(sql)) return;
+                LogStore.get().log(TAG, "[SQL] " + sql + " " + cv(chain.getArg(1))
                         + " WHERE " + chain.getArg(2) + " args=" + MethodProbe.str(chain.getArg(3), 200));
             });
 
             // delete(String table, String whereClause, String[] whereArgs)
             hooked += hookByName(db, "delete", 3, (chain, name) -> {
-                LogStore.get().log(TAG, "[SQL] DELETE FROM " + chain.getArg(0)
+                String sql = "DELETE FROM " + chain.getArg(0);
+                if (!shouldLog(sql)) return;
+                LogStore.get().log(TAG, "[SQL] " + sql
                         + " WHERE " + chain.getArg(1) + " args=" + MethodProbe.str(chain.getArg(2), 200));
             });
 
             // rawQuery(String sql, String[] selectionArgs)
             hooked += hookByName(db, "rawQuery", 2, (chain, name) -> {
-                LogStore.get().log(TAG, "[SQL] rawQuery: " + chain.getArg(0) + " args=" + MethodProbe.str(chain.getArg(1), 200));
+                String sql = String.valueOf(chain.getArg(0));
+                if (!shouldLog(sql)) return;
+                LogStore.get().log(TAG, "[SQL] rawQuery: " + sql + " args=" + MethodProbe.str(chain.getArg(1), 200));
             });
 
             // v1.15 P2-4: rawQuery(String, String[], CancellationSignal) 3 参重载
             hooked += hookByName(db, "rawQuery", 3, (chain, name) -> {
-                LogStore.get().log(TAG, "[SQL] rawQuery: " + chain.getArg(0) + " args=" + MethodProbe.str(chain.getArg(1), 200));
+                String sql = String.valueOf(chain.getArg(0));
+                if (!shouldLog(sql)) return;
+                LogStore.get().log(TAG, "[SQL] rawQuery: " + sql + " args=" + MethodProbe.str(chain.getArg(1), 200));
             });
 
             // query 各重载（4~8 参）→ 拼可读 SELECT
@@ -80,17 +169,23 @@ public class SQLiteProbe {
             // v1.15 P1-4: 官方签名 insertWithOnConflict(String, String, ContentValues, int) = 4 参，
             //   原代码 hookByName(...,5) 找 5 参 → 永远匹配不到 → 静默 hook 0 个
             hooked += hookByName(db, "insertWithOnConflict", 4, (chain, name) -> {
-                LogStore.get().log(TAG, "[SQL] INSERT(conflict) INTO " + chain.getArg(0) + " " + cv(chain.getArg(2)));
+                String sql = "INSERT(conflict) INTO " + chain.getArg(0);
+                if (!shouldLog(sql)) return;
+                LogStore.get().log(TAG, "[SQL] " + sql + " " + cv(chain.getArg(2)));
             });
 
             // v1.6: replace —— INSERT OR REPLACE 语义
             hooked += hookByName(db, "replace", 3, (chain, name) -> {
-                LogStore.get().log(TAG, "[SQL] REPLACE INTO " + chain.getArg(0) + " " + cv(chain.getArg(2)));
+                String sql = "REPLACE INTO " + chain.getArg(0);
+                if (!shouldLog(sql)) return;
+                LogStore.get().log(TAG, "[SQL] " + sql + " " + cv(chain.getArg(2)));
             });
 
             // v1.6: rawQueryWithFactory(CursorFactory, String sql, String[], String)
             hooked += hookByName(db, "rawQueryWithFactory", 4, (chain, name) -> {
-                LogStore.get().log(TAG, "[SQL] rawQuery(factory): " + chain.getArg(1)
+                String sql = String.valueOf(chain.getArg(1));
+                if (!shouldLog(sql)) return;
+                LogStore.get().log(TAG, "[SQL] rawQuery(factory): " + sql
                         + " args=" + MethodProbe.str(chain.getArg(2), 200));
             });
 
@@ -178,7 +273,8 @@ public class SQLiteProbe {
                             if (chain.getArgs().size() > 5 && chain.getArg(5) != null) sb.append(" HAVING ").append(chain.getArg(5));
                             if (chain.getArgs().size() > 6 && chain.getArg(6) != null) sb.append(" ORDER BY ").append(chain.getArg(6));
                             if (chain.getArgs().size() > 7 && chain.getArg(7) != null) sb.append(" LIMIT ").append(chain.getArg(7));
-                            LogStore.get().log(TAG, sb.toString());
+                            String sql = sb.toString();
+                            if (shouldLog(sql)) LogStore.get().log(TAG, sql);
                         } catch (Throwable t) { }
                     }
                     return r;
@@ -236,7 +332,8 @@ public class SQLiteProbe {
                             if (chain.getArg(base + 5) != null) sb.append(" HAVING ").append(chain.getArg(base + 5));
                             if (chain.getArg(base + 6) != null) sb.append(" ORDER BY ").append(chain.getArg(base + 6));
                             if (chain.getArg(base + 7) != null) sb.append(" LIMIT ").append(chain.getArg(base + 7));
-                            LogStore.get().log(TAG, sb.toString());
+                            String sql = sb.toString();
+                            if (shouldLog(sql)) LogStore.get().log(TAG, sql);
                         } catch (Throwable t) { }
                     }
                     return r;

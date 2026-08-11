@@ -22,13 +22,14 @@ public class HookSafe {
      */
     public static boolean install(String tag, String name, Runnable r) {
         try {
-            DebugLog.get().log(tag, "installing " + name);
+            // v1.52.1: installing/installed 是 SpyProbe 自己的 hook 安装进度 → 归调试日志
+            //   （logNoMirror：不镜像进 LogStore，抓包日志页只显示目标 App 数据）
+            DebugLog.get().logNoMirror(tag, "installing " + name);
             r.run();
-            DebugLog.get().log(tag, "installed " + name);
+            DebugLog.get().logNoMirror(tag, "installed " + name);
             return true;
         } catch (Throwable t) {
-            LogStore.get().log(tag, "[" + name + "] install FAIL: " + t);
-            DebugLog.get().log(tag, "[" + name + "] install FAIL: " + t);
+            DebugLog.get().logNoMirror(tag, "[" + name + "] install FAIL: " + t);
             return false;
         }
     }

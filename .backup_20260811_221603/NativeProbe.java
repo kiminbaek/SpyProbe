@@ -101,10 +101,10 @@ public class NativeProbe {
         // 现在：native=false 时跳过整个 native 层（不 loadLibrary 不 hook），Java 层抓包不受影响。
         // v1.41 P0: pcap 独立于 nativeCapture——只开 pcap 导出时也装 native hook（pcap 数据源=native SSL hook）
         if (!Config.get().nativeCapture && !Config.get().pcapCapture) {
-            DebugLog.get().logNoMirror("Native", "native hook skipped: nativeCapture=false && pcapCapture=false");
+            LogStore.get().log(TAG, "native hook skipped: nativeCapture=false && pcapCapture=false (native 层不装 hook；Java 层 SSL 绕过/OkHttp 等照常，重启目标 App 后生效)");
             return;
         }
-        DebugLog.get().logNoMirror("Native", "native hook init: nativeCapture=" + Config.get().nativeCapture + " pcapCapture=" + Config.get().pcapCapture);
+        LogStore.get().log(TAG, "native hook init: nativeCapture=" + Config.get().nativeCapture + " pcapCapture=" + Config.get().pcapCapture);
         try {
             System.loadLibrary("native_hook");
             // v1.31.2 P0-1: initNativeHook 改为返回 boolean——v1.31.1 及以前无脑置 inited=true，
@@ -112,14 +112,14 @@ public class NativeProbe {
             boolean ok = initNativeHook(true);
             if (ok) {
                 inited = true;
-                DebugLog.get().logNoMirror("Native", "native hook active: libc send/recv/read/write + SSL_write/SSL_read (4 libs) + HTTP/2");
+                LogStore.get().log(TAG, "native hook active: libc send/recv/read/write + SSL_write/SSL_read (4 libs) + HTTP/2");
             } else {
-                DebugLog.get().logNoMirror("Native", "native hook init FAILED (shadowhook_init ret!=0) -> hooks disabled, active=false");
+                LogStore.get().log(TAG, "native hook init FAILED (shadowhook_init ret!=0) -> hooks disabled, active=false");
                 // v1.43: 删除 v1.31.2 的 shadowhook_tag root 抓取——v1.34 已把 shadowhook 换成 xhook，
                 //   xhook 不打 shadowhook_tag 这个 logcat tag，该分支永远无输出，属死代码。
             }
         } catch (Throwable t) {
-            DebugLog.get().logNoMirror("Native", "native hook init fail: " + t);
+            LogStore.get().log(TAG, "native hook init fail: " + t);
         }
     }
 
@@ -133,12 +133,11 @@ public class NativeProbe {
 
     // ================= 静态回调（native → Java，全部写 LogStore，不拦截）=================
 
-    /** v1.30.4: native→Java 日志桥——shadowhook_init/hook 结果。
-     *  v1.52.1: 归调试日志（自家运行日志不进抓包日志页；DebugLog 三保险可读） */
+    /** v1.30.4: native→Java 日志桥——shadowhook_init/hook 结果可见于 LogStore（任意 native 线程调用） */
     @SuppressWarnings("unused")
     private static void nativeLog(String msg) {
         if (msg != null && !msg.isEmpty()) {
-            DebugLog.get().logNoMirror("Native", "[native] " + msg);
+            LogStore.get().log(TAG, "[native] " + msg);
         }
     }
 
@@ -205,11 +204,10 @@ public class NativeProbe {
             String proto = isSsl ? "TLS" : "TCP";
             String loc = (socketInfo != null && !socketInfo.isEmpty()) ? socketInfo : ("#" + id);
 
-            // v1.52.1【用户 2026-08-11 拍板：抓包日志页 = 目标 App 数据，不是 SpyProbe 自己的日志】
-            // 该连接 TLS 明文已被结构化解析（HttpEntry 已进 HttpStore，UI 卡片数据源独立于日志流）
-            //   → 不再写任何摘要行。v1.52 的 "[TLS → REQ#N]" 摘要行在视频分片场景每块数据都刷一行，
-            //     用户 1911 行日志里 619 行是这个噪音 → 删除（数据完整性不受影响，HttpEntry 全链路独立）。
+            // v1.52: 该连接 TLS 明文已被结构化解析 → 原始长报文降级为摘要行（列表不再刷整段 HTTP 头）
             if (isSsl && tlsHasStructured(id)) {
+                long rid = tlsLastRid(id);
+                LogStore.get().log(TAG, "[" + proto + " " + dir + " #" + id + (rid > 0 ? " → REQ#" + rid : "") + "]");
                 return false;
             }
 
@@ -219,12 +217,6 @@ public class NativeProbe {
             int n = Math.min(total, MAX_TEXT);
             byte[] data = new byte[n];
             buf.get(data);
-            // v1.52.1: SSL 密文大块（TCP 层 443 端口的视频/图片二进制）不写日志——明文已由
-            //   SSL hook + TlsHttpParser 结构化；密文 hex 摘要对用户零价值（此前 684 行刷屏）。
-            //   保留：可读文本明文（HTTP 明文、DNS 响应等）+ 小包（<=HEX_DUMP_MAX，握手帧有诊断价值）
-            if (!isSsl && total > HEX_DUMP_MAX && !isPrintable(data)) {
-                return false;
-            }
             LogStore.get().log(TAG, "[" + proto + " " + dir + " " + loc + (total > n ? " " + total + "B" : "") + "] " + toReadable(data, total));
             if (stack != null && !stack.isEmpty()) {
                 // v1.16 P2-6: 只对小包记录调用栈（大块传输高频刷屏；短包=握手/协议帧，栈有诊断价值）
@@ -307,25 +299,12 @@ public class NativeProbe {
             }
             // v1.41 P0: 连接关闭日志记录仍受 nativeCapture 控制（pcap 已在上方独立处理）
             if (!Config.get().nativeCapture) return;
-            // v1.52.1: 连接关闭是 SpyProbe 自己的运行状态，不是目标 App 抓包数据 → 归调试日志
-            //   （用户拍板：日志页 = 目标 App 数据；自家运行日志走 DebugLog）
-            DebugLog.get().logNoMirror("Native", "[conn closed " + (isSsl ? "TLS" : "TCP") + " #" + id + "]");
+            LogStore.get().log(TAG, "[conn closed " + (isSsl ? "TLS" : "TCP") + " #" + id + "]");
         } catch (Throwable ignored) {
         }
     }
 
     // ================= 工具 =================
-
-    /** v1.52.1: 是否为可打印文本（前 256 字节无 NUL/控制字符）——用于过滤 SSL 密文大块 */
-    private static boolean isPrintable(byte[] data) {
-        if (data == null || data.length == 0) return false;
-        for (int i = 0; i < data.length && i < 256; i++) {
-            byte b = data[i];
-            if (b == 0) return false;
-            if (b < 0x09 || (b > 0x0d && b < 0x20)) return false;
-        }
-        return true;
-    }
 
     /** 可打印文本直接展示（截断），否则 hex 摘要；total=原始总字节（>data.length 时用于显示实际大小）
      *  v1.35 P1-2: 非文本且 > HEX_DUMP_MAX 字节 → 只记 "[N B hex]" 摘要不再展开（视频/图片流量刷屏根治） */
