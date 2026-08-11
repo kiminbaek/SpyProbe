@@ -399,8 +399,13 @@ public class NativeProbe {
     private static void onConnectionClosed(long id, boolean isSsl) {
         try {
             // v1.52: TLS 连接关闭 → 清理 per-连接 HTTP 解析器（防泄漏）
+            // v1.61: 先 close() 收尾未完成条目（响应体可能没读完，诚实记录 respEndMs）
             if (isSsl) {
                 synchronized (tlsParsers) {
+                    TlsHttpParser p = tlsParsers.get(id);
+                    if (p != null) {
+                        try { p.close(); } catch (Throwable ignored) { }
+                    }
                     tlsParsers.remove(id);
                     tlsConnSock.remove(id); // v1.59: 同步清理四元组缓存
                 }

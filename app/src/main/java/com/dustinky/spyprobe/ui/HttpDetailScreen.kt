@@ -27,11 +27,13 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,6 +51,9 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.dustinky.spyprobe.HttpEntry
 import com.dustinky.spyprobe.ui.theme.codeStyle
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * v1.51: 小黄鸟式全屏请求详情页（v1.48 Dialog 弹窗 → 全屏页）
@@ -251,6 +256,49 @@ private fun OverviewView(entry: HttpEntry, targetPackage: String?, expandStack: 
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        // v1.61: 证书查看 Dialog 状态
+        var certDetailEntry by remember { mutableStateOf<HttpEntry?>(null) }
+        certDetailEntry?.let { cert ->
+            Dialog(
+                onDismissRequest = { certDetailEntry = null },
+                properties = DialogProperties(usePlatformDefaultWidth = false)
+            ) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(24.dp)
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(12.dp))
+                        .verticalScroll(rememberScrollState())
+                        .padding(16.dp)
+                ) {
+                    Text("证书信息 REQ#${cert.id}", style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(10.dp))
+                    Text("Subject: ${cert.certSubject.ifBlank { "-" }}", fontSize = 12.sp)
+                    Text("  CN=${cert.certSubjectCn.ifBlank { "-" }}", fontSize = 11.sp)
+                    Text("  C=${cert.certSubjectC.ifBlank { "-" }}", fontSize = 11.sp)
+                    Text("  ST=${cert.certSubjectSt.ifBlank { "-" }}", fontSize = 11.sp)
+                    Text("  L=${cert.certSubjectL.ifBlank { "-" }}", fontSize = 11.sp)
+                    Text("  O=${cert.certSubjectO.ifBlank { "-" }}", fontSize = 11.sp)
+                    Text("  OU=${cert.certSubjectOu.ifBlank { "-" }}", fontSize = 11.sp)
+                    Spacer(Modifier.height(6.dp))
+                    Text("Issuer: ${cert.certIssuer.ifBlank { "-" }}", fontSize = 12.sp)
+                    Text("  CN=${cert.certIssuerCn.ifBlank { "-" }}", fontSize = 11.sp)
+                    Text("  C=${cert.certIssuerC.ifBlank { "-" }}", fontSize = 11.sp)
+                    Text("  O=${cert.certIssuerO.ifBlank { "-" }}", fontSize = 11.sp)
+                    Spacer(Modifier.height(6.dp))
+                    Text("序列号: ${cert.certSerial.ifBlank { "-" }}", fontSize = 12.sp)
+                    Text("SHA-256: ${cert.certSha256.ifBlank { "-" }}", fontSize = 11.sp)
+                    Text("有效期: ${cert.certNotBefore.ifBlank { "-" }} → ${cert.certNotAfter.ifBlank { "-" }}", fontSize = 11.sp)
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedButton(
+                        onClick = { certDetailEntry = null },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("关闭", fontSize = 12.sp)
+                    }
+                }
+            }
+        }
         // ===== 状态（方法/状态/协议/服务器/KeepAlive/流/ContentType）=====
         SectionCard(title = "状态") {
             KvRow("方法", entry.method)
@@ -272,7 +320,9 @@ private fun OverviewView(entry: HttpEntry, targetPackage: String?, expandStack: 
             val t0 = entry.time
             val t1 = if (entry.reqEndMs > 0) entry.reqEndMs else -1L
             val t2 = if (entry.respStartMs > 0) entry.respStartMs else -1L
-            val t3 = if (entry.done) t0 + entry.durationMs else -1L
+            // v1.61: 响应结束 = 真实 respEndMs（body 读完/连接关闭）；旧历史无字段 → 回退 t0+durationMs
+            val t3 = if (entry.respEndMs > 0) entry.respEndMs
+            else if (entry.done && entry.durationMs > 0) t0 + entry.durationMs else -1L
             if (t1 >= 0) {
                 KvRow("请求开始", fmtTime(t0))
                 KvRow("请求结束", fmtTime(t1))
@@ -302,6 +352,8 @@ private fun OverviewView(entry: HttpEntry, targetPackage: String?, expandStack: 
         // ===== 连接（ID/时间/前端/后端）=====
         SectionCard(title = "连接") {
             KvRow("连接 ID", if (entry.connId != 0L) "#${entry.connId}" else "-")
+            // v1.61: 连接时间（请求首字节时刻）
+            KvRow("时间", fmtTime(entry.time))
             KvRow("流", if (entry.streamId > 0) "流 #${entry.streamId}" else "-")
             KvRow("前端", frontendOf(entry))
             KvRow("后端", backendOf(entry))
@@ -316,16 +368,83 @@ private fun OverviewView(entry: HttpEntry, targetPackage: String?, expandStack: 
                 KvRow("算法列表", entry.cipherList.ifBlank { "-" })
             }
         }
-        // ===== 服务端证书（Subject/Issuer/序列号/指纹/有效期）=====
+        // ===== 服务端证书（Subject/Issuer 细分 + 序列号/指纹/有效期 + 查看/下载）=====
         if (entry.certSubject.isNotBlank() || entry.certSha256.isNotBlank()) {
             SectionCard(title = "服务端证书") {
-                KvRow("Subject", entry.certSubject.ifBlank { "-" })
-                KvRow("Issuer", entry.certIssuer.ifBlank { "-" })
+                // v1.61: Subject 细分（小黄鸟式 CN/国家/省/地区/组织/单位；旧历史无细分 → 回退原始串）
+                if (entry.certSubjectCn.isNotBlank() || entry.certSubjectC.isNotBlank()
+                    || entry.certSubjectSt.isNotBlank() || entry.certSubjectL.isNotBlank()
+                    || entry.certSubjectO.isNotBlank() || entry.certSubjectOu.isNotBlank()) {
+                    KvRow("Subject CN", entry.certSubjectCn.ifBlank { "-" })
+                    KvRow("Subject 国家", entry.certSubjectC.ifBlank { "-" })
+                    KvRow("Subject 省", entry.certSubjectSt.ifBlank { "-" })
+                    KvRow("Subject 地区", entry.certSubjectL.ifBlank { "-" })
+                    KvRow("Subject 组织", entry.certSubjectO.ifBlank { "-" })
+                    KvRow("Subject 单位", entry.certSubjectOu.ifBlank { "-" })
+                } else {
+                    KvRow("Subject", entry.certSubject.ifBlank { "-" })
+                }
+                // v1.61: Issuer 细分（CN/国家/组织）
+                if (entry.certIssuerCn.isNotBlank() || entry.certIssuerC.isNotBlank()
+                    || entry.certIssuerO.isNotBlank()) {
+                    KvRow("Issuer CN", entry.certIssuerCn.ifBlank { "-" })
+                    KvRow("Issuer 国家", entry.certIssuerC.ifBlank { "-" })
+                    KvRow("Issuer 组织", entry.certIssuerO.ifBlank { "-" })
+                } else {
+                    KvRow("Issuer", entry.certIssuer.ifBlank { "-" })
+                }
                 KvRow("序列号", entry.certSerial.ifBlank { "-" })
                 KvRow("SHA-256", entry.certSha256.ifBlank { "-" })
                 val valid = if (entry.certNotBefore.isNotBlank() || entry.certNotAfter.isNotBlank())
                     "${entry.certNotBefore} → ${entry.certNotAfter}" else "-"
                 KvRow("有效期", valid)
+                // v1.61: 查看/下载证书信息
+                val certScope = rememberCoroutineScope()
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = { certDetailEntry = entry },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("查看", fontSize = 12.sp)
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            val ctx = context
+                            certScope.launch {
+                                val text = buildString {
+                                    appendLine("SpyProbe 证书信息 REQ#${entry.id}")
+                                    appendLine("URL: ${entry.url}")
+                                    appendLine()
+                                    appendLine("Subject: ${entry.certSubject}")
+                                    appendLine("  CN=${entry.certSubjectCn}")
+                                    appendLine("  C=${entry.certSubjectC}")
+                                    appendLine("  ST=${entry.certSubjectSt}")
+                                    appendLine("  L=${entry.certSubjectL}")
+                                    appendLine("  O=${entry.certSubjectO}")
+                                    appendLine("  OU=${entry.certSubjectOu}")
+                                    appendLine("Issuer: ${entry.certIssuer}")
+                                    appendLine("  CN=${entry.certIssuerCn}")
+                                    appendLine("  C=${entry.certIssuerC}")
+                                    appendLine("  O=${entry.certIssuerO}")
+                                    appendLine("序列号: ${entry.certSerial}")
+                                    appendLine("SHA-256: ${entry.certSha256}")
+                                    appendLine("有效期: ${entry.certNotBefore} → ${entry.certNotAfter}")
+                                }
+                                val uri = withContext(Dispatchers.IO) {
+                                    com.dustinky.spyprobe.util.ShareLogUtil.writeLogTxtFile(ctx, "spyprobe_cert_${entry.id}", text)
+                                }
+                                if (uri == null) {
+                                    android.widget.Toast.makeText(ctx, "证书导出失败（无法写入 txt）", android.widget.Toast.LENGTH_SHORT).show()
+                                } else {
+                                    android.widget.Toast.makeText(ctx, "证书已导出", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("下载", fontSize = 12.sp)
+                    }
+                }
             }
         }
         // ===== 应用程序（名称/ID）=====

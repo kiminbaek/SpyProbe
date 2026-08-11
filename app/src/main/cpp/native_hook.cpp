@@ -958,10 +958,13 @@ static std::string build_tls_meta_json(const void* ssl) {
     if (!cipher_list.empty()) { if (any) o << ","; o << "\"ciphers\":\"" << json_escape(cipher_list) << "\""; any = true; }
 
     // 服务端证书（SSL_get1_peer_certificate 引用计数 +1，必须 X509_free）
+    // v1.61: +DN 细分字段（subjectCn/C/St/L/O/Ou + issuerCn/C/O），供小黄鸟式证书板块
     if (s.get1_peer_cert != nullptr && s.x509_free != nullptr) {
         void* x509 = s.get1_peer_cert(ssl);
         if (x509 != nullptr) {
             std::string subject, issuer, serial, sha256, not_before, not_after;
+            std::string subj_cn, subj_c, subj_st, subj_l, subj_o, subj_ou;
+            std::string iss_cn, iss_c, iss_o;
             if (s.x509_get_subject_name != nullptr && s.name_get_text_by_nid != nullptr) {
                 void* sn = s.x509_get_subject_name(x509);
                 if (sn != nullptr) {
@@ -977,6 +980,7 @@ static std::string build_tls_meta_json(const void* ssl) {
                     if (!o.empty())  subject += (subject.empty() ? "" : ";") + std::string("O=") + o;
                     if (!ou.empty()) subject += (subject.empty() ? "" : ";") + std::string("OU=") + ou;
                     if (!cn.empty()) subject += (subject.empty() ? "" : ";") + std::string("CN=") + cn;
+                    subj_cn = cn; subj_c = c; subj_st = st; subj_l = l; subj_o = o; subj_ou = ou;
                 }
             }
             if (s.x509_get_issuer_name != nullptr && s.name_get_text_by_nid != nullptr) {
@@ -988,6 +992,7 @@ static std::string build_tls_meta_json(const void* ssl) {
                     if (!c.empty()) issuer += "C=" + c;
                     if (!o.empty()) issuer += (issuer.empty() ? "" : ";") + std::string("O=") + o;
                     if (!cn.empty()) issuer += (issuer.empty() ? "" : ";") + std::string("CN=") + cn;
+                    iss_cn = cn; iss_c = c; iss_o = o;
                 }
             }
             if (s.x509_get_serial != nullptr && s.asn1_integer_get != nullptr) {
@@ -1017,7 +1022,12 @@ static std::string build_tls_meta_json(const void* ssl) {
             if (any) o << ",";
             o << "\"cert\":{\"subject\":\"" << json_escape(subject) << "\",\"issuer\":\"" << json_escape(issuer)
               << "\",\"serial\":\"" << json_escape(serial) << "\",\"sha256\":\"" << json_escape(sha256)
-              << "\",\"notBefore\":\"" << json_escape(not_before) << "\",\"notAfter\":\"" << json_escape(not_after) << "\"}";
+              << "\",\"notBefore\":\"" << json_escape(not_before) << "\",\"notAfter\":\"" << json_escape(not_after)
+              << "\",\"subjectCn\":\"" << json_escape(subj_cn) << "\",\"subjectC\":\"" << json_escape(subj_c)
+              << "\",\"subjectSt\":\"" << json_escape(subj_st) << "\",\"subjectL\":\"" << json_escape(subj_l)
+              << "\",\"subjectO\":\"" << json_escape(subj_o) << "\",\"subjectOu\":\"" << json_escape(subj_ou)
+              << "\",\"issuerCn\":\"" << json_escape(iss_cn) << "\",\"issuerC\":\"" << json_escape(iss_c)
+              << "\",\"issuerO\":\"" << json_escape(iss_o) << "\"}";
             any = true;
 
             s.x509_free(x509);

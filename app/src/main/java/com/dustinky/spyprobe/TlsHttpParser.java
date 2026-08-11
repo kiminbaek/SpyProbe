@@ -38,7 +38,7 @@ public class TlsHttpParser {
     /** body 保留上限（m3u8/enkey 足够；.ts 分片只取头） */
     private static final int BODY_MAX = 8 * 1024;
 
-    private enum State { WAIT_REQ_LINE, WAIT_RESP_LINE }
+    private enum State { WAIT_REQ_LINE, WAIT_RESP_LINE, WAIT_RESP_BODY }
 
     private final long connId; // ssl 指针（NativeProbe 回调的 id）
     // v1.59: 连接四元组（native socketInfo "srcIP:srcPort->dstIP:dstPort" 拆分，可能为空）
@@ -49,6 +49,13 @@ public class TlsHttpParser {
     private final ByteArrayOutputStream reqBuf = new ByteArrayOutputStream(1024);
     private final ByteArrayOutputStream respBuf = new ByteArrayOutputStream(1024);
     private State state = State.WAIT_REQ_LINE;
+
+    // v1.61: 请求首字节到达时刻（修复请求耗时恒 0——此前 reqEndMs 被设成 time 同一时刻）
+    private long reqStartMs = 0;
+    // v1.61: WAIT_RESP_BODY 态累积状态（响应体字节计数 / 期望长度 / chunked 标记）
+    private int respBodyAcc = 0;
+    private int respContentLength = -1;
+    private boolean respChunked = false;
 
     /** 当前未完成条目（请求头完整→建，响应头完整→complete 置 null） */
     private HttpEntry current;
@@ -108,6 +115,11 @@ public class TlsHttpParser {
             if (cert != null) {
                 e.setCertMeta(cert.optString("subject"), cert.optString("issuer"), cert.optString("serial"),
                         cert.optString("sha256"), cert.optString("notBefore"), cert.optString("notAfter"));
+                // v1.61: 证书 DN 细分字段（小黄鸟式 Subject/Issuer 拆分）
+                e.setCertMetaDetailed(
+                        cert.optString("subjectCn"), cert.optString("subjectC"), cert.optString("subjectSt"),
+                        cert.optString("subjectL"), cert.optString("subjectO"), cert.optString("subjectOu"),
+                        cert.optString("issuerCn"), cert.optString("issuerC"), cert.optString("issuerO"));
             }
         } catch (Throwable t) { /* 元数据解析失败不影响主链路 */ }
     }
@@ -121,16 +133,51 @@ public class TlsHttpParser {
             if (data == null || len <= 0) return;
             if (isWrite) {
                 if (state == State.WAIT_REQ_LINE) feedRequest(data, len);
+                else if (state == State.WAIT_RESP_BODY) {
+                    // v1.61: keep-alive 复用连接上，新请求开始 = 上一个响应必须已收完
+                    //（.ts 分片无 Content-Length 或连接关闭前，靠新请求到来补 complete）
+                    completeCurrent(System.currentTimeMillis());
+                    feedRequest(data, len);
+                }
             } else {
-                if (state == State.WAIT_RESP_LINE && current != null) feedResponse(data, len);
+                if (state == State.WAIT_RESP_LINE) feedResponse(data, len);
+                else if (state == State.WAIT_RESP_BODY) feedResponseBody(data, len);
             }
         } catch (Throwable ignored) {
             // native 回调绝不能抛异常
         }
     }
 
+    /** v1.61: 连接关闭——补 complete 未完成条目（响应体可能未读完，诚实收尾） */
+    public void close() {
+        try {
+            completeCurrent(System.currentTimeMillis());
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** v1.61: 收尾当前条目（记录 respEndMs + 更新耗时）；无 current 时仅复位状态 */
+    private void completeCurrent(long nowMs) {
+        HttpEntry e = current;
+        if (e != null) {
+            if (e.respEndMs == 0) e.respEndMs = nowMs;
+            if (!e.done) {
+                e.done = true;
+                e.durationMs = nowMs - e.time;
+                lastRid = e.id;
+            } else {
+                e.durationMs = nowMs - e.time;
+            }
+            current = null;
+        }
+        respBuf.reset();
+        state = State.WAIT_REQ_LINE;
+    }
+
     /** 上行：累积请求字节，请求头完整时建条目 */
     private void feedRequest(byte[] data, int len) {
+        // v1.61: 请求首字节到达时刻（reqBuf 空 = 本请求第一个包）
+        if (reqBuf.size() == 0) reqStartMs = System.currentTimeMillis();
         reqBuf.write(data, 0, len);
         if (reqBuf.size() > CONN_BUF_MAX) { resetReq(); return; }
         byte[] buf = reqBuf.toByteArray();
@@ -177,12 +224,15 @@ public class TlsHttpParser {
         long rid = LogStore.get().nextSeq();
         long nowMs = System.currentTimeMillis();
         String logLine = "[REQ#" + rid + "] >>> " + m + " " + fullUrl;
-        HttpEntry e = new HttpEntry("TLS", rid, nowMs,
+        // v1.61: time = 请求首字节到达时刻（此前=请求头完整时刻 → 请求耗时恒 0）
+        long entryTime = reqStartMs > 0 ? reqStartMs : nowMs;
+        HttpEntry e = new HttpEntry("TLS", rid, entryTime,
                 Thread.currentThread().getName(),
                 m, fullUrl, reqHdrs,
                 HttpEntry.sniffBodyType(reqHdrs.get("Content-Type"), body), body, bodyLen,
                 "", logLine);
         // v1.59: 协议 + 请求头发送完成时刻 + 流ID + 连接四元组 + TLS 元数据/证书
+        // v1.61: reqEndMs = 请求头完整时刻（请求耗时 = reqEndMs - time = 真实发送耗时）
         e.setConnMeta(proto, nowMs, 0, connId, 0, srcAddr, srcPort, dstAddr, dstPort);
         applyTlsMeta(e);
         current = e;
@@ -195,8 +245,12 @@ public class TlsHttpParser {
         state = State.WAIT_RESP_LINE;
     }
 
-    /** 下行：累积响应字节，响应头完整时 complete 条目 */
+    /** 下行：累积响应字节，响应头完整时解析；body 未收完 → WAIT_RESP_BODY 继续计数 */
     private void feedResponse(byte[] data, int len) {
+        // v1.61: 响应首字节到达时刻（真实，非头完整时刻）
+        if (current != null && current.respStartMs == 0 && respBuf.size() == 0) {
+            current.respStartMs = System.currentTimeMillis();
+        }
         respBuf.write(data, 0, len);
         if (respBuf.size() > CONN_BUF_MAX) { resetResp(); return; }
         byte[] buf = respBuf.toByteArray();
@@ -224,32 +278,107 @@ public class TlsHttpParser {
             }
         }
 
-        // 响应体：头后前 BODY_MAX 字节（.ts 大分片只留头）
-        int bodyLen = buf.length - (headEndPos + delimLen);
+        // 响应体：头后同段字节（内容只留前 BODY_MAX；字节数全算——v1.61 修复 0B）
+        int bodyInHead = buf.length - (headEndPos + delimLen);
         String body = "";
-        if (bodyLen > 0) {
-            int n = Math.min(bodyLen, BODY_MAX);
+        if (bodyInHead > 0) {
+            int n = Math.min(bodyInHead, BODY_MAX);
             body = new String(buf, headEndPos + delimLen, n, StandardCharsets.UTF_8);
         }
 
         HttpEntry e = current;
         if (e != null) {
             long nowMs = System.currentTimeMillis();
-            // v1.59: 响应头开始到达时刻（近似=头完整时刻）+ 流ID/四元组补全
-            if (e.respStartMs == 0) e.respStartMs = nowMs;
+            // 流ID/四元组补全
             if (e.connId == 0) e.connId = connId;
             if (e.srcAddr.isEmpty()) e.srcAddr = srcAddr;
             if (e.srcPort == 0) e.srcPort = srcPort;
             if (e.dstAddr.isEmpty()) e.dstAddr = dstAddr;
             if (e.dstPort == 0) e.dstPort = dstPort;
-            long dur = nowMs - e.time;
-            e.complete(status, statusMsg, respHdrs,
-                    HttpEntry.sniffBodyType(respHdrs.get("Content-Type"), body), body, bodyLen, dur);
             lastRid = e.id;
             LogStore.get().log(NativeProbe.TAG, "[REQ#" + e.id + "] <<< " + status + " " + statusMsg);
-        }
 
+            // v1.61: 响应体长度策略（Content-Length / chunked / 未知）
+            String te = respHdrs.get("Transfer-Encoding");
+            String cl = respHdrs.get("Content-Length");
+            boolean chunked = te != null && te.toLowerCase().contains("chunked");
+            int contentLength = -1;
+            if (!chunked && cl != null) {
+                try { contentLength = Integer.parseInt(cl.trim()); } catch (Throwable t) { contentLength = -1; }
+            }
+            respChunked = chunked;
+            respContentLength = contentLength;
+            respBodyAcc = bodyInHead;
+            e.respBodyBytes = bodyInHead;
+
+            String bodyType = HttpEntry.sniffBodyType(respHdrs.get("Content-Type"), body);
+            if (chunked) {
+                // chunked：进入 WAIT_RESP_BODY 找结束标记
+                e.setResponseHead(status, statusMsg, respHdrs, bodyType, body);
+                state = State.WAIT_RESP_BODY;
+            } else if (contentLength >= 0 && bodyInHead >= contentLength) {
+                // body 已完整
+                e.complete(status, statusMsg, respHdrs, bodyType, body, contentLength, nowMs - e.time);
+                e.respEndMs = nowMs;
+                finishResp();
+            } else if (contentLength >= 0) {
+                // body 未完：持续计数直到 Content-Length
+                e.setResponseHead(status, statusMsg, respHdrs, bodyType, body);
+                state = State.WAIT_RESP_BODY;
+            } else {
+                // 无 Content-Length（close-delimited / HTTP/1.0）：未知长度，
+                // 按同段收尾（保持原行为），连接关闭时 close() 兜底
+                e.complete(status, statusMsg, respHdrs, bodyType, body, bodyInHead, nowMs - e.time);
+                e.respEndMs = nowMs;
+                finishResp();
+            }
+        } else {
+            finishResp();
+        }
         respBuf.reset();
+    }
+
+    /** v1.61: WAIT_RESP_BODY 态——只计数 body 字节（不存内容防 OOM），直到完整/结束标记 */
+    private void feedResponseBody(byte[] data, int len) {
+        HttpEntry e = current;
+        if (e == null) { finishResp(); return; }
+        long nowMs = System.currentTimeMillis();
+        respBodyAcc += len;
+        e.respBodyBytes = respBodyAcc;
+        if (respChunked) {
+            // chunked 结束标记：最后 chunk "0\r\n\r\n"
+            if (findChunkedEnd(data, len)) {
+                e.complete(e.status, e.statusMsg, e.respHeaders, e.respBodyType,
+                        e.respBody, respBodyAcc, nowMs - e.time);
+                e.respEndMs = nowMs;
+                finishResp();
+            }
+        } else if (respContentLength >= 0 && respBodyAcc >= respContentLength) {
+            e.complete(e.status, e.statusMsg, e.respHeaders, e.respBodyType,
+                    e.respBody, respContentLength, nowMs - e.time);
+            e.respEndMs = nowMs;
+            finishResp();
+        }
+        // respContentLength < 0（close-delimited）：等连接关闭 close() 兜底
+    }
+
+    /** v1.61: chunked 结束标记检测（"0\r\n\r\n"，容忍 trailing） */
+    private static boolean findChunkedEnd(byte[] data, int len) {
+        for (int i = 0; i + 4 < len; i++) {
+            if (data[i] == '0' && data[i + 1] == '\r' && data[i + 2] == '\n'
+                    && data[i + 3] == '\r' && data[i + 4] == '\n') {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** v1.61: 收尾复位（current 已 complete 或丢弃） */
+    private void finishResp() {
+        respBuf.reset();
+        respBodyAcc = 0;
+        respContentLength = -1;
+        respChunked = false;
         current = null;
         state = State.WAIT_REQ_LINE;
     }
@@ -270,5 +399,12 @@ public class TlsHttpParser {
     }
 
     private void resetReq() { reqBuf.reset(); state = State.WAIT_REQ_LINE; }
-    private void resetResp() { respBuf.reset(); current = null; state = State.WAIT_REQ_LINE; }
+    private void resetResp() {
+        respBuf.reset();
+        respBodyAcc = 0;
+        respContentLength = -1;
+        respChunked = false;
+        current = null;
+        state = State.WAIT_REQ_LINE;
+    }
 }

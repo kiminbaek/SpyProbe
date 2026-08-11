@@ -76,10 +76,14 @@ public class HttpEntry {
     /** 协议：TLS 解析器从请求行拿真实值（HTTP/1.1 / HTTP/2）；OKHTTP 默认 HTTP/1.1 */
     public volatile String protocol = "HTTP/1.1";
 
+    /** 请求开始时刻（毫秒）= 首字节到达；0=未知 */
+    public volatile long reqStartMs = 0;
     /** 请求头发送完成时刻（毫秒）；0=未知 */
     public volatile long reqEndMs = 0;
     /** 响应头开始到达时刻（毫秒）；0=未知 */
     public volatile long respStartMs = 0;
+    /** 响应体读完/连接关闭时刻（毫秒）；0=未知（v1.61 新增，修复响应耗时恒 0） */
+    public volatile long respEndMs = 0;
 
     /** 连接 id（native ssl 指针 / H2 connId），流 #N 展示用；0=未知 */
     public volatile long connId = 0;
@@ -106,6 +110,16 @@ public class HttpEntry {
     public volatile String certSha256 = "";
     public volatile String certNotBefore = "";
     public volatile String certNotAfter = "";
+    // v1.61: 证书 DN 细分字段（小黄鸟式 Subject/Issuer 拆 CN/国家/省/地区/组织/单位）
+    public volatile String certSubjectCn = "";
+    public volatile String certSubjectC = "";
+    public volatile String certSubjectSt = "";
+    public volatile String certSubjectL = "";
+    public volatile String certSubjectO = "";
+    public volatile String certSubjectOu = "";
+    public volatile String certIssuerCn = "";
+    public volatile String certIssuerC = "";
+    public volatile String certIssuerO = "";
 
     public HttpEntry(String source, long id, long time, String thread,
                      String method, String url,
@@ -147,6 +161,16 @@ public class HttpEntry {
         this.done = true;
     }
 
+    /** v1.61: 只记录响应头（body 仍在到达，done 保持 false；body 完成后再 complete） */
+    public void setResponseHead(int status, String statusMsg, Map<String, String> respHeaders,
+                                String respBodyType, String respBody) {
+        this.status = status;
+        this.statusMsg = statusMsg == null ? "" : statusMsg;
+        if (respHeaders != null) this.respHeaders.putAll(respHeaders);
+        this.respBodyType = respBodyType;
+        this.respBody = respBody == null ? "" : respBody;
+    }
+
     /** v1.59: 补充连接元数据（协议/时间点/流ID/四元组）——构建后由各数据源调用 */
     public void setConnMeta(String protocol, long reqEndMs, long respStartMs,
                             long connId, int streamId,
@@ -172,7 +196,7 @@ public class HttpEntry {
         if (cipherList != null) this.cipherList = cipherList;
     }
 
-    /** v1.59: 补充服务端证书（D 级 native） */
+    /** v1.59: 补充服务端证书（D 级 native）；v1.61: +DN 细分字段 */
     public void setCertMeta(String subject, String issuer, String serial,
                             String sha256, String notBefore, String notAfter) {
         if (subject != null) this.certSubject = subject;
@@ -181,6 +205,21 @@ public class HttpEntry {
         if (sha256 != null) this.certSha256 = sha256;
         if (notBefore != null) this.certNotBefore = notBefore;
         if (notAfter != null) this.certNotAfter = notAfter;
+    }
+
+    /** v1.61: 证书 DN 细分字段（Subject CN/国家/省/地区/组织/单位 + Issuer CN/国家/组织） */
+    public void setCertMetaDetailed(String subjectCn, String subjectC, String subjectSt, String subjectL,
+                                    String subjectO, String subjectOu,
+                                    String issuerCn, String issuerC, String issuerO) {
+        if (subjectCn != null) this.certSubjectCn = subjectCn;
+        if (subjectC != null) this.certSubjectC = subjectC;
+        if (subjectSt != null) this.certSubjectSt = subjectSt;
+        if (subjectL != null) this.certSubjectL = subjectL;
+        if (subjectO != null) this.certSubjectO = subjectO;
+        if (subjectOu != null) this.certSubjectOu = subjectOu;
+        if (issuerCn != null) this.certIssuerCn = issuerCn;
+        if (issuerC != null) this.certIssuerC = issuerC;
+        if (issuerO != null) this.certIssuerO = issuerO;
     }
 
     /** 从 url 的 ? 部分解析 query 参数（保留原始顺序，重复 key 后者覆盖） */
@@ -228,8 +267,10 @@ public class HttpEntry {
             o.put("logLine", logLine);
             // v1.59: 元数据扩展
             o.put("protocol", protocol);
+            o.put("reqStartMs", reqStartMs);
             o.put("reqEndMs", reqEndMs);
             o.put("respStartMs", respStartMs);
+            o.put("respEndMs", respEndMs);
             o.put("connId", connId);
             o.put("streamId", streamId);
             o.put("srcAddr", srcAddr);
@@ -247,6 +288,16 @@ public class HttpEntry {
             o.put("certSha256", certSha256);
             o.put("certNotBefore", certNotBefore);
             o.put("certNotAfter", certNotAfter);
+            // v1.61: 证书 DN 细分
+            o.put("certSubjectCn", certSubjectCn);
+            o.put("certSubjectC", certSubjectC);
+            o.put("certSubjectSt", certSubjectSt);
+            o.put("certSubjectL", certSubjectL);
+            o.put("certSubjectO", certSubjectO);
+            o.put("certSubjectOu", certSubjectOu);
+            o.put("certIssuerCn", certIssuerCn);
+            o.put("certIssuerC", certIssuerC);
+            o.put("certIssuerO", certIssuerO);
         } catch (Throwable t) {
             // 序列化失败不应影响主流程
         }
@@ -291,8 +342,10 @@ public class HttpEntry {
             e.done = o.optBoolean("done", false);
             // v1.59: 元数据扩展（旧历史无字段 → optX 默认值兼容）
             e.protocol = o.optString("protocol", "HTTP/1.1");
+            e.reqStartMs = o.optLong("reqStartMs", 0);
             e.reqEndMs = o.optLong("reqEndMs", 0);
             e.respStartMs = o.optLong("respStartMs", 0);
+            e.respEndMs = o.optLong("respEndMs", 0);
             e.connId = o.optLong("connId", 0);
             e.streamId = o.optInt("streamId", 0);
             e.srcAddr = o.optString("srcAddr", "");
@@ -310,6 +363,16 @@ public class HttpEntry {
             e.certSha256 = o.optString("certSha256", "");
             e.certNotBefore = o.optString("certNotBefore", "");
             e.certNotAfter = o.optString("certNotAfter", "");
+            // v1.61: 证书 DN 细分（旧历史无字段 → 空串兼容）
+            e.certSubjectCn = o.optString("certSubjectCn", "");
+            e.certSubjectC = o.optString("certSubjectC", "");
+            e.certSubjectSt = o.optString("certSubjectSt", "");
+            e.certSubjectL = o.optString("certSubjectL", "");
+            e.certSubjectO = o.optString("certSubjectO", "");
+            e.certSubjectOu = o.optString("certSubjectOu", "");
+            e.certIssuerCn = o.optString("certIssuerCn", "");
+            e.certIssuerC = o.optString("certIssuerC", "");
+            e.certIssuerO = o.optString("certIssuerO", "");
             return e;
         } catch (Throwable t) {
             return null;
