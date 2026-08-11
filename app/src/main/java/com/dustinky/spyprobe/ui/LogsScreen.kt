@@ -200,6 +200,8 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     val scope = rememberCoroutineScope()
 
     var modeHistory by remember { mutableStateOf(false) }
+    // v1.56: 分析模式（顶部三态：实时/历史/分析）——与 modeHistory 互斥
+    var modeAnalysis by remember { mutableStateOf(false) }
     var filter by remember { mutableStateOf("") }
     var category by remember { mutableStateOf(LogCategory.ALL) }
     var autoScroll by remember { mutableStateOf(true) }
@@ -295,20 +297,27 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                         }
                         Spacer(Modifier.width(4.dp))
                     }
-                    // v1.27: 实时 / 历史 模式切换
+                    // v1.27: 实时 / 历史 模式切换；v1.56: 三态（实时/历史/分析，互斥）
                     FilterChip(
-                        selected = !modeHistory,
-                        onClick = { modeHistory = false; selectedSession = null; historyLevel = HistoryLevel.DAYS },
+                        selected = !modeHistory && !modeAnalysis,
+                        onClick = { modeHistory = false; modeAnalysis = false; selectedSession = null; historyLevel = HistoryLevel.DAYS },
                         label = { Text("实时", fontSize = 11.sp) }
                     )
                     Spacer(Modifier.width(6.dp))
                     FilterChip(
                         selected = modeHistory,
-                        onClick = { modeHistory = true },
+                        onClick = { modeHistory = true; modeAnalysis = false },
                         label = { Text("历史", fontSize = 11.sp) }
                     )
+                    Spacer(Modifier.width(6.dp))
+                    // v1.56: 分析页入口——聚合统计（接口/SQL/加密/连接）
+                    FilterChip(
+                        selected = modeAnalysis,
+                        onClick = { modeAnalysis = true; modeHistory = false },
+                        label = { Text("分析", fontSize = 11.sp) }
+                    )
                     Spacer(Modifier.width(8.dp))
-                    if (!modeHistory) {
+                    if (!modeHistory && !modeAnalysis) {
                         StatChip("总计", logCount, MaterialTheme.colorScheme.primary)
                         Spacer(Modifier.width(8.dp))
                         StatChip("网络", netCount, Color(0xFF00E5FF))
@@ -316,7 +325,7 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                         StatChip("方法", mthCount, Color(0xFF42A5F5))
                         Spacer(Modifier.width(8.dp))
                         StatChip("错误", errCount, MaterialTheme.colorScheme.error)
-                    } else {
+                    } else if (modeHistory) {
                         // v1.31: 层级指示：卡片列表 → 某会话 → 详情
                         when (historyLevel) {
                             HistoryLevel.DAYS -> {
@@ -404,8 +413,8 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
 
                 Spacer(Modifier.height(8.dp))
 
-                // v1.31: 列表层/实时层显示分类筛选；详情层不显示
-                if (!(modeHistory && historyLevel == HistoryLevel.DETAIL)) {
+                // v1.31: 列表层/实时层显示分类筛选；详情层/分析模式不显示
+                if (!modeAnalysis && !(modeHistory && historyLevel == HistoryLevel.DETAIL)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         LogCategory.values().forEach { cat ->
                             FilterChip(
@@ -419,7 +428,7 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
 
                 // v1.25 P1-3: 暂停/自动滚动（仅实时模式；历史静态数据无此语义）
                 // v1.31.4 P0: 实时模式加回「清空」按钮（v1.31 重构历史导航时丢失——用户反馈无法清空重抓）
-                if (!modeHistory) {
+                if (!modeHistory && !modeAnalysis) {
                     Spacer(Modifier.height(6.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         FilterChip(
@@ -441,8 +450,8 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                     }
                 }
 
-                // v1.31: 搜索框 —— 实时/历史列表层显示
-                if (!(modeHistory && historyLevel == HistoryLevel.DETAIL)) {
+                // v1.31: 搜索框 —— 实时/历史列表层显示；分析模式不显示
+                if (!modeAnalysis && !(modeHistory && historyLevel == HistoryLevel.DETAIL)) {
                     Spacer(Modifier.height(6.dp))
                     OutlinedTextField(
                         value = filter,
@@ -460,6 +469,11 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
         // ===== 内容区（v1.31 三层）=====
         Box(Modifier.fillMaxSize()) {
             when {
+                // ---- v1.56: 分析模式（聚合统计页）----
+                modeAnalysis -> {
+                    AnalysisScreen(modifier = Modifier.fillMaxSize())
+                }
+
                 // ---- 历史层 ①：会话卡片列表（小黄鸟式）----
                 modeHistory && historyLevel == HistoryLevel.DAYS -> {
                     if (historySessions.isEmpty()) {
