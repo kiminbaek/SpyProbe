@@ -56,6 +56,39 @@ public class NativeProbe {
         }
     }
 
+    // v1.52: native TLS 明文 → 结构化 HttpEntry（ExoPlayer/Flutter 等不走 OkHttp 的流量）
+    //  per-连接（ssl 指针）一个解析器；连接关闭时移除；超过上限清空兜底防膨胀
+    private static final java.util.Map<Long, TlsHttpParser> tlsParsers = new java.util.HashMap<>();
+    private static final int MAX_TLS_PARSERS = 64;
+
+    private static void tlsHttpFeed(long connId, boolean isWrite, byte[] data) {
+        if (data == null || data.length == 0) return;
+        TlsHttpParser p;
+        synchronized (tlsParsers) {
+            p = tlsParsers.get(connId);
+            if (p == null) {
+                if (tlsParsers.size() >= MAX_TLS_PARSERS) tlsParsers.clear(); // 极端场景兜底
+                p = new TlsHttpParser(connId);
+                tlsParsers.put(connId, p);
+            }
+        }
+        p.feed(isWrite, data, data.length);
+    }
+
+    private static boolean tlsHasStructured(long connId) {
+        synchronized (tlsParsers) {
+            TlsHttpParser p = tlsParsers.get(connId);
+            return p != null && p.everParsed();
+        }
+    }
+
+    private static long tlsLastRid(long connId) {
+        synchronized (tlsParsers) {
+            TlsHttpParser p = tlsParsers.get(connId);
+            return p != null ? p.lastRid() : -1;
+        }
+    }
+
     private static volatile boolean inited = false;
 
     /** 由 ModuleMain 调用：加载 native 库并启用 hook */
@@ -152,9 +185,32 @@ public class NativeProbe {
             }
             // v1.41 P0: native 日志记录仍受 nativeCapture 控制（pcap 已在上方独立采集）
             if (!Config.get().nativeCapture) return false;
+
+            // v1.52: TLS 明文 → 结构化 HttpEntry 解析（独立 duplicate 读全部，不影响下方展示读取）
+            if (isSsl) {
+                try {
+                    ByteBuffer dup = buf.duplicate();
+                    int tlsN = dup.remaining();
+                    if (tlsN > 0) {
+                        byte[] tlsData = new byte[tlsN];
+                        dup.get(tlsData);
+                        tlsHttpFeed(id, isWrite, tlsData);
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+
             String dir = isWrite ? ">>>" : "<<<";
             String proto = isSsl ? "TLS" : "TCP";
             String loc = (socketInfo != null && !socketInfo.isEmpty()) ? socketInfo : ("#" + id);
+
+            // v1.52: 该连接 TLS 明文已被结构化解析 → 原始长报文降级为摘要行（列表不再刷整段 HTTP 头）
+            if (isSsl && tlsHasStructured(id)) {
+                long rid = tlsLastRid(id);
+                LogStore.get().log(TAG, "[" + proto + " " + dir + " #" + id + (rid > 0 ? " → REQ#" + rid : "") + "]");
+                return false;
+            }
+
             // v1.25 P1-6: 部分拷贝——大块传输（文件/视频）时 buf.remaining() 可达数 MB，
             // 全量拷贝 + toReadable 扫描会分配大数组/遍历，高频下 OOM 风险；只拷贝展示上限并记录总长
             int total = buf.remaining();
@@ -227,6 +283,12 @@ public class NativeProbe {
     @SuppressWarnings("unused")
     private static void onConnectionClosed(long id, boolean isSsl) {
         try {
+            // v1.52: TLS 连接关闭 → 清理 per-连接 HTTP 解析器（防泄漏）
+            if (isSsl) {
+                synchronized (tlsParsers) {
+                    tlsParsers.remove(id);
+                }
+            }
             // v1.41 P0: pcap 独立于 nativeCapture——只开 pcap 时连接关闭也要 flush 会话
             // v1.39 P0: TLS 连接关闭 → pcap 会话记录推主进程
             if (isSsl && Config.get().pcapCapture) {
