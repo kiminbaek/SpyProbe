@@ -160,8 +160,9 @@ object Updater {
                 }
                 val code = conn.responseCode
                 if (code != 200) {
-                    // 尝试镜像
-                    current = mirrorOf(url, attempt + 1) ?: return false
+                    // 尝试镜像（v1.47 P2-13: 传 attempt 不再 +1——旧实现 attempt=0 失败后
+                    //   mirrorOf(url,1) 返回原 URL，导致原 URL 重复试 2 次、最后一个镜像永远试不到）
+                    current = mirrorOf(url, attempt) ?: return false
                     return@repeat
                 }
                 val total = conn.contentLengthLong
@@ -194,8 +195,8 @@ object Updater {
                 return true
             } catch (t: Throwable) {
                 dest.delete()
-                // 网络异常试镜像
-                current = mirrorOf(url, attempt + 1) ?: return false
+                // 网络异常试镜像（v1.47 P2-13: 同上，不再 +1）
+                current = mirrorOf(url, attempt) ?: return false
             } finally {
                 // v1.42 P2-15: 异常路径也释放连接（下载中断/校验失败时 conn 泄漏）
                 try { conn?.disconnect() } catch (t2: Throwable) { }
@@ -204,15 +205,15 @@ object Updater {
         return false
     }
 
-    /** 生成镜像 URL：attempt=1 原 URL，2/3/4 各镜像 */
+    /** 生成镜像 URL：attempt=0 原 URL，1/2/3 各镜像（v1.47 P2-13: 下标修正——旧实现 attempt<=1 返回 original 造成原 URL 试 2 次） */
     private fun mirrorOf(original: String, attempt: Int): String? {
-        if (attempt <= 1) return original
+        if (attempt <= 0) return original
         val prefixes = listOf(
             "https://ghproxy.com/",
             "https://mirror.ghproxy.com/",
             "https://gh-proxy.com/"
         )
-        val idx = attempt - 2
+        val idx = attempt - 1
         if (idx >= prefixes.size) return null
         return prefixes[idx] + original
     }

@@ -76,7 +76,9 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     val rootMode by vm.rootMode.collectAsState()
 
     // 0 = 全局默认, 1 = 当前 App 覆盖
-    var cfgLevel by remember { mutableIntStateOf(0) }
+    // v1.47 P2-22: cfgLevel 持久化记忆（此前重启回默认全局 Tab，用户常停在"当前 App"编辑覆盖项）
+    val prefs = context.getSharedPreferences("spyprobe_ui", android.content.Context.MODE_PRIVATE)
+    var cfgLevel by remember { mutableIntStateOf(prefs.getInt("cfg_level", 0)) }
     val levelLabels = listOf("全局默认", "当前 App")
 
     // 当前级别的配置（全局=default+global覆盖；当前App=该App覆盖项）
@@ -178,7 +180,7 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             levelLabels.forEachIndexed { i, label ->
                 Tab(
                     selected = cfgLevel == i,
-                    onClick = { cfgLevel = i },
+                    onClick = { cfgLevel = i; prefs.edit().putInt("cfg_level", i).apply() },
                     text = {
                         Text(
                             label,

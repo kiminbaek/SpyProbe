@@ -336,6 +336,18 @@ bool callback_kotlin_chunk(jlong id, bool is_write, const void *buf, size_t len,
     return (bool)shouldBlock;
 }
 
+// v1.47 P2-3: H2 DATA 帧单段回调（≤ JNI_MAX_BUFFER_MAPPING）——NewDirectByteBuffer 直接映射段内存，零拷贝
+static void callback_kotlin_h2_chunk(JNIEnv* env, uintptr_t conn_id, int stream_id, bool is_request,
+                                     const uint8_t* data, size_t len) {
+    if (data == nullptr || len == 0) return;
+    JniLocalRefGuard refGuard(env);
+    jobject jBuffer = refGuard.add(env->NewDirectByteBuffer((void*)data, len));
+    if (jBuffer == nullptr) return;
+    env->CallStaticVoidMethod(gNativeRequestHookClass, gOnH2DataChunkMethod,
+                              (jlong)conn_id, (jint)stream_id, (jboolean)is_request, jBuffer);
+    check_exception(env);
+}
+
 bool callback_kotlin_h2(uintptr_t conn_id, const H2FeedResult& feed_result) {
     if (gNativeRequestHookClass == nullptr || gOnH2RequestMethod == nullptr || gOnH2DataChunkMethod == nullptr) return false;
     JNIEnv *env = get_jni_env();
@@ -375,15 +387,21 @@ bool callback_kotlin_h2(uintptr_t conn_id, const H2FeedResult& feed_result) {
 
     for (const auto& chunk : feed_result.data_chunks) {
         if (newly_blocked_streams.count(chunk.stream_id)) continue;
-        if (chunk.data.size() > JNI_MAX_BUFFER_MAPPING) continue;
-        
-        JniLocalRefGuard refGuard(env);
-        jobject jBuffer = refGuard.add(env->NewDirectByteBuffer((void*)chunk.data.data(), chunk.data.size()));
-        if (jBuffer == nullptr) continue;
-
-        env->CallStaticVoidMethod(gNativeRequestHookClass, gOnH2DataChunkMethod,
-                                  (jlong)conn_id, (jint)chunk.stream_id, (jboolean)chunk.is_request, jBuffer);
-        check_exception(env);
+        if (chunk.data.size() > JNI_MAX_BUFFER_MAPPING) {
+            // v1.47 P2-3: 大 DATA 帧（App 可把 MAX_FRAME_SIZE 设到 16MB）分段回调，不再丢弃。
+            //   与 callback_kotlin v1.42 P2-11 分段策略一致；段内 NewDirectByteBuffer 直接映射原内存段，零拷贝
+            const uint8_t* p = chunk.data.data();
+            size_t off = 0;
+            while (off < chunk.data.size()) {
+                size_t seg = chunk.data.size() - off;
+                if (seg > JNI_MAX_BUFFER_MAPPING) seg = JNI_MAX_BUFFER_MAPPING;
+                callback_kotlin_h2_chunk(env, conn_id, chunk.stream_id, chunk.is_request, p + off, seg);
+                off += seg;
+            }
+            continue;
+        }
+        callback_kotlin_h2_chunk(env, conn_id, chunk.stream_id, chunk.is_request,
+                                 chunk.data.data(), chunk.data.size());
     }
 
     for (const auto& req : feed_result.completed) {
@@ -622,140 +640,12 @@ static long now_ms() {
     return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-// GNU hash 函数（与 Android linker 一致）
-static uint32_t gnu_hash_name(const char* name) {
-    uint32_t h = 5381;
-    for (const unsigned char* p = (const unsigned char*)name; *p; p++) h = h * 33 + *p;
-    return h;
-}
+// v1.47 P2-2: 删除 v1.45.5/v1.45.6 遗留死代码 gnu_hash_name + find_ssl_get_fd_via_phdr +
+//   resolve_ssl_get_fd_scan（v1.46.0 起由 resolve_ssl_get_fd_via_dladdr 单次尝试取代，
+//   全库 phdr/maps 扫描在 Conscrypt 场景必然失败且每 2s 重扫拖崩目标进程——见 v1.46.0 注释）
 
-// v1.45.5 P0: 用 dl_iterate_phdr + 手动 ELF 动态符号表解析找 SSL_get_fd。
-//   dlopen(zip路径, RTLD_NOLOAD) 对 base.apk!/lib/... 格式不识别（v1.45.4 败因），
-//   这里直接从已加载 so 的内存基址解析 .dynsym，完全绕开 dlopen/文件系统。
-// v1.45.6 P0: 增加 orig_fn 参数——只解析 orig_fn（实际被调用的 SSL_read/SSL_write 地址）
-//   所属的那个 so（同库保证）。若 orig_fn 为 nullptr 则回退全库扫描。
-static void* find_ssl_get_fd_via_phdr(void* orig_fn, int* checked_out) {
-    void* found = nullptr;
-    int checked = 0;
-    uintptr_t orig_addr = (uintptr_t)orig_fn;
-    dl_iterate_phdr([](struct dl_phdr_info* info, size_t size, void* data) -> int {
-        struct ScanCtx { void** out; uintptr_t orig_addr; int* checked; }* ctx = (ScanCtx*)data;
-        void** out = ctx->out;
-        uintptr_t base = (uintptr_t)info->dlpi_addr;
-        if (base == 0) return 0;
-        const char* name = info->dlpi_name;
-        if (name == nullptr || name[0] == '\0') return 0;
-        if (strstr(name, "libnative_hook") != nullptr) return 0;
-        if (strstr(name, "libc.so") != nullptr || strstr(name, "libdl.so") != nullptr) return 0;
-        if (ctx->checked) (*ctx->checked)++;
-
-        ElfW(Ehdr)* ehdr = (ElfW(Ehdr)*)base;
-        if (ehdr == nullptr ||
-            ehdr->e_ident[EI_MAG0] != ELFMAG0 || ehdr->e_ident[EI_MAG1] != ELFMAG1 ||
-            ehdr->e_ident[EI_MAG2] != ELFMAG2 || ehdr->e_ident[EI_MAG3] != ELFMAG3) return 0;
-
-        // v1.45.6: 若指定 orig_fn，先确认本 so 的地址区间包含它（同库校验）。
-        //   计算本 so 的 PT_LOAD 地址范围 [seg_lo, seg_hi)。
-        if (ctx->orig_addr != 0) {
-            bool in_range = false;
-            uintptr_t seg_lo = 0, seg_hi = 0;
-            bool has_seg = false;
-            ElfW(Phdr)* phdrs0 = (ElfW(Phdr)*)(base + ehdr->e_phoff);
-            for (int i = 0; i < ehdr->e_phnum; i++) {
-                if (phdrs0[i].p_type != PT_LOAD) continue;
-                uintptr_t s_lo = base + phdrs0[i].p_vaddr;
-                uintptr_t s_hi = s_lo + phdrs0[i].p_memsz;
-                if (!has_seg) { seg_lo = s_lo; seg_hi = s_hi; has_seg = true; }
-                else {
-                    if (s_lo < seg_lo) seg_lo = s_lo;
-                    if (s_hi > seg_hi) seg_hi = s_hi;
-                }
-            }
-            if (!has_seg) return 0;
-            if (ctx->orig_addr < seg_lo || ctx->orig_addr >= seg_hi) return 0; // 非本 so，跳过
-            in_range = true;
-            (void)in_range;
-        }
-
-        ElfW(Phdr)* phdrs = (ElfW(Phdr)*)(base + ehdr->e_phoff);
-        const char* dynstr = nullptr;
-        ElfW(Sym)* dynsym = nullptr;
-        uint32_t hash_nchain = 0;
-        const uint32_t* gnu_gh = nullptr;
-        uint32_t gnu_symoffset = 0;
-        for (int i = 0; i < ehdr->e_phnum; i++) {
-            if (phdrs[i].p_type != PT_DYNAMIC) continue;
-            ElfW(Dyn)* dyn = (ElfW(Dyn)*)(base + phdrs[i].p_vaddr);
-            for (; dyn->d_tag != DT_NULL; dyn++) {
-                switch (dyn->d_tag) {
-                    case DT_STRTAB: dynstr = (const char*)(base + dyn->d_un.d_ptr); break;
-                    case DT_SYMTAB: dynsym = (ElfW(Sym)*)(base + dyn->d_un.d_ptr); break;
-                    case DT_HASH: {
-                        const uint32_t* h = (const uint32_t*)(base + dyn->d_un.d_ptr);
-                        hash_nchain = h[1]; // nchain
-                        break;
-                    }
-                    case DT_GNU_HASH: {
-                        gnu_gh = (const uint32_t*)(base + dyn->d_un.d_ptr);
-                        gnu_symoffset = gnu_gh[1];
-                        break;
-                    }
-                }
-            }
-        }
-        if (dynstr == nullptr || dynsym == nullptr) return 0;
-
-        // 1) 优先 GNU hash 精确查（快）
-        if (gnu_gh != nullptr) {
-            uint32_t nbucket = gnu_gh[0];
-            uint32_t bloom_size = gnu_gh[2];
-            uint32_t bloom_shift = gnu_gh[3];
-            const uint64_t* bloom = (const uint64_t*)(gnu_gh + 4);
-            const uint32_t* buckets = (const uint32_t*)(bloom + bloom_size);
-            uint32_t h = gnu_hash_name("SSL_get_fd");
-            uint64_t mask = (1ull << (h & 63)) | (1ull << ((h >> bloom_shift) & 63));
-            if ((bloom[(h / 64) % bloom_size] & mask) == mask) {
-                uint32_t idx = buckets[h % nbucket];
-                if (idx >= gnu_symoffset) {
-                    const uint32_t* chains = buckets + nbucket;
-                    while (true) {
-                        ElfW(Sym)* s = &dynsym[idx];
-                        const char* sn = dynstr + s->st_name;
-                        if ((h | 1) == (gnu_hash_name(sn) | 1) && strcmp(sn, "SSL_get_fd") == 0) {
-                            *out = (void*)(base + s->st_value);
-                            return 1;
-                        }
-                        uint32_t chain = chains[idx - gnu_symoffset];
-                        if (chain & 1) break;
-                        idx++;
-                    }
-                }
-            }
-        }
-        // 2) 兜底 DT_HASH nchain 遍历
-        if (hash_nchain > 0) {
-            for (uint32_t i = 0; i < hash_nchain; i++) {
-                ElfW(Sym)* s = &dynsym[i];
-                if (s->st_name == 0 || s->st_value == 0) continue;
-                if (strcmp(dynstr + s->st_name, "SSL_get_fd") == 0) {
-                    *out = (void*)(base + s->st_value);
-                    return 1;
-                }
-            }
-        }
-        return 0;
-    }, &found);
-    // 统计检查过的 so 数：单独再跑一遍（轻量）——直接用 phdr 遍历计数
-    dl_iterate_phdr([](struct dl_phdr_info* info, size_t size, void* data) -> int {
-        int* cnt = (int*)data;
-        if (info->dlpi_addr != 0 && info->dlpi_name != nullptr && info->dlpi_name[0] != '\0') (*cnt)++;
-        return 0;
-    }, &checked);
-    if (checked_out) *checked_out = checked;
-    return found;
-}
-
-// v1.45.6 P0: hook SSL_set_fd 记录 ssl→fd 映射（标准流程必有，比 SSL_get_fd 可靠）
+// v1.45.6 P0: SSL_set_fd hook——标准 TLS 流程 SSL_new→SSL_set_fd(ssl,fd) 必有，直接记录 ssl→fd
+//   映射，绕开 SSL_get_fd 符号解析（跨库/namespace 全免疫）。v1.47 P2-2 曾误删本函数签名，已恢复。
 static int hook_SSL_set_fd(void *ssl, int fd) {
     if (ssl != nullptr && fd > 0) {
         std::lock_guard<std::mutex> lock(g_ssl_fd_mutex);
@@ -778,65 +668,7 @@ static int get_ssl_fd_from_hook(uintptr_t ssl_ptr) {
     }
     return -1;
 }
-
-// v1.45.6 P0: 双保险解析 SSL_get_fd。
-//   1) 优先从 orig_fn（实际被调用的 SSL_read/SSL_write 地址）所属 so 内解析——同库保证，
-//      根治 v1.45.5 "phdr 全库扫描第一个命中系统 BoringSSL → 跨库调用 SSL_get_fd 返回垃圾 fd"。
-//   2) 失败才回退全库扫描 + maps/dlopen。
-static void resolve_ssl_get_fd_scan(void* orig_fn) {
-    if (real_SSL_get_fd != nullptr) return;
-    // 防抖：2 秒内最多扫一次，避免 SSL 高频回调拖慢
-    static std::atomic<long> g_last_scan_ms{0};
-    long now = now_ms();
-    long last = g_last_scan_ms.load(std::memory_order_relaxed);
-    if (now - last < 2000) return;
-    g_last_scan_ms.store(now, std::memory_order_relaxed);
-
-    // 1) dl_iterate_phdr + ELF 解析，限定 orig_fn 所属 so（v1.45.6 主路径）
-    int checked = 0;
-    void* sym = find_ssl_get_fd_via_phdr(orig_fn, &checked);
-    if (sym != nullptr) {
-        real_SSL_get_fd = (type_SSL_get_fd)sym;
-        char buf[256];
-        snprintf(buf, sizeof(buf), "XH pcap: SSL_get_fd resolved via phdr(%d so)%s", checked,
-                 orig_fn != nullptr ? " [orig-lib]" : "");
-        native_log(buf);
-        return;
-    }
-
-    // 2) 兜底：/proc/self/maps + dlopen（文件系统路径场景）
-    FILE* fp = fopen("/proc/self/maps", "r");
-    if (fp != nullptr) {
-        char line[1024];
-        char path[512];
-        int scanned = 0;
-        while (fgets(line, sizeof(line), fp) != nullptr) {
-            if (sscanf(line, "%*[0-9a-fA-F]-%*[0-9a-fA-F] %*s %*s %*s %*s %511s", path) != 1) continue;
-            if (strstr(path, ".so") == nullptr) continue;
-            if (strstr(path, "libnative_hook") != nullptr) continue;
-            if (strstr(path, "libc.so") != nullptr || strstr(path, "libdl.so") != nullptr) continue;
-            scanned++;
-            void* h = dlopen(path, RTLD_NOW | RTLD_NOLOAD);
-            if (h == nullptr) continue;
-            void* s2 = dlsym(h, "SSL_get_fd");
-            if (s2 != nullptr) {
-                real_SSL_get_fd = (type_SSL_get_fd)s2;
-                char buf[256];
-                snprintf(buf, sizeof(buf), "XH pcap: SSL_get_fd resolved via scan(%d) %s", scanned, path);
-                native_log(buf);
-                dlclose(h);
-                fclose(fp);
-                return;
-            }
-            dlclose(h);
-        }
-        fclose(fp);
-    }
-    char buf[128];
-    snprintf(buf, sizeof(buf), "XH pcap: SSL_get_fd scan FAIL (phdr %d so)", checked);
-    native_log(buf);
-}
-
+// v1.47 P2-2: 死代码 resolve_ssl_get_fd_scan 已删除（见上）
 // v1.46.0 P0 (闪退根治): SSL_get_fd 解析只尝试一次，失败永久放弃。
 //   真机铁证：目标 App 走 Conscrypt（Android 系统 TLS），SSL 用内存 BIO，
 //   SSL_get_fd 不在任何 so 的动态符号表（静态链接/隐藏符号）——phdr 485 so + maps + dlopen

@@ -166,6 +166,12 @@ static bool decode_headers(nghttp2_hd_inflater* inflater, const uint8_t* data, s
             nghttp2_hd_inflate_end_headers(inflater);
             return false;
         }
+        // v1.47 P1-6: consumed==0 时 pos/remaining 不变 → 死循环（理论上完整输入不会发生，防御）
+        if (consumed <= 0) {
+            LOGE("nghttp2 header inflate consumed=0, abort to avoid infinite loop");
+            nghttp2_hd_inflate_end_headers(inflater);
+            return false;
+        }
 
         if (inflate_flags & NGHTTP2_HD_INFLATE_EMIT) {
             std::string name (reinterpret_cast<const char*>(nv.name),  nv.namelen);

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v1.47 P2-14: usesCleartextTraffic 全局明文 → 限定只对本机回环放行明文。
+     SpyProbe 全部明文 HTTP 都是 127.0.0.1:9900/9901（自家 server + 目标进程控制面），
+     GitHub API/下载走 HTTPS。收紧后外部域明文流量默认拒绝（防误连明文劫持）。 -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>

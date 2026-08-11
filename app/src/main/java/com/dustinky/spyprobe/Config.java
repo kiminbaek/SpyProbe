@@ -183,8 +183,11 @@ public class Config {
         for (HijackRule h : idx) {
             // v1.14: 方法名/参数支持通配符 "*"（借鉴 SimpleHook MainHook）：* = 匹配任意方法名/任意参数
             if (!h.methodName.equals("*") && !h.methodName.equals(methodName)) continue;
-            if (paramTypes == null || paramTypes.isEmpty()) return h;
-            if (h.paramTypes.isEmpty() || h.paramTypes.equals("*") || h.paramTypes.equals(paramTypes)) return h;
+            // v1.47 P1-1: 参数匹配语义对齐 MethodProbe.matchParams —— paramTypes==null = 匹配任一重载；
+            //   ""（无参调用 joinParams 结果）= 精确匹配无参规则。原逻辑空串直接返回第一个命中方法名的规则，
+            //   导致 isVip(int) 规则错误应用到无参 isVip() 调用
+            if (paramTypes == null) return h;
+            if (h.paramTypes.equals("*") || h.paramTypes.equals(paramTypes)) return h;
         }
         return null;
     }
@@ -373,7 +376,11 @@ public class Config {
                     org.json.JSONObject o = arr.getJSONObject(i);
                     // v1.13: 兼容旧格式（无 mode 字段 = 返回值劫持）
                     int mode = o.optInt("mode", MODE_RETURN);
-                    addRule(o.optString("c"), o.optString("m"), o.optString("p"), mode,
+                    // v1.47 P2-11: hijacks 的 p 字段补 v2 迁移（hooks 部分已做）——v1 旧数据 "p":"" 语义=全部重载，
+                    //   缺省 p 应为 null（全部重载），与 HookSpec 语义对齐，避免旧规则被误读为"无参精确"
+                    String hp = o.has("p") ? o.optString("p") : null;
+                    if (ver < 2 && hp != null && hp.isEmpty()) hp = null;
+                    addRule(o.optString("c"), o.optString("m"), hp, mode,
                             o.optString("v"), o.optString("pv"), o.optString("fn"), o.optString("ft"), o.optString("fv"));
                     loaded = true;
                 }
@@ -422,7 +429,7 @@ public class Config {
         }
         this.cfgFile = file;
         try {
-            // v1.36 P2-7: 序列化统一走 toJsonObject()（29 字段单一事实来源，不再手写第二份）
+            // v1.36 P2-7: 序列化统一走 toJsonObject()（34 字段单一事实来源，不再手写第二份）
             org.json.JSONObject o = toJsonObject();
             // v1.22: 原子写（tmp + rename），防写入中断损坏配置
             java.io.File tmp = new java.io.File(file.getAbsolutePath() + ".tmp");
@@ -498,12 +505,12 @@ public class Config {
         return resolveCfgFile();
     }
 
-    /** 序列化全部抓包开关（v1.36 P2-7: saveConfig/toJson 共用，32 字段单一事实来源） */
+    /** 序列化全部抓包开关（v1.36 P2-7: saveConfig/toJson 共用，34 字段单一事实来源） */
     public org.json.JSONObject toJson() {
         return toJsonObject();
     }
 
-    /** v1.36 P2-7: 32 字段统一序列化（唯一事实来源——saveConfig/toJson 都走这里，加字段不会漏） */
+    /** v1.36 P2-7: 34 字段统一序列化（唯一事实来源——saveConfig/toJson 都走这里，加字段不会漏；v1.47 修正注释 32→34） */
     private org.json.JSONObject toJsonObject() {
         org.json.JSONObject o = new org.json.JSONObject();
         try {
@@ -549,7 +556,7 @@ public class Config {
         return o;
     }
 
-    /** v1.36 P2-7: 29 字段统一反序列化（唯一事实来源——loadConfig/applyJson 都走这里，加字段不会漏） */
+    /** v1.36 P2-7: 34 字段统一反序列化（唯一事实来源——loadConfig/applyJson 都走这里，加字段不会漏） */
     private void applyFromJsonObject(org.json.JSONObject o) {
         sslBypass = o.optBoolean("sslBypass", sslBypass);
         okhttpCapture = o.optBoolean("okhttp", okhttpCapture);

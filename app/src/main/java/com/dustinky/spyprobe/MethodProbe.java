@@ -666,11 +666,14 @@ public class MethodProbe {
     // v1.36 P2-11: 复用类级静态 Random（java.util.Random 线程安全）——旧实现每次调用 new Random()
     private static final java.util.Random RND = new java.util.Random();
 
-    /** v1.14: 从种子字符集生成随机字符串（RandomReturn 用） */
+    /** v1.14: 从种子字符集生成随机字符串（RandomReturn 用）
+     *  v1.47 P1-4: seed 为空时用默认字符集——原实现 seed.length()==0 → nextInt(0) 抛
+     *  IllegalArgumentException，被 onInvoke 隔离吞掉导致规则静默失效 */
     private static String randomString(String seed, int len) {
+        String charset = (seed == null || seed.isEmpty()) ? "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" : seed;
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < len; i++) {
-            sb.append(seed.charAt(RND.nextInt(seed.length())));
+            sb.append(charset.charAt(RND.nextInt(charset.length())));
         }
         return sb.toString();
     }

@@ -99,8 +99,14 @@ public class NetProbe {
     // ================= SSL 证书锁定绕过 =================
     // v1.39 P2: pinning 触发定位——证书校验点被命中时标记"哪种 pinning + 调用方栈"。
     //   一看日志就知道 App 用哪种证书锁定（network_security_config / okhttp pinner / Cronet / 老库…）
+    // v1.47 P2-17: 每类 5s 限频（SSLContext.init 每次 TLS 握手都命中，高频连接刷屏）
+    private final java.util.concurrent.ConcurrentHashMap<Integer, Long> pinningLast = new java.util.concurrent.ConcurrentHashMap<>();
     private void pinningHit(int idx, String desc) {
         try {
+            long now = System.currentTimeMillis();
+            Long last = pinningLast.get(idx);
+            if (last != null && now - last < 5000) return;
+            pinningLast.put(idx, now);
             LogStore.get().log(TAG, "[Pinning#" + idx + "] " + desc + " | caller: " + StackUtil.getCompact());
         } catch (Throwable ignored) { }
     }
@@ -595,10 +601,11 @@ public class NetProbe {
 
     // ================= OkHttp 抓包 =================
     // v1.6: 反射缓存（每次请求 10+ 次 getMethod → 首次解析后复用）
-    private static Method sReqUrl, sReqMethod, sReqHeaders, sReqBody;
-    private static Method sBodyBuffer, sBodyContentLength;
-    private static Method sBufferUtf8;
-    private static Method sRespPeek, sRespCode, sRespMsg, sRespHeaders, sRespBodyString;
+    // v1.47 P2-1: static 反射字段加 volatile——ensureReq/RespMethods 多线程惰性初始化 data race 无害但规范
+    private static volatile Method sReqUrl, sReqMethod, sReqHeaders, sReqBody;
+    private static volatile Method sBodyBuffer, sBodyContentLength;
+    private static volatile Method sBufferUtf8;
+    private static volatile Method sRespPeek, sRespCode, sRespMsg, sRespHeaders, sRespBodyString;
     /** 请求体最大可读字节（超过不 buffer，防 OOM） */
     private static final int MAX_REQ_BODY = 1 << 20;
 

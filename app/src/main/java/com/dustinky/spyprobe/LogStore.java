@@ -90,23 +90,34 @@ public class LogStore {
 
     private void pushLoop() {
         List<String> batch = new ArrayList<>();
+        long backoffMs = 0; // v1.47 P1-2: 推送失败指数退避（主进程不在线时不疯狂建 Socket 重试）
         while (true) {
             try {
                 String line = pushQueue.poll(200, TimeUnit.MILLISECONDS);
                 if (line != null) {
                     batch.add(line);
                     if (batch.size() >= PUSH_BATCH) {
-                        flushPush(batch);
+                        backoffMs = pushBatch(batch, backoffMs);
                         batch = new ArrayList<>();
                     }
                 } else if (!batch.isEmpty()) {
-                    flushPush(batch);
+                    backoffMs = pushBatch(batch, backoffMs);
                     batch = new ArrayList<>();
                 }
             } catch (Throwable t) {
                 batch.clear();
             }
         }
+    }
+
+    /** v1.47 P1-2: 推送一批 + 失败退避。flushPush 失败时数据已放回队列，这里只负责退避时序；
+     *  序列 1s→2s→4s→…→30s 封顶，成功重置为 0（原实现主进程不在线时每批都 2×500ms connect 超时 + 500ms token refresh 无限重试） */
+    private long pushBatch(List<String> batch, long backoffMs) {
+        if (flushPush(batch)) return 0;
+        long next = backoffMs == 0 ? 1000 : Math.min(backoffMs * 2, 30000);
+        DebugLog.get().logNoMirror("PushHome", "push FAIL, backoff " + next + "ms (queue still holds data)");
+        try { Thread.sleep(next); } catch (InterruptedException ie) { }
+        return next;
     }
 
     // v1.35 P0-1: 推送改纯 Socket 直写 HTTP，不经过 HttpURLConnection ——
@@ -117,10 +128,10 @@ public class LogStore {
     //   按 127.0.0.1:9900 显式跳过（双保险）。
     // v1.44.1 P0: 失败不丢数据——doPush 失败（401/断连）→ 续 token → 重试一次；
     //   仍失败 → 整批放回队列（避免窗口期数据丢失）。队列满时丢弃头部（防无限堆积）。
-    private void flushPush(List<String> batch) {
-        if (doPush(batch)) return;
+    private boolean flushPush(List<String> batch) {
+        if (doPush(batch)) return true;
         refreshPushToken();
-        if (doPush(batch)) return;
+        if (doPush(batch)) return true;
         if (!batch.isEmpty()) {
             for (String line : batch) {
                 if (!pushQueue.offer(line)) {
@@ -130,6 +141,7 @@ public class LogStore {
             }
             DebugLog.get().logNoMirror("PushHome", "push FAIL, requeued " + batch.size() + " lines");
         }
+        return false;
     }
 
     /** 单次推送，返回是否收到 HTTP 200 */
@@ -197,23 +209,9 @@ public class LogStore {
         }
     }
 
+    // v1.47 P2-9: 委托 LogPersister.esc（去重；两处实现此前完全一致，仅 Locale 差异——统一用 Locale.US）
     private static String esc(String s) {
-        if (s == null) return "";
-        StringBuilder sb = new StringBuilder(s.length() + 16);
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            switch (c) {
-                case '"': sb.append("\\\""); break;
-                case '\\': sb.append("\\\\"); break;
-                case '\n': sb.append("\\n"); break;
-                case '\r': sb.append("\\r"); break;
-                case '\t': sb.append("\\t"); break;
-                default:
-                    if (c < 0x20) sb.append(String.format("\\u%04x", (int) c));
-                    else sb.append(c);
-            }
-        }
-        return sb.toString();
+        return LogPersister.esc(s);
     }
 
     // v1.35 P0-2: 单行化——所有日志 msg 在入口统一把换行折叠成 ␤（U+2424）。

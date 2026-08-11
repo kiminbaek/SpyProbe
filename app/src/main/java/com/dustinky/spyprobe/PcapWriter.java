@@ -139,8 +139,13 @@ public class PcapWriter {
                 String tmp = s.srcIp; s.srcIp = s.dstIp; s.dstIp = tmp;
                 int tp = s.srcPort; s.srcPort = s.dstPort; s.dstPort = tp;
             }
-            byte[] rec = buildRecord(s, isWrite, data);
+            byte[] rec;
             synchronized (s.buf) {
+                // v1.47 P2-5: buildRecord 在锁内构造——buildRecord 末尾会更新 s.clientSeq/serverSeq，
+                //   旧实现锁外 build + 锁内 write，多个 native 线程并发 feed 同一会话时 seq/ack 更新竞态
+                //   （Wireshark 可能报乱序/序列号倒退警告）。锁内构造使 seq/ack 更新与 buf 写入原子。
+                if (s.buf.size() >= MAX_SESSION) return;
+                rec = buildRecord(s, isWrite, data);
                 if (s.buf.size() + rec.length > MAX_SESSION) return;
                 s.buf.write(rec, 0, rec.length);
                 s.packets++;
@@ -265,7 +270,9 @@ public class PcapWriter {
 
     // ================= pcap 记录构造 =================
 
-    private static long packetId = 0;
+    // v1.47 P2-4: static long 改 AtomicLong——多个 native SSL 回调线程并发 feed 不同会话时
+    //   packetId++ 竞态可能重复 identification（仅展示影响，但修正成本低）
+    private static final java.util.concurrent.atomic.AtomicLong packetId = new java.util.concurrent.atomic.AtomicLong(0);
 
     /** 构造一条 pcap 记录（记录头 16B + 伪 IPv4 头 20B + 伪 TCP 头 20B + payload） */
     private static byte[] buildRecord(Session s, boolean isWrite, byte[] payload) {
@@ -289,7 +296,7 @@ public class PcapWriter {
         rec[off] = 0x45;                      // version 4, IHL 5
         rec[off + 1] = 0;                     // TOS
         putShort(rec, off + 2, totalLen);     // total length
-        putShort(rec, off + 4, (short) ((packetId++) & 0xffff)); // identification
+        putShort(rec, off + 4, (short) (packetId.getAndIncrement() & 0xffff)); // identification
         putShort(rec, off + 6, 0x4000);       // flags: DF
         rec[off + 8] = 64;                    // TTL
         rec[off + 9] = 6;                     // protocol TCP

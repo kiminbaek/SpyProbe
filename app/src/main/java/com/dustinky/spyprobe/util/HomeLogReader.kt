@@ -1,5 +1,6 @@
 package com.dustinky.spyprobe.util
 
+import com.dustinky.spyprobe.LogPersister
 import java.io.File
 import java.util.Collections
 import java.util.Locale
@@ -54,7 +55,9 @@ object HomeLogReader {
 
     /**
      * 会话列表（新会话在前）：扫描全部文件，按 (date, session) 分组，
-     * 统计条数 + 首末时间（只读每个文件首/末行，避免大文件全读）。
+     * 统计条数 + 首末时间。v1.47 P1-8: 优先读 LogPersister 维护的 sessions.json 元数据
+     * （count/first/last，写线程每 100 行落盘）——不再对每个文件全量逐行扫描；
+     * 元数据缺失的文件（旧数据/手动拷贝）fallback 读首末行统计（保持兼容）。
      *
      * v1.36 P0-1: 修复字典序陷阱——旧实现 sortedBy{name} 按字典序排（_10 < _2），
      *   再用相邻 (date to session) 相等分组，同天会话 ≥10 次时 _2/_3.. 被 _10 拆散
@@ -64,6 +67,8 @@ object HomeLogReader {
         val d = logDir(filesDir) ?: return emptyList()
         val byKey = d.listFiles { f -> f.isFile && parseName(f.name) != null }
             ?.groupBy { parseName(it.name)!! } ?: return emptyList()
+        // v1.47 P1-8: 预读元数据（主进程 LogPersister 写线程维护的 sessions.json）
+        val meta = LogPersister.get().loadMeta()
         val out = ArrayList<SessionInfo>()
         for ((key, filesOf) in byKey) {
             val (date, session) = key
@@ -71,6 +76,14 @@ object HomeLogReader {
             var firstTime = ""
             var lastTime = ""
             for (f in filesOf) {
+                val m = meta[f.name]
+                if (m != null) {
+                    count += m.count
+                    if (m.first.isNotEmpty() && (firstTime.isEmpty() || m.first < firstTime)) firstTime = m.first
+                    if (m.last.isNotEmpty() && (lastTime.isEmpty() || m.last > lastTime)) lastTime = m.last
+                    continue
+                }
+                // 元数据缺失（旧文件/手拷）→ fallback 全读（兼容老数据，量小可接受）
                 var f1: String? = null
                 var l1: String? = null
                 var n = 0

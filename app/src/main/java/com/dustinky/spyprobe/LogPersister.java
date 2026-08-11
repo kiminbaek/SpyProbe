@@ -56,6 +56,96 @@ public class LogPersister {
     // v1.33: 会话滚动——目标进程每启动一次（新 sessionId 推送）开新文件 spyprobe_logs_<date>_<n>.log
     //   n 从"5MB 滚动序号"升级为"会话序号"：8:10 一次抓包=_0，8:20 又一次=_1，天然分开
     private volatile boolean sessionRollRequested = false;
+    // v1.47 P1-8: 会话元数据（sessions.json）——写线程维护每个文件 count/first/last，
+    //   HomeLogReader.sessions() 直接读元数据，避免历史页每次全量扫描每个日志文件（大文件/多会话卡顿）
+    private static final String META_NAME = "sessions.json";
+    private static final int META_INTERVAL = 100; // 每 100 行落盘一次元数据（写盘频率与日志频率解耦）
+
+    /** 会话卡片元数据：文件名 -> {count, first, last} */
+    public static class SessionMeta {
+        public final int count;
+        public final String first;
+        public final String last;
+        SessionMeta(int count, String first, String last) {
+            this.count = count; this.first = first; this.last = last;
+        }
+    }
+
+    /** 读取会话元数据（写线程维护的 sessions.json）；文件不存在返回空 map */
+    public java.util.Map<String, SessionMeta> loadMeta() {
+        java.util.Map<String, SessionMeta> m = new java.util.HashMap<>();
+        if (dir == null) return m;
+        File mf = new File(dir, META_NAME);
+        if (!mf.exists()) return m;
+        try {
+            String txt = new String(readAll(mf), StandardCharsets.UTF_8);
+            org.json.JSONObject o = new org.json.JSONObject(txt);
+            java.util.Iterator<String> it = o.keys();
+            while (it.hasNext()) {
+                String name = it.next();
+                org.json.JSONObject e = o.optJSONObject(name);
+                if (e != null) {
+                    m.put(name, new SessionMeta(e.optInt("count", 0),
+                            e.optString("first", ""), e.optString("last", "")));
+                }
+            }
+        } catch (Throwable t) {
+            DebugLog.get().log("Persist", "loadMeta FAIL: " + t);
+        }
+        return m;
+    }
+
+    private byte[] readAll(File f) throws Exception {
+        try (FileInputStream in = new FileInputStream(f)) {
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+            int n;
+            while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
+            return bos.toByteArray();
+        }
+    }
+
+    /** 更新并落盘当前文件元数据（写线程调用） */
+    private void saveMeta(File f, int count, String first, String last) {
+        if (dir == null || f == null) return;
+        try {
+            File mf = new File(dir, META_NAME);
+            org.json.JSONObject o;
+            if (mf.exists()) {
+                try {
+                    o = new org.json.JSONObject(new String(readAll(mf), StandardCharsets.UTF_8));
+                } catch (Throwable t) { o = new org.json.JSONObject(); }
+            } else {
+                o = new org.json.JSONObject();
+            }
+            org.json.JSONObject e = new org.json.JSONObject();
+            e.put("count", count);
+            e.put("first", first == null ? "" : first);
+            e.put("last", last == null ? "" : last);
+            o.put(f.getName(), e);
+            File tmp = new File(mf.getAbsolutePath() + ".tmp");
+            try (FileOutputStream out = new FileOutputStream(tmp)) {
+                out.write(o.toString().getBytes(StandardCharsets.UTF_8));
+            }
+            if (!tmp.renameTo(mf)) {
+                try (FileOutputStream out2 = new FileOutputStream(mf)) {
+                    out2.write(o.toString().getBytes(StandardCharsets.UTF_8));
+                }
+            }
+        } catch (Throwable t) {
+            // 元数据写失败不影响日志主流程
+            DebugLog.get().log("Persist", "saveMeta FAIL: " + t);
+        }
+    }
+
+    /** 从 JSONL 行提取 t 字段（极轻量，元数据 first/last 用） */
+    private String lineTime(String line) {
+        int i = line.indexOf("\"t\":\"");
+        if (i < 0) return "";
+        int j = line.indexOf('"', i + 5);
+        if (j < 0) return "";
+        return line.substring(i + 5, j);
+    }
 
     /** 初始化（幂等）：由目标 App 进程启动时调用 */
     public synchronized void init(File appFilesDir) {
@@ -108,6 +198,9 @@ public class LogPersister {
         String day = null;
         int part = 0;
         File f = null;
+        int metaCount = 0;        // 当前文件已写行数（元数据用）
+        String metaFirst = "";    // 当前文件首行 t
+        String metaLast = "";     // 当前文件末行 t
         while (true) {
             try {
                 // v1.28 P1: 清空历史后写线程重开文件（旧 inode 已被删，继续写会丢新日志）
@@ -115,23 +208,42 @@ public class LogPersister {
                 if (resetRequested || sessionRollRequested) {
                     resetRequested = false;
                     sessionRollRequested = false;
-                    if (bw != null) { try { bw.flush(); bw.close(); } catch (Throwable t3) { } }
+                    if (bw != null) {
+                        try { bw.flush(); } catch (Throwable t3) { }
+                        // v1.47 P1-8: 关闭前把当前文件元数据落盘（含已写入条数）
+                        if (f != null && metaCount > 0) saveMeta(f, metaCount, metaFirst, metaLast);
+                        try { bw.close(); } catch (Throwable t3) { }
+                    }
                     bw = null;
                     day = null;
+                    metaCount = 0;
+                    metaFirst = "";
+                    metaLast = "";
                     continue;
                 }
                 String line = queue.poll(500, TimeUnit.MILLISECONDS);
                 if (line == null) {
-                    if (bw != null) bw.flush();
+                    if (bw != null) {
+                        bw.flush();
+                        // v1.47 P1-8: 空闲 flush 时同步元数据（实时性更好，UI 条数更准）
+                        if (f != null && metaCount > 0) saveMeta(f, metaCount, metaFirst, metaLast);
+                    }
                     continue;
                 }
                 String d = DAY_FMT.format(new Date());
                 if (!d.equals(day)) {
-                    if (bw != null) { bw.flush(); bw.close(); }
+                    if (bw != null) {
+                        bw.flush();
+                        if (f != null && metaCount > 0) saveMeta(f, metaCount, metaFirst, metaLast);
+                        bw.close();
+                    }
                     day = d;
                     part = nextPart(day);
                     f = fileOf(day, part);
                     bw = open(f);
+                    metaCount = 0;
+                    metaFirst = "";
+                    metaLast = "";
                     // v1.30.2: 写线程打开文件 DebugLog（能看到实际落盘文件名）
                     DebugLog.get().log("Persist", "open " + f.getName());
                     // v1.27: 跨天时顺带清理过期历史（长期运行场景）
@@ -139,12 +251,24 @@ public class LogPersister {
                 }
                 bw.write(line);
                 bw.newLine();
+                // v1.47 P1-8: 维护当前文件元数据（count/first/last），每 META_INTERVAL 行落盘一次
+                metaCount++;
+                String lt = lineTime(line);
+                if (metaFirst.isEmpty() && !lt.isEmpty()) metaFirst = lt;
+                if (!lt.isEmpty()) metaLast = lt;
+                if (metaCount % META_INTERVAL == 0 && f != null) {
+                    saveMeta(f, metaCount, metaFirst, metaLast);
+                }
                 if (f.length() > MAX_FILE) {
                     bw.flush();
+                    if (f != null && metaCount > 0) saveMeta(f, metaCount, metaFirst, metaLast);
                     bw.close();
                     part++;
                     f = fileOf(day, part);
                     bw = open(f);
+                    metaCount = 0;
+                    metaFirst = "";
+                    metaLast = "";
                     DebugLog.get().log("Persist", "rolled -> " + f.getName());
                 }
             } catch (InterruptedException ie) {
@@ -155,6 +279,9 @@ public class LogPersister {
                 try { if (bw != null) bw.close(); } catch (Throwable t2) { }
                 bw = null;
                 day = null;
+                metaCount = 0;
+                metaFirst = "";
+                metaLast = "";
             }
         }
         try { if (bw != null) bw.flush(); bw.close(); } catch (Throwable t) { }
@@ -296,8 +423,39 @@ public class LogPersister {
                 DebugLog.get().log("Persist", "clear delete fail " + f.getName() + ": " + t);
             }
         }
+        // v1.47 P1-8: 同步清理 sessions.json 元数据里被删文件条目（避免残留累积）
+        removeMetaPrefix(day);
         // v1.28 P1: 若正在写的文件被删，通知写线程重开新文件
         resetRequested = true;
+    }
+
+    /** v1.47 P1-8: 删除元数据中 name 以 day 开头的条目（day=null 全清） */
+    private void removeMetaPrefix(String day) {
+        if (dir == null) return;
+        try {
+            File mf = new File(dir, META_NAME);
+            if (!mf.exists()) return;
+            org.json.JSONObject o = new org.json.JSONObject(new String(readAll(mf), StandardCharsets.UTF_8));
+            java.util.Iterator<String> it = o.keys();
+            java.util.List<String> rm = new java.util.ArrayList<>();
+            while (it.hasNext()) {
+                String name = it.next();
+                if (day == null || name.startsWith(PREFIX + day)) rm.add(name);
+            }
+            if (rm.isEmpty()) return;
+            for (String n : rm) o.remove(n);
+            File tmp = new File(mf.getAbsolutePath() + ".tmp");
+            try (FileOutputStream out = new FileOutputStream(tmp)) {
+                out.write(o.toString().getBytes(StandardCharsets.UTF_8));
+            }
+            if (!tmp.renameTo(mf)) {
+                try (FileOutputStream out2 = new FileOutputStream(mf)) {
+                    out2.write(o.toString().getBytes(StandardCharsets.UTF_8));
+                }
+            }
+        } catch (Throwable t) {
+            DebugLog.get().log("Persist", "removeMetaPrefix FAIL: " + t);
+        }
     }
 
     private Entry parseLine(String line) {
@@ -369,7 +527,8 @@ public class LogPersister {
         }
     }
 
-    private String esc(String s) {
+    // v1.47 P2-9: 改为 static 同包可见——LogStore.esc 委托本方法（去重；统一 Locale.US 十六进制格式）
+    static String esc(String s) {
         if (s == null) return "";
         StringBuilder sb = new StringBuilder(s.length() + 16);
         for (int i = 0; i < s.length(); i++) {

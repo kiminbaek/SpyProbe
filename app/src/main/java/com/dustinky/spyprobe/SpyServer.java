@@ -55,6 +55,7 @@ public class SpyServer {
     private final MethodProbe mth;
     private final ClassLoadProbe clsProbe;
     private final String pkg;
+    private final String expectedToken; // v1.47 P1-3: 9901 控制面鉴权（与 9900 同 token；空=兼容老主进程/未初始化不校验）
     private final java.io.File cfgFile; // v1.22: 抓包开关持久化文件（目标 App data 目录）
     private final java.io.File rulesFile; // v1.25 P2-9: 规则持久化文件（与 cfgFile 同目录，零 IPC）
     private final DexKitProbe dexKit; // v1.9: DexKit（导出 dex / 字符串反查）
@@ -67,13 +68,14 @@ public class SpyServer {
     private volatile int cachedTargetSdk = -1;
 
     public SpyServer(NetProbe net, MethodProbe mth, ClassLoadProbe clsProbe, String pkg,
-                     DexKitProbe dexKit, java.io.File cfgFile) {
+                     DexKitProbe dexKit, java.io.File cfgFile, String expectedToken) {
         this.net = net;
         this.mth = mth;
         this.clsProbe = clsProbe;
         this.pkg = pkg;
         this.dexKit = dexKit; // v1.9
         this.cfgFile = cfgFile; // v1.22
+        this.expectedToken = expectedToken == null ? "" : expectedToken; // v1.47 P1-3
         // v1.25 P2-9: 规则文件与抓包开关同目录（files/spyprobe_rules.json）
         this.rulesFile = (cfgFile != null && cfgFile.getParentFile() != null)
                 ? new java.io.File(cfgFile.getParentFile(), "spyprobe_rules.json") : null;
@@ -133,8 +135,9 @@ public class SpyServer {
             String path = parts[1];
             long t0 = System.currentTimeMillis(); // v1.30.2: 请求耗时统计
 
-            // 读 headers 找 Content-Length（P1-13: 限制 1MB 防 OOM）
+            // 读 headers 找 Content-Length（P1-13: 限制 1MB 防 OOM）+ X-Spy-Token（v1.47 P1-3 鉴权）
             int contentLength = 0;
+            String reqToken = "";
             String line;
             while ((line = r.readLine()) != null && !line.isEmpty()) {
                 String lower = line.toLowerCase();
@@ -143,8 +146,28 @@ public class SpyServer {
                         contentLength = Integer.parseInt(line.substring(15).trim());
                     } catch (NumberFormatException e) { contentLength = 0; }
                     if (contentLength > MAX_BODY) contentLength = MAX_BODY;
+                } else if (lower.startsWith("x-spy-token:")) {
+                    reqToken = line.substring(line.indexOf(':') + 1).trim();
                 }
             }
+
+            // v1.47 P1-3: 9901 控制面鉴权——expectedToken 非空（目标进程已拿到主进程 token）时全部路由校验，
+            //   不匹配返回 401（防本机任意 App 枚举 9901-9910 篡改 hook/导出 dex）。
+            //   兼容：主进程 UI 未开（9900 不在线）→ remoteToken 拿不到 → expectedToken 空 → 不校验（与 9900 同策略）
+            if (!expectedToken.isEmpty() && !expectedToken.equals(reqToken)) {
+                DebugLog.get().log("Srv", method + " " + path + " -> 401 unauthorized (token mismatch)");
+                byte[] deny = "{\"ok\":false,\"err\":\"unauthorized\"}".getBytes(StandardCharsets.UTF_8);
+                StringBuilder hd = new StringBuilder();
+                hd.append("HTTP/1.1 401 Unauthorized\r\n");
+                hd.append("Content-Type: application/json; charset=utf-8\r\n");
+                hd.append("Content-Length: ").append(deny.length).append("\r\n");
+                hd.append("Connection: close\r\n\r\n");
+                out.write(hd.toString().getBytes(StandardCharsets.UTF_8));
+                out.write(deny);
+                out.flush();
+                return;
+            }
+
             String body = "";
             if (contentLength > 0) {
                 char[] buf = new char[contentLength];
@@ -182,6 +205,29 @@ public class SpyServer {
             // 去掉 query 取路径
             String p = path.contains("?") ? path.substring(0, path.indexOf('?')) : path;
             String query = path.contains("?") ? path.substring(path.indexOf('?') + 1) : "";
+
+            // v1.47 P2-7: 写操作强制 POST（GET 浏览器直访/误触也会触发副作用）。
+            //   /api/config 已按 method 区分读写；/api/history/clear、/api/replay/clear 已单独校验（保留）
+            switch (p) {
+                case "/api/flush_pcap":
+                case "/api/scan":
+                case "/api/hook":
+                case "/api/unhook":
+                case "/api/hijack":
+                case "/api/dexdump":
+                case "/api/dexclose":
+                case "/api/replay":
+                case "/api/clear":
+                    if (!"POST".equals(method)) {
+                        JSONObject o = new JSONObject();
+                        o.put("ok", false);
+                        o.put("error", "method not allowed, use POST");
+                        return o.toString();
+                    }
+                    break;
+                default:
+                    break;
+            }
 
             switch (p) {
                 // v1.39 P0: 目标进程把活跃 pcap 会话 flush 到主进程（UI「导出 pcap」先调这个，在线时兜底）

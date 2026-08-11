@@ -20,7 +20,8 @@ import java.nio.charset.StandardCharsets;
 public class NativeProbe {
 
     static final String TAG = "SpyProbe.Native";
-    private static int diagPcapCount = 0;  // v1.45.1 低频诊断
+    // v1.47 P2-12: 诊断计数改 AtomicInteger——多 native 线程并发 ++ 竞态（仅诊断留痕，低频无害但修正成本低）
+    private static final java.util.concurrent.atomic.AtomicInteger diagPcapCount = new java.util.concurrent.atomic.AtomicInteger(0);  // v1.45.1 低频诊断
 
     /** 单次数据最大记录长度（超长截断，防刷爆 4096 环形缓冲） */
     private static final int MAX_TEXT = 2048;
@@ -123,7 +124,7 @@ public class NativeProbe {
             // v1.35 P0-1b: 跳过自身日志推送（127.0.0.1:9900），根治递归污染
             if (isSelfPush(socketInfo)) return false;
             // v1.45.1 诊断：每 200 次留痕一次——确认 onNativeData 在跑 / isSsl / pcapCapture 值
-            if ((++diagPcapCount % 200) == 1) {
+            if ((diagPcapCount.incrementAndGet() % 200) == 1) {
                 try { DebugLog.get().logNoMirror("PcapFeed", "onNativeData ssl=" + isSsl + " pcap=" + Config.get().pcapCapture + " info=" + (socketInfo != null ? socketInfo : "null")); } catch (Throwable ig) { }
             }
             // v1.41 P0: pcap 独立于 nativeCapture——只开 pcap 导出时也采集 TLS 明文（pcap 数据源=native SSL hook）

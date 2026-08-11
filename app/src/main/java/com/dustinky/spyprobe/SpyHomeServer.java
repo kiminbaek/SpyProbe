@@ -276,7 +276,8 @@ public class SpyHomeServer {
                         } else if ("limit".equals(pair[0])) {
                             try { limit = Math.max(1, Math.min(Integer.parseInt(pair[1]), 2000)); } catch (Throwable t) { }
                         } else if ("tag".equals(pair[0])) {
-                            tagFilter = pair[1];
+                            // v1.47 P2-8: URL 解码（UI 端 Uri.encode 编码了中文/特殊字符，与 9901 /api/classes filter 同款）
+                            try { tagFilter = java.net.URLDecoder.decode(pair[1], "UTF-8"); } catch (Throwable t) { tagFilter = pair[1]; }
                         }
                     }
                     java.util.List<LogStore.Entry> all = LogStore.get().all();

@@ -124,6 +124,9 @@ class SpyApi(private var port: Int = 9901) {
             val c = u.openConnection() as HttpURLConnection
             c.connectTimeout = 1500
             c.readTimeout = readTimeoutMs
+            // v1.47 P1-3: 9901 控制面鉴权——带主进程 token（目标进程 SpyServer 校验；与 9900 同 token 模型）
+            val homeTok = com.dustinky.spyprobe.TokenStore.homeToken()
+            if (homeTok.isNotEmpty()) c.setRequestProperty("X-Spy-Token", homeTok)
             val r = BufferedReader(InputStreamReader(c.inputStream, StandardCharsets.UTF_8))
             val sb = StringBuilder()
             var line: String?
@@ -148,6 +151,9 @@ class SpyApi(private var port: Int = 9901) {
             val c = u.openConnection() as HttpURLConnection
             c.requestMethod = "POST"
             c.setRequestProperty("Content-Type", "application/json")
+            // v1.47 P1-3: 9901 控制面鉴权——带主进程 token
+            val homeTok = com.dustinky.spyprobe.TokenStore.homeToken()
+            if (homeTok.isNotEmpty()) c.setRequestProperty("X-Spy-Token", homeTok)
             c.connectTimeout = 1500
             c.readTimeout = 1500
             c.doOutput = true
@@ -489,8 +495,10 @@ class SpyApi(private var port: Int = 9901) {
             val o = JSONObject()
             o.put("class", cls)
             o.put("method", method)
-            // v1.28 P1: params 留空不写字段（后端 null=全部重载，保持 UI 旧行为）；显式传 "" 才表示无参精确
-            if (params.isNotEmpty()) o.put("params", params)
+            // v1.47 P1-5: 无参方法（signature "foo()" → p="" 且 fallbackParams=m.params 也空）必须显式传 ""
+            //   字段——后端 "" = 无参精确；原实现空串不写字段 → 后端读到 null = 全部重载，
+            //   导致 UI 从扫描列表点无参方法实际 hook 了全部重载（前后端契约未对齐）
+            o.put("params", params)
             httpPost("/api/hook", o.toString())
         } catch (t: Throwable) { null }
     }
@@ -595,15 +603,19 @@ class SpyApi(private var port: Int = 9901) {
         } catch (t: Throwable) { null }
     }
 
-    fun dexdump(): String? = httpGet("/api/dexdump")
-    fun dexclose() { try { httpGet("/api/dexclose") } catch (t: Throwable) { } }
+    // v1.47 P2-16: dexdump/stringfind 等重操作 readTimeout 放宽到 30s（dex 导出大 App 原 1.5s 必超时）
+    fun dexdump(): String? = httpGet("/api/dexdump", readTimeoutMs = 30000)
+    fun dexclose() { try { httpPost("/api/dexclose", "{}") } catch (t: Throwable) { } }
 
     /** 字符串反查；返回 null=未连接/失败 */
     fun stringFind(str: String): String? {
         return try {
             val o = JSONObject()
             o.put("str", str)
-            httpPost("/api/stringfind", o.toString())
+            httpPost("/api/stringfind", o.toString())?.let {
+                // 结果里超长 method 列表截断
+                if (it.length > 20000) it.substring(0, 20000) else it
+            }
         } catch (t: Throwable) { null }
     }
 

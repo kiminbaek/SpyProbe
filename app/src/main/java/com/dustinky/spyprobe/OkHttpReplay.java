@@ -5,7 +5,6 @@ import org.json.JSONObject;
 
 import java.lang.reflect.Method;
 import java.util.Iterator;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * v1.40 P1: OkHttp 请求重放（OkHttpLogger-Frida / poker 借鉴）
@@ -49,8 +48,12 @@ public class OkHttpReplay {
     private static final OkHttpReplay INSTANCE = new OkHttpReplay();
     public static OkHttpReplay get() { return INSTANCE; }
 
-    private final CopyOnWriteArrayList<Entry> entries = new CopyOnWriteArrayList<>();
-    private long nextId = 1;
+    // v1.47 P2-18: CopyOnWriteArrayList → 同步 ArrayList——写多读少场景（每次 newCall 都 add+环形淘汰），
+    //   COW 的 remove(0) 循环每次全量拷贝 O(n²)；且 COW 不加锁时与 nextId 竞态可能重复 id。
+    //   改用 lock 保护 + AtomicLong id。
+    private final java.util.List<Entry> entries = new java.util.ArrayList<>();
+    private final Object lock = new Object();
+    private final java.util.concurrent.atomic.AtomicLong nextId = new java.util.concurrent.atomic.AtomicLong(1);
 
     private OkHttpReplay() { }
 
@@ -103,9 +106,11 @@ public class OkHttpReplay {
             DebugLog.get().log("Replay", "clone fail: " + t);
         }
 
-        final Entry e = new Entry(nextId++, System.currentTimeMillis(), method, url, body, clone);
-        entries.add(e);
-        while (entries.size() > MAX) entries.remove(0);
+        final Entry e = new Entry(nextId.getAndIncrement(), System.currentTimeMillis(), method, url, body, clone);
+        synchronized (lock) {
+            entries.add(e);
+            while (entries.size() > MAX) entries.remove(0);
+        }
 
         if (logReq) {
             StringBuilder sb = new StringBuilder();
@@ -121,10 +126,14 @@ public class OkHttpReplay {
     public String listJson() {
         try {
             JSONObject o = new JSONObject();
-            o.put("ok", true);
-            o.put("count", entries.size());
             JSONArray arr = new JSONArray();
-            for (Entry e : entries) {
+            java.util.List<Entry> snapshot;
+            synchronized (lock) {
+                snapshot = new java.util.ArrayList<>(entries);
+            }
+            o.put("ok", true);
+            o.put("count", snapshot.size());
+            for (Entry e : snapshot) {
                 JSONObject j = new JSONObject();
                 j.put("id", e.id);
                 j.put("time", e.time);
@@ -143,8 +152,10 @@ public class OkHttpReplay {
     /** 重放第 id 条（新线程执行，结果写日志流） */
     public void replay(final long id) {
         Entry target = null;
-        for (Entry e : entries) {
-            if (e.id == id) { target = e; break; }
+        synchronized (lock) {
+            for (Entry e : entries) {
+                if (e.id == id) { target = e; break; }
+            }
         }
         if (target == null) {
             LogStore.get().log(TAG, "[Replay#" + id + "] !!! 未找到缓存请求（可能已被清空/环形淘汰）");
@@ -203,13 +214,13 @@ public class OkHttpReplay {
     }
 
     public void clear() {
-        entries.clear();
+        synchronized (lock) { entries.clear(); }
         LogStore.get().log(TAG, "重放缓存已清空");
     }
 
     /** 供日志清理：清空（内部用） */
-    public int size() { return entries.size(); }
+    public int size() { synchronized (lock) { return entries.size(); } }
 
     /** 迭代器导出（调试用） */
-    public Iterator<Entry> iterator() { return entries.iterator(); }
+    public Iterator<Entry> iterator() { synchronized (lock) { return new java.util.ArrayList<>(entries).iterator(); } }
 }

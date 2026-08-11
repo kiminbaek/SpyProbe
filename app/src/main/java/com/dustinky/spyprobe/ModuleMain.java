@@ -82,7 +82,7 @@ public class ModuleMain extends XposedModule {
         LogStore.get().enablePushHome(pushToken, () -> TokenStore.remoteToken(this));
         // v1.39 P0: pcap 记录推送主进程（与日志推送同 token 鉴权）
         PcapWriter.get().enablePushHome(pushToken, () -> TokenStore.remoteToken(this));
-        SpyServer server = new SpyServer(net, mth, clsProbe, pkg, dexKit, cfgFile);
+        SpyServer server = new SpyServer(net, mth, clsProbe, pkg, dexKit, cfgFile, pushToken); // v1.47 P1-3: 9901 控制面鉴权
 
         // v1.37 P0-1: 尽早拉主进程权威配置（惰性 hook 的前提——net.install 之前就知道
         //   用户关了什么探测项，early 阶段就能按配置跳过）。主进程不在线则保持默认值全装，
@@ -222,29 +222,33 @@ public class ModuleMain extends XposedModule {
         DebugLog.get().log("ModuleMain", "onPackageReady 流程编排完成 pkg=" + pkg);
     }
 
-    /** v1.32: 从主进程（SpyProbe 自己家）拉权威配置；主进程不在线返回 null */
+    /** v1.32: 从主进程（SpyProbe 自己家）拉权威配置；主进程不在线返回 null
+     *  v1.47 P1-7: 改纯 Socket（同 TokenStore.homeTokenViaHttp）——原实现 HttpURLConnection GET
+     *  127.0.0.1:9900/api/config 被自己的 NetProbe HUC hook 记录，每次目标进程启动污染 2 条
+     *  `[HUC] GET http://127.0.0.1:9900/api/config` 日志 */
     private static String fetchHomeConfig() {
         try {
-            java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
-                    new java.net.URL("http://127.0.0.1:9900/api/config").openConnection();
-            conn.setConnectTimeout(600);
-            conn.setReadTimeout(800);
-            conn.setRequestMethod("GET");
-            int code = conn.getResponseCode();
-            if (code != 200) {
-                conn.disconnect();
-                return null;
-            }
-            java.io.InputStream is = conn.getInputStream();
+            java.net.Socket sock = new java.net.Socket();
+            sock.setTcpNoDelay(true);
+            sock.connect(new java.net.InetSocketAddress("127.0.0.1", 9900), 600);
+            String head = "GET /api/config HTTP/1.1\r\nHost: 127.0.0.1:9900\r\nConnection: close\r\n\r\n";
+            java.io.OutputStream os = sock.getOutputStream();
+            os.write(head.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            os.flush();
+            java.io.InputStream is = sock.getInputStream();
             java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
             byte[] buf = new byte[4096];
             int n;
             while ((n = is.read(buf)) > 0) bos.write(buf, 0, n);
             is.close();
-            conn.disconnect();
-            String json = bos.toString("UTF-8");
+            os.close();
+            sock.close();
+            String body = bos.toString("UTF-8");
+            // 去掉 HTTP 响应头，只取 JSON body
+            int idx = body.indexOf("\r\n\r\n");
+            if (idx >= 0) body = body.substring(idx + 4);
             // 校验是配置 JSON（含 native 字段）才返回，避免误拿非配置响应
-            if (json.contains("\"native\"")) return json;
+            if (body.contains("\"native\"")) return body;
             return null;
         } catch (Throwable t) {
             return null;

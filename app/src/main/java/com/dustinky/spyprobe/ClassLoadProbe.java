@@ -93,6 +93,10 @@ public class ClassLoadProbe {
                 }
             }
         } else {
+            // v1.47 P2-21: 无过滤模式下默认剔除纯系统类——android.*/java.* 平台类会占满
+            //   MAX_CLASSES 5000 上限，随机淘汰一半时目标 App 自己的类可能被挤掉。
+            //   第三方库类（okhttp3/gson 等）保留：逆向同样有价值。
+            if (isSystemClass(name)) return;
             // 无过滤：只入库不刷屏（最多 MAX_CLASSES）
             loaded.add(name);
         }
@@ -116,8 +120,16 @@ public class ClassLoadProbe {
         }
     }
 
-    /** 当前记录的类名（可选关键字过滤，返回 JSON：count/total/classes 数组） */
-    public String list(String filter) {
+    // v1.47 P2-21: 纯系统平台类前缀（这些类 100% 不是目标 App 核心逻辑，无过滤模式下剔除）
+    private static boolean isSystemClass(String name) {
+        return name.startsWith("android.") || name.startsWith("java.")
+                || name.startsWith("javax.") || name.startsWith("sun.")
+                || name.startsWith("jdk.") || name.startsWith("dalvik.")
+                || name.startsWith("kotlin.") || name.startsWith("kotlinx.")
+                || name.startsWith("com.android.");
+    }
+
+    /** 当前记录的类名（可选关键字过滤，返回 JSON：count/total/classes 数组） */    public String list(String filter) {
         // v1.16 P1-2: CHM 弱一致并发读，先快照再排序（输出稳定，替代 LinkedHashSet 顺序）
         List<String> snapshot = new ArrayList<>(loaded);
         Collections.sort(snapshot);
