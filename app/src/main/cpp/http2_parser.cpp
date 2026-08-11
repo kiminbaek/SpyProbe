@@ -211,6 +211,30 @@ static void snapshot_stream(Http2Connection* conn, Http2Stream& st, bool complet
     conn->completed.push_back(std::move(req));
 }
 
+// v1.62 P1-4: HEADER 块解压失败 → inflater 内部状态已损坏（nghttp2 文档：失败后
+//   必须重建），否则该连接后续所有 HEADERS 帧都会继续失败 → H2 请求/响应全丢。
+//   调用方 process_frame 已持 inflater_mutex 锁（lock_guard）→ 同一方向另一线程
+//   不会同时用 inflater → 锁内 del 旧 + new 新是安全的（不会双线程操作同一对象）。
+static void rebuild_inflater(Http2Connection* conn, bool is_local, nghttp2_hd_inflater*& inflater) {
+    H2LOG("H2 inflate FAIL: rebuild %s inflater (conn=%llu)",
+          is_local ? "local" : "remote", (unsigned long long)conn->conn_id);
+    nghttp2_hd_inflater* old = inflater;
+    inflater = nullptr;
+    nghttp2_hd_inflater* fresh = nullptr;
+    if (nghttp2_hd_inflate_new(&fresh) == 0 && fresh != nullptr) {
+        if (is_local) {
+            conn->local_inflater = fresh;
+        } else {
+            conn->remote_inflater = fresh;
+        }
+        inflater = fresh;
+        H2LOG("H2 inflater rebuilt OK (%s)", is_local ? "local" : "remote");
+    } else {
+        H2LOG("H2 inflater rebuild FAIL (%s)", is_local ? "local" : "remote");
+    }
+    if (old) nghttp2_hd_inflate_del(old);
+}
+
 static void process_frame(Http2Connection* conn, const uint8_t* data, uint32_t frame_len,
                           uint8_t frame_type, uint8_t flags, int stream_id,
                           bool is_local, bool collect_resp_body) {
@@ -265,7 +289,10 @@ static void process_frame(Http2Connection* conn, const uint8_t* data, uint32_t f
             std::lock_guard<std::mutex> inf_lk(is_local ? conn->local_inflater_mutex : conn->remote_inflater_mutex);
             
             if (is_local) {
-                decode_headers(inflater, block.data(), block.size(), st.req_headers, st.method, st.path, st.authority, st.scheme, st.status_code);
+                // v1.62 P1-4: decode 失败（解压状态损坏）→ 重建 inflater，否则该连接后续 header 全丢
+                if (!decode_headers(inflater, block.data(), block.size(), st.req_headers, st.method, st.path, st.authority, st.scheme, st.status_code)) {
+                    rebuild_inflater(conn, is_local, inflater);
+                }
                 st.req_headers_done = true;
                 
                 Http2EarlyCheck check;
@@ -284,12 +311,21 @@ static void process_frame(Http2Connection* conn, const uint8_t* data, uint32_t f
                 }
             } else {
                 std::string dm, dp, da, ds;
-                decode_headers(inflater, block.data(), block.size(), st.resp_headers, dm, dp, da, ds, st.status_code);
+                // v1.62 P1-4: 同上——响应方向解压失败也重建
+                if (!decode_headers(inflater, block.data(), block.size(), st.resp_headers, dm, dp, da, ds, st.status_code)) {
+                    rebuild_inflater(conn, is_local, inflater);
+                }
                 st.resp_headers_done = true;
                 if (flags & H2_FLAG_END_STREAM) {
                     st.resp_end_stream = true;
-                    snapshot_stream(conn, st, st.is_complete());
-                    if (st.is_complete()) conn->streams.erase(stream_id);
+                    // v1.62 P1-3: 只有请求+响应都 complete 才上报——
+                    //   此前 resp HEADERS+ES 但 req 未完成（服务端提前响应 404/403 拒绝上传）
+                    //   时 snapshot(complete=false)，随后 req DATA+ES 又 snapshot(complete=true)
+                    //   → 同一请求上报两次（UI 重复卡片）。
+                    if (st.is_complete()) {
+                        snapshot_stream(conn, st, true);
+                        conn->streams.erase(stream_id);
+                    }
                 }
             }
             st.pending_header_block.clear();
@@ -304,10 +340,11 @@ static void process_frame(Http2Connection* conn, const uint8_t* data, uint32_t f
         }
 
         if (body_len > 0) {
-            if (is_local) {
-                conn->data_chunks.push_back({stream_id, true, std::vector<uint8_t>(body, body + body_len)});
-            } else if (collect_resp_body) {
-                conn->data_chunks.push_back({stream_id, false, std::vector<uint8_t>(body, body + body_len)});
+            // v1.62 P1-5: 请求体也受 collect_resp_body 开关控制（此前无条件收集 →
+            //   POST 大上传（几百 MB）逐帧拷贝进 data_chunks 内存膨胀）。
+            //   默认收集（nativeCapture 开着），但用户关掉"响应体"收集时请求体一并停。
+            if (collect_resp_body) {
+                conn->data_chunks.push_back({stream_id, is_local, std::vector<uint8_t>(body, body + body_len)});
             }
         }
 

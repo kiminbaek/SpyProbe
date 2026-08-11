@@ -120,6 +120,14 @@ public class NativeProbe {
         }
     }
 
+    /** v1.62【用户需求】: 该连接是否已判定为非 HTTP（抓到了但没分析出来）→ 日志打 UNKNOWN 标签 */
+    private static boolean tlsIsUnknown(long connId) {
+        synchronized (tlsParsers) {
+            TlsHttpParser p = tlsParsers.get(connId);
+            return p != null && p.isUnknown();
+        }
+    }
+
     private static long tlsLastRid(long connId) {
         synchronized (tlsParsers) {
             TlsHttpParser p = tlsParsers.get(connId);
@@ -240,7 +248,11 @@ public class NativeProbe {
             }
 
             String dir = isWrite ? ">>>" : "<<<";
-            String proto = isSsl ? "TLS" : "TCP";
+            // v1.62【用户需求】: 未知协议标签——TLS 明文没解析出 HTTP（非 HTTP 协议：
+            //   WebSocket 裸帧/DNS over TLS/自定义二进制等）→ [UNKNOWN] 标签，方便用户识别
+            //   "抓到了但没分析出来"的数据。TCP 明文保持 TCP 标签（TCP 层不解析协议）。
+            boolean unknownProto = isSsl && tlsIsUnknown(id);
+            String proto = unknownProto ? "UNKNOWN" : (isSsl ? "TLS" : "TCP");
             String loc = (socketInfo != null && !socketInfo.isEmpty()) ? socketInfo : ("#" + id);
 
             // v1.52.1【用户 2026-08-11 拍板：抓包日志页 = 目标 App 数据，不是 SpyProbe 自己的日志】
@@ -250,6 +262,9 @@ public class NativeProbe {
             if (isSsl && tlsHasStructured(id)) {
                 return false;
             }
+            // v1.62: 已判定 UNKNOWN 的连接——首次判定打一行说明，之后只打 UNKNOWN 摘要
+            //   （TlsHttpParser 已判定非 HTTP，后续数据不再喂解析器，这里直接打 UNKNOWN 标签行）
+            //   unknown 连接同样跳过 pcap 之外的重复：数据本身无结构，标签行已说明"未知协议"
 
             // v1.25 P1-6: 部分拷贝——大块传输（文件/视频）时 buf.remaining() 可达数 MB，
             // 全量拷贝 + toReadable 扫描会分配大数组/遍历，高频下 OOM 风险；只拷贝展示上限并记录总长
@@ -295,7 +310,7 @@ public class NativeProbe {
             // v1.58: H2 请求/响应结构化（此前纯文本）——元数据进 HttpEntry，UI 渲染 REQ# 卡片
             long key = h2Key(connId, streamId);
             if (!isResponse) {
-                long rid = LogStore.get().nextSeq();
+                long rid = LogStore.get().nextHttpId(); // v1.62 P1-10: 独立 httpId
                 String url = scheme + "://" + authority + path;
                 String line = "[REQ#" + rid + "] >>> " + method + " " + url;
                 if (reqHdr != null && !reqHdr.isEmpty()) {
@@ -325,11 +340,14 @@ public class NativeProbe {
                     LogStore.get().log(TAG, line);
                     // v1.59: 响应头开始时刻（近似）
                     if (he.respStartMs == 0) he.respStartMs = System.currentTimeMillis();
-                    he.complete(statusCode, "", parseH2Headers(respHdr), "text", "", 0, 0);
+                    // v1.62 P0: complete 时保留 onH2DataChunk 已追加的 body（此前传 "" 清空详情页 body）
+                    he.complete(statusCode, "", parseH2Headers(respHdr),
+                            HttpEntry.sniffBodyType(he.respHeaders.get("Content-Type"), he.respBody),
+                            he.respBody, he.respBodyBytes, 0);
                     HttpStore.get().add(he);
                 } else {
                     // 请求元数据没捕获到（先见响应）——轻量条目
-                    long rid = LogStore.get().nextSeq();
+                    long rid = LogStore.get().nextHttpId(); // v1.62 P1-10: 独立 httpId
                     line = "[REQ#" + rid + "] <<< " + statusCode + " " + path;
                     if (respHdr != null && !respHdr.isEmpty()) {
                         line += "\n    " + respHdr.replace("\n", "\n    ");
@@ -370,7 +388,8 @@ public class NativeProbe {
     private static final java.util.concurrent.ConcurrentHashMap<Long, HttpEntry> H2_ENTRIES =
             new java.util.concurrent.ConcurrentHashMap<>();
 
-    /** HTTP/2 body 数据块（isRequest=true 上行 body） */
+    /** HTTP/2 body 数据块（isRequest=true 上行 body）
+     *  v1.62 P0: body 追加进 HttpEntry（此前只打文本日志，详情页 H2 body 全空） */
     @SuppressWarnings("unused")
     private static void onH2DataChunk(long connId, int streamId, boolean isRequest, ByteBuffer buf) {
         try {
@@ -382,6 +401,14 @@ public class NativeProbe {
             int n = Math.min(total, MAX_TEXT);
             byte[] data = new byte[n];
             buf.get(data);
+            // v1.62 P0: 追加到结构化条目（详情页 body 完整）
+            long key = h2Key(connId, streamId);
+            HttpEntry he = H2_ENTRIES.get(key);
+            if (he != null) {
+                String chunk = HttpEntry.printableChunk(data, n);
+                if (isRequest) he.appendReqBody(chunk);
+                else he.appendRespBody(chunk);
+            }
             String dir = isRequest ? ">>>" : "<<<";
             LogStore.get().log(TAG, "[H2 DATA " + dir + " #" + streamId + (total > n ? " " + total + "B" : "") + "] " + toReadable(data, total));
         } catch (Throwable ignored) {

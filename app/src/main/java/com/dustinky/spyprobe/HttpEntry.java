@@ -46,10 +46,11 @@ public class HttpEntry {
     /** 请求头（原始顺序，TreeMap 排序） */
     public final Map<String, String> reqHeaders;
 
-    /** 请求体类型：json / form / text / binary / none */
-    public final String reqBodyType;
-    public final String reqBody;
-    public final int reqBodyBytes;
+    /** v1.62 P1-11: final → volatile（多源 merge 时 body 类型可被 TLS 层补全） */
+    public volatile String reqBodyType;
+    /** v1.62 P0: final → volatile（H2 请求 body 需流式追加） */
+    public volatile String reqBody;
+    public volatile int reqBodyBytes;
 
     /** 响应（未完成时 status=0） */
     public volatile int status;
@@ -148,6 +149,46 @@ public class HttpEntry {
         this.logLine = logLine;
     }
 
+    /** v1.62 P0: H2 body 追加上限（详情页展示用，防 OOM；与 TlsHttpParser BODY 上限一致逻辑） */
+    public static final int BODY_APPEND_MAX = 256 * 1024;
+
+    /** v1.62 P0: 追加请求体（H2 DATA 块流式到达）——reqBody 改 volatile 支持追加 */
+    public void appendReqBody(String chunk) {
+        if (chunk == null || chunk.isEmpty()) return;
+        try {
+            if (reqBody.length() >= BODY_APPEND_MAX) { reqBodyBytes += chunk.length(); return; }
+            int need = BODY_APPEND_MAX - reqBody.length();
+            String part = chunk.length() > need ? chunk.substring(0, need) : chunk;
+            this.reqBody = reqBody + part;
+            this.reqBodyBytes += chunk.length();
+        } catch (Throwable t) { }
+    }
+
+    /** v1.62 P0: 追加响应体（H2 DATA 块流式到达）——响应体已 volatile 可直接追加 */
+    public void appendRespBody(String chunk) {
+        if (chunk == null || chunk.isEmpty()) return;
+        try {
+            if (respBody.length() >= BODY_APPEND_MAX) { respBodyBytes += chunk.length(); return; }
+            int need = BODY_APPEND_MAX - respBody.length();
+            String part = chunk.length() > need ? chunk.substring(0, need) : chunk;
+            this.respBody = respBody + part;
+            this.respBodyBytes += chunk.length();
+        } catch (Throwable t) { }
+    }
+
+    /** v1.62 P0: 请求体是否只取可打印文本（二进制 chunk 跳过，防乱码）——NativeProbe 跨类调用 */
+    public static String printableChunk(byte[] data, int len) {
+        if (data == null || len <= 0) return "";
+        int check = Math.min(len, 64);
+        for (int i = 0; i < check; i++) {
+            byte b = data[i];
+            if (b == 0) return "";
+            if (b < 0x09 || (b > 0x0d && b < 0x20)) return "";
+        }
+        try { return new String(data, 0, len, java.nio.charset.StandardCharsets.UTF_8); }
+        catch (Throwable t) { return ""; }
+    }
+
     /** 响应到达时填充 */
     public void complete(int status, String statusMsg, Map<String, String> respHeaders,
                          String respBodyType, String respBody, int respBodyBytes, long durationMs) {
@@ -222,7 +263,8 @@ public class HttpEntry {
         if (issuerO != null) this.certIssuerO = issuerO;
     }
 
-    /** 从 url 的 ? 部分解析 query 参数（保留原始顺序，重复 key 后者覆盖） */
+    /** 从 url 的 ? 部分解析 query 参数（保留原始顺序，重复 key 后者覆盖）
+     *  v1.62 P2-21: key/value URL decode（此前 %20/%3A 等编码原样显示） */
     private static Map<String, String> parseQuery(String url) {
         Map<String, String> out = new java.util.LinkedHashMap<>();
         if (url == null) return out;
@@ -233,12 +275,22 @@ public class HttpEntry {
             if (p.isEmpty()) continue;
             int eq = p.indexOf('=');
             if (eq < 0) {
-                out.put(p, "");
+                out.put(percentDecode(p), "");
             } else {
-                out.put(p.substring(0, eq), p.substring(eq + 1));
+                out.put(percentDecode(p.substring(0, eq)), percentDecode(p.substring(eq + 1)));
             }
         }
         return out;
+    }
+
+    /** URL 百分号解码（+ → 空格）；解码失败返回原串 */
+    private static String percentDecode(String s) {
+        if (s == null || s.isEmpty()) return s;
+        try {
+            return java.net.URLDecoder.decode(s, "UTF-8");
+        } catch (Throwable t) {
+            return s;
+        }
     }
 
     /** 序列化为 JSON（推送主进程 / 落盘） */
@@ -390,10 +442,11 @@ public class HttpEntry {
         return m;
     }
 
-    /** 完整 HTTP 报文（原始视图用） */
+    /** 完整 HTTP 报文（原始视图用）——v1.62 P2-20: 协议用真实字段（H2 不再硬编码 HTTP/1.1） */
     public String rawRequest() {
         StringBuilder sb = new StringBuilder();
-        sb.append(method).append(' ').append(url).append(" HTTP/1.1\r\n");
+        String p = protocol == null || protocol.isEmpty() ? "HTTP/1.1" : protocol;
+        sb.append(method).append(' ').append(url).append(' ').append(p).append("\r\n");
         for (Map.Entry<String, String> e : reqHeaders.entrySet()) {
             sb.append(e.getKey()).append(": ").append(e.getValue()).append("\r\n");
         }
@@ -406,7 +459,8 @@ public class HttpEntry {
     public String rawResponse() {
         if (!done) return "（响应未完成）";
         StringBuilder sb = new StringBuilder();
-        sb.append("HTTP/1.1 ").append(status).append(' ').append(statusMsg).append("\r\n");
+        String p = protocol == null || protocol.isEmpty() ? "HTTP/1.1" : protocol;
+        sb.append(p).append(' ').append(status).append(' ').append(statusMsg).append("\r\n");
         for (Map.Entry<String, String> e : respHeaders.entrySet()) {
             sb.append(e.getKey()).append(": ").append(e.getValue()).append("\r\n");
         }

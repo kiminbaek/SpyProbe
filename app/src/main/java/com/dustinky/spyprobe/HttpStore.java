@@ -47,18 +47,84 @@ public class HttpStore {
 
     public long nextId() { return nextId.getAndIncrement(); }
 
-    /** 新请求入队（返回分配 id） */
+    // v1.62 P1-11: 多源重复记录——同一请求 OKHTTP 层 + native TLS 层各建 HttpEntry →
+    //   UI 重复卡片。add 时按 (method+url+时间窗≤500ms) 判重，重复条目丢弃但保留 id 别名
+    //   （TLS 日志行 [REQ#N] 仍能经别名找到详情，不丢点击链路）。
+    //   字段合并：后到的 TLS 条目带四元组/TLS 元数据/证书，merge 进先到的 OKHTTP 条目。
+    private static final long DEDUP_WINDOW_MS = 500;
+    private final java.util.Map<Long, Long> idAlias = new java.util.HashMap<>();
+
+    /** v1.62 P1-11: 查找最近窗口内同 method+url 的已存条目；返回 null=无重复 */
+    private HttpEntry findDup(HttpEntry e) {
+        int n = entries.size();
+        // 只扫最近 20 条（多源窗口极小；全扫 O(MAX) 每次 add 太贵）
+        int start = Math.max(0, n - 20);
+        for (int i = start; i < n; i++) {
+            HttpEntry old = entries.get(i);
+            if (old == null) continue;
+            if (!old.method.equals(e.method)) continue;
+            if (old.url == null || !old.url.equals(e.url)) continue;
+            long dt = Math.abs(old.time - e.time);
+            if (dt <= DEDUP_WINDOW_MS) return old;
+        }
+        return null;
+    }
+
+    /** v1.62 P1-11: 后到条目的补充字段 merge 进先到条目（TLS 四元组/元数据/证书/body 补全） */
+    private static void mergeInto(HttpEntry dst, HttpEntry src) {
+        try {
+            if (dst.srcAddr.isEmpty() && !src.srcAddr.isEmpty()) {
+                dst.srcAddr = src.srcAddr; dst.srcPort = src.srcPort;
+                dst.dstAddr = src.dstAddr; dst.dstPort = src.dstPort;
+            }
+            if (dst.connId == 0) { dst.connId = src.connId; dst.streamId = src.streamId; }
+            if (dst.tlsVersion.isEmpty() && !src.tlsVersion.isEmpty()) {
+                dst.tlsVersion = src.tlsVersion; dst.sni = src.sni; dst.alpn = src.alpn;
+                dst.cipherSelected = src.cipherSelected; dst.cipherList = src.cipherList;
+            }
+            if (dst.certSubject.isEmpty() && !src.certSubject.isEmpty()) {
+                dst.certSubject = src.certSubject; dst.certIssuer = src.certIssuer;
+                dst.certSerial = src.certSerial; dst.certSha256 = src.certSha256;
+                dst.certNotBefore = src.certNotBefore; dst.certNotAfter = src.certNotAfter;
+                dst.certSubjectCn = src.certSubjectCn; dst.certSubjectC = src.certSubjectC;
+                dst.certSubjectSt = src.certSubjectSt; dst.certSubjectL = src.certSubjectL;
+                dst.certSubjectO = src.certSubjectO; dst.certSubjectOu = src.certSubjectOu;
+                dst.certIssuerCn = src.certIssuerCn; dst.certIssuerC = src.certIssuerC;
+                dst.certIssuerO = src.certIssuerO;
+            }
+            // 响应体补全（先到条目可能因 TLS 层更快而 body 为空）
+            if ((dst.respBody == null || dst.respBody.isEmpty()) && src.respBody != null && !src.respBody.isEmpty()) {
+                dst.respBody = src.respBody; dst.respBodyType = src.respBodyType; dst.respBodyBytes = src.respBodyBytes;
+            }
+            if ((dst.reqBody == null || dst.reqBody.isEmpty()) && src.reqBody != null && !src.reqBody.isEmpty()) {
+                dst.reqBody = src.reqBody; dst.reqBodyType = src.reqBodyType; dst.reqBodyBytes = src.reqBodyBytes;
+            }
+            if (dst.durationMs == 0 && src.durationMs > 0) dst.durationMs = src.durationMs;
+        } catch (Throwable t) { /* merge 失败不影响主链路 */ }
+    }
+
+    /** 新请求入队（返回分配 id）——v1.62 P1-11: 多源重复去重 */
     public long add(HttpEntry e) {
         synchronized (lock) {
+            HttpEntry dup = findDup(e);
+            if (dup != null) {
+                // 重复：丢弃后到条目，merge 补充字段，记录 id 别名（原 id 可经别名查详情）
+                mergeInto(dup, e);
+                idAlias.put(e.id, dup.id);
+                if (idAlias.size() > 256) idAlias.clear(); // 防膨胀（保留最近窗口）
+                return dup.id;
+            }
             entries.add(e);
             while (entries.size() > MAX) entries.remove(0);
             return e.id;
         }
     }
 
-    /** 按 id 查（未找到返回 null） */
+    /** 按 id 查（未找到返回 null）——v1.62: 支持别名（重复条目 id → 真实条目 id） */
     public HttpEntry find(long id) {
         synchronized (lock) {
+            Long real = idAlias.get(id);
+            if (real != null) id = real;
             for (HttpEntry e : entries) {
                 if (e.id == id) return e;
             }

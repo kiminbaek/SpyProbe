@@ -36,6 +36,9 @@ public class CrashCatcher {
     static final String TAG = "SpyProbe.Crash";
     static final String FILE_NAME = "spyprobe_crash.log";
     static final int HOME_PORT = 9900;
+    /** v1.62 P2-16: crash log 滚动上限（256KB）——崩溃堆栈一个约 2-8KB，
+     *  50-100 次崩溃后旧记录滚动淘汰，防无限增长占盘 */
+    static final long MAX_CRASH_LOG_BYTES = 256L * 1024;
 
     private static final SimpleDateFormat FMT = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US);
 
@@ -95,6 +98,7 @@ public class CrashCatcher {
             }
             synchronized (CrashCatcher.class) {
                 f.getParentFile().mkdirs();
+                rollIfTooBig(f);
                 try (FileOutputStream os = new FileOutputStream(f, true)) {
                     os.write((msg + "\n").getBytes(StandardCharsets.UTF_8));
                 }
@@ -147,18 +151,40 @@ public class CrashCatcher {
         return sb.toString();
     }
 
-    /** 主进程落盘（UI 进程崩溃） */
+    /** 主进程落盘（UI 进程崩溃）——v1.62 P2-16: 超限滚动 */
     private static void append(File dir, Thread t, Throwable e) {
         File f = dir == null ? null : new File(dir, FILE_NAME);
         if (f == null) return;
         try {
             synchronized (CrashCatcher.class) {
                 f.getParentFile().mkdirs();
+                rollIfTooBig(f);
                 try (FileOutputStream os = new FileOutputStream(f, true)) {
                     os.write((dump(t, e) + "\n").getBytes(StandardCharsets.UTF_8));
                 }
             }
         } catch (Throwable t2) { /* 崩溃现场不保证 IO 成功 */ }
+    }
+
+    /** v1.62 P2-16: 文件超限 → 截断为末尾一半（保留最近崩溃记录，淘汰最早一半） */
+    private static void rollIfTooBig(File f) {
+        try {
+            if (!f.isFile() || f.length() <= MAX_CRASH_LOG_BYTES) return;
+            long keep = f.length() / 2;
+            try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(f, "rw")) {
+                raf.seek(keep);
+                byte[] tail = new byte[(int) (raf.length() - keep)];
+                raf.readFully(tail);
+                // 从行首开始保留（避免半行）
+                int start = 0;
+                for (int i = 0; i < tail.length; i++) {
+                    if (tail[i] == '\n') { start = i + 1; break; }
+                }
+                raf.setLength(0);
+                raf.seek(0);
+                raf.write(tail, start, tail.length - start);
+            }
+        } catch (Throwable t) { /* 滚动失败不影响写入 */ }
     }
 
     /** 目标进程崩溃 → HTTP POST 主进程 9900 /api/push_crash（纯 Socket，崩溃场景最稳） */

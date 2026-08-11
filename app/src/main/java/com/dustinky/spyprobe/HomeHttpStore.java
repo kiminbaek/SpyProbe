@@ -120,8 +120,15 @@ public class HomeHttpStore {
         synchronized (lock) { mem.clear(); }
     }
 
-    /** 从 jsonl 文件读某天全部（历史页回溯；文件不存在返回空） */
+    /** 从 jsonl 文件读某天全部（历史页回溯；文件不存在返回空）
+     *  v1.62 P2-15: 加 max 上限（默认 5000 条）——视频站高频请求一天几万条，
+     *  全读会 OOM/卡 UI（HttpDetailPage 一次性渲染所有条目） */
     public List<HttpEntry> readDay(File filesDir, String day) {
+        return readDay(filesDir, day, 5000);
+    }
+
+    /** v1.62 P2-15: 带条数上限的 readDay（历史页可分页回溯） */
+    public List<HttpEntry> readDay(File filesDir, String day, int max) {
         List<HttpEntry> out = new ArrayList<>();
         try {
             File d = new File(filesDir, "http_entries");
@@ -130,6 +137,7 @@ public class HomeHttpStore {
             java.io.BufferedReader br = new java.io.BufferedReader(new java.io.FileReader(f, java.nio.charset.StandardCharsets.UTF_8));
             String line;
             while ((line = br.readLine()) != null) {
+                if (out.size() >= max) break;
                 if (line.trim().isEmpty()) continue;
                 try {
                     HttpEntry e = HttpEntry.fromJson(new JSONObject(line));

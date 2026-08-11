@@ -229,9 +229,22 @@ public class LogStore {
         return sb.toString();
     }
 
-    /** v1.35 P1-3: 请求关联 ID——返回下一条即将分配的 seq（供 OkHttp 请求/响应行关联，不消费） */
+    /** v1.35 P1-3: 请求关联 ID——返回下一条即将分配的 seq（供 OkHttp 请求/响应行关联，不消费）
+     *  ⚠️ v1.62 P1-10: 不再用于 HttpEntry.id！nextSeq() 返回 seq+1 不消费，
+     *  并发（OkHttp 线程 / native TLS 线程 / H2 线程）会拿到相同 id → HttpStore.find(id) 命中错误条目。
+     *  HttpEntry.id 统一用 {@link #nextHttpId()}（独立原子分配器，全局唯一单调）。 */
     public synchronized long nextSeq() {
         return seq + 1;
+    }
+
+    /** v1.62 P1-10: HttpEntry.id 独立原子分配器（与日志 seq 分离，全局唯一，杜绝并发冲突）。
+     *  初始 1_000_000：与日志 seq（低位）错开，日志行 [REQ#] 与条目 id 一致（用同一返回值），
+     *  find(id) 永不误命中。NetProbe(OkHttp/HUC/Cronet) + TlsHttpParser + H2 统一用它。 */
+    private final java.util.concurrent.atomic.AtomicLong httpId = new java.util.concurrent.atomic.AtomicLong(1_000_000);
+
+    /** v1.62 P1-10: 分配全局唯一 HttpEntry.id（并发安全） */
+    public long nextHttpId() {
+        return httpId.incrementAndGet();
     }
 
     public synchronized void log(String tag, String msg) {

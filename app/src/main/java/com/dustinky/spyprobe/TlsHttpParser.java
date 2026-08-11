@@ -18,10 +18,10 @@ import java.util.TreeMap;
  *
  * 解析规则：
  *   - write 方向 = 上行请求，read 方向 = 下行响应（HTTP/1.1 严格一请求一响应）
- *   - 请求行+头完整（\r\n\r\n）→ 建 HttpEntry（rid = LogStore.nextSeq()）→ HttpStore.add
+ *   - 请求行+头完整（\r\n\r\n）→ 建 HttpEntry（rid = LogStore.nextHttpId()）→ HttpStore.add
  *   - 响应行+头完整 → HttpEntry.complete()（status/msg/头/体）
- *   - 请求体取"与头同段到达"的前 {@link #BODY_MAX} 字节（GET 场景无体；POST 若 body 分段
- *     到达则丢弃——视频站场景全 GET，可接受）
+ *   - 请求体取"与头同段到达"的前 {@link #BODY_MAX} 字节；v1.62: 有 Content-Length 时
+ *     进入 WAIT_REQ_BODY 态收集分段 body（POST 上传不再丢）
  *   - 响应体取头后前 {@link #BODY_MAX} 字节（.ts 分片可能数百 KB，只留头，防 OOM）
  *   - keep-alive：一条连接顺序产出多个条目（状态机复位等待下一请求）
  *
@@ -29,7 +29,13 @@ import java.util.TreeMap;
  *   - 只解析 HTTP/1.1 明文（HTTP/2 已有 onH2Request/onH2DataChunk 独立链路）
  *   - 单连接累积缓冲上限 {@link #CONN_BUF_MAX}，超限丢弃（防长连接内存膨胀）
  *   - 所有异常吞掉（native 回调绝不能崩目标进程）
- *   - 无锁单线程调用（NativeProbe 侧持有 per-连接实例，不同连接不共享）
+ *   - v1.62 P1-6: feed 加 per-conn 锁——write/read 可能不同线程（SSL_write/SSL_read
+ *     并发回调），此前"无锁单线程"假设不成立，reqBuf/respBuf 会损坏
+ *
+ * v1.62 UNKNOWN 判定：连接累积数据达到 {@link #UNKNOWN_BYTES_THRESHOLD} 仍未解析出
+ *   任何 HTTP 头（既不是请求也不是响应）→ 判定为非 HTTP 协议（WebSocket 裸帧/DNS over
+ *   TLS/自定义二进制协议等）→ isUnknown()=true → NativeProbe 打 [UNKNOWN] 标签，用户能
+ *   从日志里看出"抓到了但没分析出来"的数据。
  */
 public class TlsHttpParser {
 
@@ -37,8 +43,12 @@ public class TlsHttpParser {
     private static final int CONN_BUF_MAX = 256 * 1024;
     /** body 保留上限（m3u8/enkey 足够；.ts 分片只取头） */
     private static final int BODY_MAX = 8 * 1024;
+    /** v1.62 P2-23: body 上限可配置（Config.bodyLimit，默认 8KB，可调大看大 JSON/图片 base64） */
+    private static final int BODY_MAX_DEFAULT = 8 * 1024;
+    /** v1.62 UNKNOWN 判定阈值：累积这么多字节仍无 HTTP 头 → 非 HTTP 协议 */
+    private static final long UNKNOWN_BYTES_THRESHOLD = 4 * 1024;
 
-    private enum State { WAIT_REQ_LINE, WAIT_RESP_LINE, WAIT_RESP_BODY }
+    private enum State { WAIT_REQ_LINE, WAIT_REQ_BODY, WAIT_RESP_LINE, WAIT_RESP_BODY }
 
     private final long connId; // ssl 指针（NativeProbe 回调的 id）
     // v1.59: 连接四元组（native socketInfo "srcIP:srcPort->dstIP:dstPort" 拆分，可能为空）
@@ -52,6 +62,9 @@ public class TlsHttpParser {
 
     // v1.61: 请求首字节到达时刻（修复请求耗时恒 0——此前 reqEndMs 被设成 time 同一时刻）
     private long reqStartMs = 0;
+    // v1.62 P1-9: 请求体分段收集态字段（POST 上传 body 分段到达不再丢）
+    private long reqContentLength = -1;   // 请求头 Content-Length（-1=未知）
+    private int reqBodyAcc = 0;           // 已收集请求体字节数
     // v1.61: WAIT_RESP_BODY 态累积状态（响应体字节计数 / 期望长度 / chunked 标记）
     private int respBodyAcc = 0;
     private int respContentLength = -1;
@@ -63,6 +76,10 @@ public class TlsHttpParser {
     private long lastRid = -1;
     /** 是否解析出过结构化条目（native 原始 TLS 文本行据此降级为摘要） */
     private boolean everParsed = false;
+
+    // v1.62 UNKNOWN 判定：累积 feed 字节 + 是否已判定非 HTTP
+    private long fedBytes = 0;
+    private boolean unknown = false;
 
     public TlsHttpParser(long connId) {
         this(connId, null);
@@ -127,12 +144,28 @@ public class TlsHttpParser {
     public boolean everParsed() { return everParsed; }
     public long lastRid() { return current != null ? current.id : lastRid; }
 
-    /** 喂一段 TLS 明文（native SSL_read/SSL_write 回调的数据段） */
-    public void feed(boolean isWrite, byte[] data, int len) {
+    /** v1.62: 该连接是否已判定为非 HTTP（UNKNOWN 标签依据） */
+    public boolean isUnknown() { return unknown; }
+
+    /** v1.62: 累积字节 + UNKNOWN 判定——既没解析出请求也没解析出响应，累积超阈值即非 HTTP。
+     *  注意：连接可能先发不可解析的垃圾（TLS 重协商等）再发 HTTP，但阈值 4KB 足够宽松，
+     *  实际误判率极低；判定后 unknown 永久为 true（该连接后续数据都打 UNKNOWN 标签）。 */
+    private void noteFed(int len) {
+        fedBytes += len;
+        if (!unknown && !everParsed && fedBytes >= UNKNOWN_BYTES_THRESHOLD) {
+            unknown = true;
+        }
+    }
+
+    /** 喂一段 TLS 明文（native SSL_read/SSL_write 回调的数据段）
+     *  v1.62 P1-6: 整体加 per-conn 锁（write/read 可能不同线程） */
+    public synchronized void feed(boolean isWrite, byte[] data, int len) {
         try {
             if (data == null || len <= 0) return;
+            noteFed(len);
             if (isWrite) {
                 if (state == State.WAIT_REQ_LINE) feedRequest(data, len);
+                else if (state == State.WAIT_REQ_BODY) feedRequestBody(data, len);
                 else if (state == State.WAIT_RESP_BODY) {
                     // v1.61: keep-alive 复用连接上，新请求开始 = 上一个响应必须已收完
                     //（.ts 分片无 Content-Length 或连接关闭前，靠新请求到来补 complete）
@@ -156,7 +189,9 @@ public class TlsHttpParser {
         }
     }
 
-    /** v1.61: 收尾当前条目（记录 respEndMs + 更新耗时）；无 current 时仅复位状态 */
+    /** v1.61: 收尾当前条目（记录 respEndMs + 更新耗时）；无 current 时仅复位状态
+     *  v1.62 P2-12: done 后不再覆盖 durationMs（此前 close 时用 close 时刻重算，
+     *  把早已 complete 的条目耗时拉长） */
     private void completeCurrent(long nowMs) {
         HttpEntry e = current;
         if (e != null) {
@@ -165,13 +200,24 @@ public class TlsHttpParser {
                 e.done = true;
                 e.durationMs = nowMs - e.time;
                 lastRid = e.id;
-            } else {
-                e.durationMs = nowMs - e.time;
             }
             current = null;
         }
         respBuf.reset();
         state = State.WAIT_REQ_LINE;
+    }
+
+    /** v1.62 P2-23: body 保留上限——Config.bodyLimit（单位 KB）可调大（默认 2KB），
+     *  但不低于硬编码 8KB 默认（防用户调小后正文截断更狠）；UI 调大才能看到大 JSON 全文 */
+    private static int bodyMax() {
+        try {
+            int v = Config.get().bodyLimit;
+            if (v > 0 && v <= 1024) {
+                int bytes = v * 1024;
+                return Math.max(BODY_MAX_DEFAULT, bytes);
+            }
+        } catch (Throwable t) { }
+        return BODY_MAX_DEFAULT;
     }
 
     /** 上行：累积请求字节，请求头完整时建条目 */
@@ -186,11 +232,11 @@ public class TlsHttpParser {
         int headEndPos = headEnd[0];
         int delimLen = headEnd[1];
 
-        // 请求体：只取与头同段到达的字节（GET 场景无体）
+        // 请求体：只取与头同段到达的字节（GET 场景无体；POST body 后续经 feedRequestBody 收）
         int bodyLen = buf.length - (headEndPos + delimLen);
         String body = "";
         if (bodyLen > 0) {
-            int n = Math.min(bodyLen, BODY_MAX);
+            int n = Math.min(bodyLen, bodyMax());
             body = new String(buf, headEndPos + delimLen, n, StandardCharsets.UTF_8);
         }
 
@@ -214,14 +260,15 @@ public class TlsHttpParser {
                 reqHdrs.put(lines[i].substring(0, c).trim(), lines[i].substring(c + 1).trim());
             }
         }
-        // URL 补全：请求行可能是 path（GET /api/x HTTP/1.1），拼 Host 头
+        // v1.62 P1-7: URL scheme 硬编码 http:// → https://（TLS 明文解析器处理的必然是 HTTPS）
+        //  URL 补全：请求行可能是 path（GET /api/x HTTP/1.1），拼 Host 头
         String fullUrl = target;
         if (!target.startsWith("http")) {
             String host = reqHdrs.get("Host");
-            fullUrl = (host != null && !host.isEmpty()) ? "http://" + host + target : target;
+            fullUrl = (host != null && !host.isEmpty()) ? "https://" + host + target : target;
         }
 
-        long rid = LogStore.get().nextSeq();
+        long rid = LogStore.get().nextHttpId(); // v1.62 P1-10: 独立 httpId（防并发撞 id）
         long nowMs = System.currentTimeMillis();
         String logLine = "[REQ#" + rid + "] >>> " + m + " " + fullUrl;
         // v1.61: time = 请求首字节到达时刻（此前=请求头完整时刻 → 请求耗时恒 0）
@@ -241,8 +288,41 @@ public class TlsHttpParser {
         // 文本流保留 [REQ#N] 行（UI 卡片命中依赖）+ 供用户回看
         LogStore.get().log(NativeProbe.TAG, logLine);
 
+        // v1.62 P1-9: 请求体分段收集——有 Content-Length 且未收完 → 进 WAIT_REQ_BODY 态
+        //   （POST 上传/JSON body 分段到达的场景，body 不再丢）
+        String cl = reqHdrs.get("Content-Length");
+        long contentLength = -1;
+        if (cl != null && !cl.trim().isEmpty()) {
+            try { contentLength = Long.parseLong(cl.trim()); } catch (Throwable t) { contentLength = -1; }
+        }
         reqBuf.reset();
-        state = State.WAIT_RESP_LINE;
+        if (contentLength > bodyLen && contentLength <= CONN_BUF_MAX) {
+            reqContentLength = contentLength;
+            reqBodyAcc = bodyLen;
+            state = State.WAIT_REQ_BODY;
+        } else {
+            reqContentLength = -1;
+            reqBodyAcc = 0;
+            state = State.WAIT_RESP_LINE;
+        }
+    }
+
+    /** v1.62 P1-9: 上行请求体分段收集（有 Content-Length 时）——收集到完整后转 WAIT_RESP_LINE */
+    private void feedRequestBody(byte[] data, int len) {
+        HttpEntry e = current;
+        if (e == null) { resetReq(); return; }
+        reqBodyAcc += len;
+        e.reqBodyBytes = reqBodyAcc;
+        if (e.reqBody.length() < bodyMax()) {
+            int need = bodyMax() - e.reqBody.length();
+            int n = Math.min(len, need);
+            try { e.reqBody = e.reqBody + new String(data, 0, n, StandardCharsets.UTF_8); } catch (Throwable t) { }
+        }
+        if (reqBodyAcc >= reqContentLength) {
+            reqContentLength = -1;
+            reqBodyAcc = 0;
+            state = State.WAIT_RESP_LINE;
+        }
     }
 
     /** 下行：累积响应字节，响应头完整时解析；body 未收完 → WAIT_RESP_BODY 继续计数 */
@@ -271,6 +351,13 @@ public class TlsHttpParser {
             }
             if (parts.length >= 3) statusMsg = parts[2];
         }
+        // v1.62 P1-8: 1xx 响应（100 Continue / 103 Early Hints）是中间响应——
+        //   不能 complete 当前条目，否则真实 200 到达时 current=null → 响应丢失。
+        //   跳过：清掉该段缓冲（1xx 通常无 body），继续等真实响应。
+        if (status >= 100 && status < 200) {
+            respBuf.reset();
+            return;
+        }
         for (int i = 1; i < lines.length; i++) {
             int c = lines[i].indexOf(':');
             if (c > 0) {
@@ -282,7 +369,7 @@ public class TlsHttpParser {
         int bodyInHead = buf.length - (headEndPos + delimLen);
         String body = "";
         if (bodyInHead > 0) {
-            int n = Math.min(bodyInHead, BODY_MAX);
+            int n = Math.min(bodyInHead, bodyMax());
             body = new String(buf, headEndPos + delimLen, n, StandardCharsets.UTF_8);
         }
 
@@ -398,13 +485,20 @@ public class TlsHttpParser {
         return null;
     }
 
-    private void resetReq() { reqBuf.reset(); state = State.WAIT_REQ_LINE; }
+    private void resetReq() {
+        reqBuf.reset();
+        reqContentLength = -1;
+        reqBodyAcc = 0;
+        state = State.WAIT_REQ_LINE;
+    }
     private void resetResp() {
         respBuf.reset();
         respBodyAcc = 0;
         respContentLength = -1;
         respChunked = false;
         current = null;
+        reqContentLength = -1;
+        reqBodyAcc = 0;
         state = State.WAIT_REQ_LINE;
     }
 }

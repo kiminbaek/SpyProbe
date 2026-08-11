@@ -61,10 +61,10 @@ public class SQLiteProbe {
                 a.windowStart = now;
                 SQL_AGG.put(tpl, a);
                 if (SQL_AGG.size() > 64) {
-                    // 防无界增长：淘汰最旧模板（LinkedHashMap 迭代序=插入序）
-                    java.util.Iterator<SqlAgg> it = SQL_AGG.values().iterator();
-                    if (it.hasNext()) it.next();
-                    if (SQL_AGG.size() > 64) SQL_AGG.remove(SQL_AGG.keySet().iterator().next());
+                    // v1.62 P2-17: 淘汰最旧模板（LinkedHashMap 迭代序=插入序）；
+                    //   删冗余死代码（此前 it.next() 后再 remove keySet().iterator().next()
+                    //   重复移除 + 恒 false 的 size 判断）
+                    SQL_AGG.remove(SQL_AGG.keySet().iterator().next());
                 }
                 return true;  // 模板首次出现 → 记全量
             }

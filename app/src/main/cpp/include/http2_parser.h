@@ -28,8 +28,6 @@ extern "C" {
 #define H2_FRAME_HEADER_SIZE 9
 #define H2_MAX_STREAMS_PER_CONN 1000
 
-#define H2_MAX_PAYLOAD_SIZE (5 * 1024 * 1024)
-
 static const uint8_t H2_CLIENT_PREFACE[] = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 static const size_t H2_CLIENT_PREFACE_LEN = 24;
 

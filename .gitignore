@@ -6,3 +6,6 @@ local.properties
 *.iml
 app/.cxx/
 .kotlin/
+
+# 003 临时备份（pre-edit）
+backups/

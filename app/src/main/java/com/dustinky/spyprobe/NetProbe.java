@@ -723,7 +723,7 @@ public class NetProbe {
                     if (req == null) return chainParam.proceed();
                     // v1.35 P1-3: 请求关联 ID——LogStore 下一条 seq，请求/响应行共用，
                     //   同一请求的两条记录可 grep "#123" 关联（轻量方案，不跨层做全链路）
-                    long rid = LogStore.get().nextSeq();
+                    long rid = LogStore.get().nextHttpId(); // v1.62 P1-10: 独立 httpId（nextSeq 不消费并发撞 id）
                     // method/url 需在 try 外可见（失败留痕也要用）
                     Object method = null;
                     Object url = null;
@@ -874,7 +874,7 @@ public class NetProbe {
                             Object url = req.getClass().getMethod("url").invoke(req);
                             Object method = req.getClass().getMethod("method").invoke(req);
                             // v1.58: fallback 也结构化（此前纯文本，无 REQ# 卡片）
-                            long rid = LogStore.get().nextSeq();
+                            long rid = LogStore.get().nextHttpId(); // v1.62 P1-10: 独立 httpId（nextSeq 不消费并发撞 id）
                             String line = "[REQ#" + rid + "] <<< " + code + " " + url;
                             LogStore.get().log(TAG, line);
                             HttpEntry he = new HttpEntry("REALCALL", rid, System.currentTimeMillis(),
@@ -1109,7 +1109,7 @@ public class NetProbe {
                         //   与 OKHTTP 的 rid=LogStore seq 同区间 → HttpStore 环形里可能同 id 冲突，
                         //   UI find(id) 会命中错误条目）
                         // v1.58: 日志行补 [REQ#rid] 前缀（此前 line 无标记，UI 解析不到卡片）
-                        long hucRid = LogStore.get().nextSeq();
+                        long hucRid = LogStore.get().nextHttpId(); // v1.62 P1-10: 独立 httpId
                         line = "[REQ#" + hucRid + "]" + line;
                         HttpEntry he = new HttpEntry("URL_CONN", hucRid, System.currentTimeMillis(),
                                 Thread.currentThread().getName(),
@@ -1280,7 +1280,7 @@ public class NetProbe {
                         String url = c.getURL() != null ? c.getURL().toString() : "?";
                         if (url.length() > 200) url = url.substring(0, 200) + "...";
                         // v1.58: Cronet 也结构化（此前纯文本，无 REQ# 卡片）
-                        long rid = LogStore.get().nextSeq();
+                        long rid = LogStore.get().nextHttpId(); // v1.62 P1-10: 独立 httpId（nextSeq 不消费并发撞 id）
                         String line = "[REQ#" + rid + "] <<< " + c.getRequestMethod() + " " + url + " -> " + code;
                         LogStore.get().log(TAG, line);
                         HttpEntry he = new HttpEntry("CRONET", rid, System.currentTimeMillis(),

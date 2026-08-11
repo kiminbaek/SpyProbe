@@ -652,12 +652,16 @@ void do_ssl_free_common(void *ssl, type_SSL_free orig) {
     if (g_is_in_hook) { orig(ssl); return; }
     ScopedHookGuard guard;
     { std::lock_guard<std::mutex> lock(g_cache_mutex); g_stack_cache.erase(reinterpret_cast<jlong>(ssl)); }
+    // v1.62 P1-2: notify_kotlin_close 必须先于 g_ssl_fd_map.erase——
+    //   close 通知内部 get_ssl_fd_from_hook((uintptr_t)id) 依赖 fd 映射还在；
+    //   此前先 erase 后通知 → fd=0 → Java 侧 onConnectionClosed 拿不到四元组
+    //   （且 fd=0 绕过 is_self_internal 检查，自家连接 close 也会进 Java 回调）。
+    notify_kotlin_close(reinterpret_cast<jlong>(ssl), true);
     // v1.45.6: 清理 SSL_set_fd 记录的 ssl→fd 映射
     { std::lock_guard<std::mutex> lock(g_ssl_fd_mutex); g_ssl_fd_map.erase(reinterpret_cast<uintptr_t>(ssl)); }
     // v1.59: 清理 TLS 元数据 per-ssl 标记（防指针复用）
     { std::lock_guard<std::mutex> lock(g_tls_meta_mutex); g_tls_meta_done.erase(reinterpret_cast<uintptr_t>(ssl)); g_tls_meta_attempts.erase(reinterpret_cast<uintptr_t>(ssl)); }
     h2_free(reinterpret_cast<uintptr_t>(ssl));
-    notify_kotlin_close(reinterpret_cast<jlong>(ssl), true);
     orig(ssl);
 }
 
@@ -1102,6 +1106,38 @@ static type_SSL_new orig_ssl_new = nullptr;
 static type_SSL_get_SSL_CTX real_SSL_get_SSL_CTX = nullptr;
 static type_SSL_CTX_set_keylog_callback real_ctx_set_keylog = nullptr;
 
+// v1.62 P2-13: keylog 同库解析——与 v1.45.6 SSL_get_fd 同款修复。
+//   此前 real_SSL_get_SSL_CTX / real_ctx_set_keylog 用 dlsym(RTLD_DEFAULT) 拿：
+//   目标进程同时加载系统 BoringSSL + App 私有 SSL 库时，RTLD_DEFAULT 命中第一个
+//   导出符号的库（通常是系统 BoringSSL），而 ssl 对象来自 App 私有库（xhook 按符号名
+//   全库 hook）→ 跨库调用 SSL_get_SSL_CTX 返回垃圾 ctx / set_keylog 不生效。
+//   改为与 orig_ssl_new 同库解析（dladdr + dlopen RTLD_NOLOAD + dlsym）。
+static void resolve_keylog_via_dladdr(void* sym) {
+    static std::atomic<bool> g_keylog_resolve_tried{false};
+    if (g_keylog_resolve_tried.load(std::memory_order_relaxed)) return;
+    g_keylog_resolve_tried.store(true, std::memory_order_relaxed);
+    if (real_SSL_get_SSL_CTX != nullptr && real_ctx_set_keylog != nullptr) return;
+    if (sym == nullptr) return;
+    Dl_info info;
+    if (dladdr(sym, &info) != 0 && info.dli_fname != nullptr) {
+        void* h = dlopen(info.dli_fname, RTLD_NOW | RTLD_NOLOAD);
+        if (h != nullptr) {
+            if (real_SSL_get_SSL_CTX == nullptr)
+                real_SSL_get_SSL_CTX = (type_SSL_get_SSL_CTX)dlsym(h, "SSL_get_SSL_CTX");
+            if (real_ctx_set_keylog == nullptr)
+                real_ctx_set_keylog = (type_SSL_CTX_set_keylog_callback)dlsym(h, "SSL_CTX_set_keylog_callback");
+            char buf[256];
+            snprintf(buf, sizeof(buf), "XH keylog: resolve via dladdr %s (ctx=%p set=%p)",
+                     info.dli_fname, (void*)real_SSL_get_SSL_CTX, (void*)real_ctx_set_keylog);
+            native_log(buf);
+            dlclose(h);
+            return;
+        }
+    }
+    // 兜底：保留 init 时 RTLD_DEFAULT 已拿到的（单 SSL 库场景仍有效）
+    native_log("XH keylog: dladdr resolve fail, keep RTLD_DEFAULT ptrs");
+}
+
 // BoringSSL: ssl_verify_ok = 0
 static int always_verify_ok(void *ssl, uint8_t *out_alert) { return 0; }
 // SSL_CTX_set_cert_verify_callback 回调：返回 1 = 验证通过
@@ -1186,6 +1222,11 @@ static void* hook_SSL_new(void *ctx) {
     //   App 私有 SSL 库（xhook 按符号名全库 hook），跨库调用返回垃圾 fd（v1.45.5 真机 NOEP 根因）。
     if (real_SSL_get_fd == nullptr) {
         resolve_ssl_get_fd_via_dladdr((void*)orig_ssl_new);
+    }
+    // v1.62 P2-13: keylog 也改同库解析（此前 RTLD_DEFAULT 可能拿到系统 BoringSSL 的
+    //   SSL_get_SSL_CTX/SSL_CTX_set_keylog_callback，与 ssl 对象所在私有库跨库不生效）
+    if (real_SSL_get_SSL_CTX == nullptr || real_ctx_set_keylog == nullptr) {
+        resolve_keylog_via_dladdr((void*)orig_ssl_new);
     }
     ScopedHookGuard guard;
     void* ssl = orig_ssl_new(ctx);
