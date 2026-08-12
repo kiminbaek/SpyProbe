@@ -34,8 +34,9 @@
 
 // v1.31.5 P0-3: Flutter 内部网络栈（dart:io 自带 BoringSSL，符号在 libflutter.so）inline hook 风险高，
 //   91暗网 正是 Flutter App——默认不 hook libflutter.so，只 hook 系统 SSL 库（libssl/libconscrypt/libttboringssl）。
-//   需要时置 1 重新启用（对 Flutter 网络栈做 native 抓包）。
-#define ENABLE_FLUTTER_SSL_HOOK 0
+// v1.66.0: 重新启用——v1.34 已换 xhook（PLT/GOT hook 不改函数指令，PAC 免疫），v1.31.5 关闭时的
+//   inline hook+PAC 崩溃根因已治本；用户实测（2026-08-12）91aw Flutter 层业务 API 全漏，重开抓 dart:io 网络栈。
+#define ENABLE_FLUTTER_SSL_HOOK 1
 
 static JavaVM *gJvm = nullptr;
 static jclass gNativeRequestHookClass = nullptr;
