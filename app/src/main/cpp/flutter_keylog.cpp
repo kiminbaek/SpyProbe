@@ -173,10 +173,10 @@ static bool find_libflutter_ranges(SoRange &out) {
         snprintf(diag + diag_len, sizeof(diag) - diag_len, "[%lx-%lx %s]", ls, le, perms);
         diag_len = strlen(diag);
         if (diag_len > 600) break;
-        if (perms[0] == 'r' && perms[1] == '-') {
-            ro_ranges.push_back({start, end});
-        } else if (perms[0] == 'r' && perms[1] == 'x') {
+        if (perms[0] == 'r' && perms[2] == 'x') {
             exec_ranges.push_back({start, end});
+        } else if (perms[0] == 'r' && perms[1] == '-' && perms[2] == '-') {
+            ro_ranges.push_back({start, end});
         }
         if (min_vaddr == 0 || start < min_vaddr) min_vaddr = start;
         if (end > max_end) max_end = end;
