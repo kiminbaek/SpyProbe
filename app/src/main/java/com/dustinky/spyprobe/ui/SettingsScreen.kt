@@ -638,11 +638,45 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             expanded = expanded.contains("about"),
             onToggle = { toggle("about") }
         ) {
+            // v1.64: 接收测试版开关（持久化；开启后检查更新可检测 Pre-release）
+            var includePre by remember { mutableStateOf(prefs.getBoolean("include_pre", false)) }
             AboutRow("版本", "v${BuildConfig.VERSION_NAME}")
             Divider()
             AboutRow("作者", "SpyProbe Team")
             Divider()
             AboutRow("许可证", "自定义 (非商用)")
+            Divider()
+            // v1.64: 接收测试版开关 —— 开启后「检查更新」可检测 Pre-release 测试版
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("接收测试版", style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium, fontSize = 12.sp)
+                    Text("开启后可检测 Pre-release 测试版", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp)
+                }
+                Switch(
+                    checked = includePre,
+                    onCheckedChange = {
+                        includePre = it
+                        prefs.edit().putBoolean("include_pre", it).apply()
+                    }
+                )
+            }
+            Divider()
+            // v1.64: 开源仓库地址（点击用系统浏览器打开）
+            AboutRow("开源仓库", "github.com/kiminbaek/SpyProbe", onClick = {
+                try {
+                    val uri = android.net.Uri.parse("https://github.com/kiminbaek/SpyProbe")
+                    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
+                    intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(intent)
+                } catch (t: Throwable) {
+                    com.dustinky.spyprobe.util.UiLog.log("Settings: 打开开源仓库失败: $t")
+                }
+            })
             Divider()
 
             // ===== v1.37 P0-4: 检查更新 =====
@@ -705,7 +739,7 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                     updateInfo = null
                     scope.launch {
                         updateStatus = withContext(Dispatchers.IO) {
-                            when (val r = com.dustinky.spyprobe.Updater.checkUpdate()) {
+                            when (val r = com.dustinky.spyprobe.Updater.checkUpdate(includePre)) {
                                 is com.dustinky.spyprobe.Updater.CheckResult.Latest ->
                                     "已是最新版本 (v${BuildConfig.VERSION_NAME})"
                                 is com.dustinky.spyprobe.Updater.CheckResult.Fail ->
@@ -988,10 +1022,12 @@ private fun IntSetting(cfg: Map<String, Any>?, key: String, label: String, defau
 
 // ===== 关于行 =====
 @Composable
-private fun AboutRow(label: String, value: String) {
+private fun AboutRow(label: String, value: String, onClick: (() -> Unit)? = null) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)
+        modifier = Modifier.fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(vertical = 6.dp)
     ) {
         Text(label, style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

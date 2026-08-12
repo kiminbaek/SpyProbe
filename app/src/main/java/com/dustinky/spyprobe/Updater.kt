@@ -24,6 +24,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import androidx.core.content.FileProvider
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
@@ -53,10 +54,11 @@ object Updater {
 
     // ===== 1. 检查更新 =====
 
-    /** 检查 GitHub latest release；currentVersion 用于比对（如 "1.36.0"） */
-    fun checkUpdate(): CheckResult {
+    /** 检查 GitHub release；currentVersion 用于比对（如 "1.36.0"）。
+     *  includePrerelease=true 时拉 /releases 列表取最新（含 pre-release 测试版）；false 只查 /releases/latest 正式版 */
+    fun checkUpdate(includePrerelease: Boolean = false): CheckResult {
         try {
-            val releaseJson = fetchLatestRelease() ?: return CheckResult.Fail("无法访问 GitHub API（镜像均失败）")
+            val releaseJson = fetchLatestRelease(includePrerelease) ?: return CheckResult.Fail("无法访问 GitHub API（镜像均失败）")
             val tag = releaseJson.optString("tag_name", "").trim() // 如 "v1.37.0"
             if (tag.isEmpty()) return CheckResult.Fail("release 无 tag_name")
             val latestVersion = tag.removePrefix("v")
@@ -92,13 +94,16 @@ object Updater {
         }
     }
 
-    /** 多镜像回退拉取 latest release JSON；逐个试 */
-    private fun fetchLatestRelease(): JSONObject? {
+    /** 多镜像回退拉取 release JSON；逐个试。
+     *  includePrerelease=true → /releases?per_page=30 列表，从最新开始找第一个非 draft（含 pre-release 测试版）；
+     *  false → /releases/latest（GitHub 语义：仅正式版） */
+    private fun fetchLatestRelease(includePrerelease: Boolean): JSONObject? {
+        val apiPath = if (includePrerelease) "releases?per_page=30" else "releases/latest"
         val candidates = listOf(
-            "https://api.github.com/repos/$REPO/releases/latest",
-            "https://ghproxy.com/https://api.github.com/repos/$REPO/releases/latest",
-            "https://mirror.ghproxy.com/https://api.github.com/repos/$REPO/releases/latest",
-            "https://gh-proxy.com/https://api.github.com/repos/$REPO/releases/latest"
+            "https://api.github.com/repos/$REPO/$apiPath",
+            "https://ghproxy.com/https://api.github.com/repos/$REPO/$apiPath",
+            "https://mirror.ghproxy.com/https://api.github.com/repos/$REPO/$apiPath",
+            "https://gh-proxy.com/https://api.github.com/repos/$REPO/$apiPath"
         )
         for (url in candidates) {
             var conn: HttpURLConnection? = null
@@ -112,6 +117,16 @@ object Updater {
                 val code = conn.responseCode
                 if (code == 200) {
                     val body = conn.inputStream.bufferedReader().use { it.readText() }
+                    if (includePrerelease) {
+                        // /releases 返回 JSONArray（按发布时间倒序）；跳过 draft，取第一个可用（含 pre-release）
+                        val arr = JSONArray(body)
+                        for (i in 0 until arr.length()) {
+                            val rel = arr.getJSONObject(i)
+                            if (rel.optBoolean("draft", false)) continue
+                            return rel
+                        }
+                        return null
+                    }
                     return JSONObject(body)
                 }
             } catch (t: Throwable) {
