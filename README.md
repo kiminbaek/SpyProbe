@@ -155,7 +155,7 @@ SpyProbe 主进程（控制台 App，数据面）
 | **v1.44** | **隐藏应用列表**（HMA 思路）：hook getInstalledPackages/getInstalledApplications/queryIntentActivities 过滤 spyprobe/LSPosed/Magisk + push 401 根治闭环（token 自举+续期+失败重试不丢） |
 | **v1.43** | UI 优化：抓包页整页可滚动 / 批量开关（全开/全关/恢复默认）/ Root 文案降级 / 新版本弹窗（完整更新日志 + 下载/忽略） |
 | **v1.42** | 修复 15 项：addHook NPE / OkHttpReplay buffer / PcapWriter flush / pcap 流式合并 / TCP 校验和 / shareUri mimeType / 大块分段映射 |
-| **v1.41** | **日志架构大修正**：实时日志/分享改走自己家 9900（目标 App 不在线也能看已推回日志）+ pcap 独立于 nativeCapture + 5s 周期 flush + 推送失败留痕 |
+| **v1.41** | **日志架构大修正**：实时日志/分享改走 9900（目标 App 不在线也能看已推回日志）+ pcap 独立于 nativeCapture + 5s 周期 flush + 推送失败留痕 |
 | **v1.40** | **OkHttp 混淆自动定位**（newCall 入口 + 特征动态 hook + DexKit 兜底）+ **请求重放**（环形 50 条，一键重放）+ 响应体重建（peekBody 不消费原流） |
 | **v1.39** | **pcap 导出**（Wireshark 直接看 HTTPS 明文）+ **JSON/Hex 双视图** + native SSL 调用栈 + SSL pinning 定位 |
 | **v1.38** | SSL 绕过增强：补齐 12 个证书校验绕过点（网络配置 pinning/Conscrypt/OkHttp 主机名/WebView/Cronet/xutils/httpclient/Platform）+ BoringSSL 五接口 verify 绕过 + SSL KeyLog（Wireshark 可还原明文）+ mTLS 客户端证书 dump（指纹不导出私钥）+ 加密追踪扩展（SecretKeySpec/DESKeySpec/Mac/SecureRandom）+ 反检测扩充（listFiles/isDebuggerConnected/ROOT_FILES 全集）+ WebView 调试开关 + DexKit 类名搜索 + 状态/日志查询路由 |
@@ -164,7 +164,7 @@ SpyProbe 主进程（控制台 App，数据面）
 | **v1.35** | 日志架构优化：推送改纯 Socket 根治递归爆炸 / 单行化 / URL 去重 / native hex 收敛 / 请求关联 ID / 分享格式优化 |
 | **v1.34** | **shadowhook → xhook 换库**：根治 OnePlus Android 16 PAC 崩溃（inline hook 改写指令破坏 PAC 配对 → 32 tombstone 空指针；xhook 只改 GOT 表项，PAC 免疫） |
 | **v1.33** | 历史日志按会话记录（目标进程每次启动 = 新会话文件）+ 卡片式浏览 + 勾选批量分享 |
-| **v1.32** | **架构修正：日志/配置全部搬回 SpyProbe 自己家**——新增主进程数据面 SpyHomeServer :9900，目标进程日志实时推回，历史日志本地读取（免 root 免目标在线） |
+| **v1.32** | **架构修正：日志/配置全部搬回 SpyProbe**——新增主进程数据面 SpyHomeServer :9900，目标进程日志实时推回，历史日志本地读取（免 root 免目标在线） |
 | v1.31 | 工作模式（Root/普通）/ 修复 native 开关语义 / 配置持久化修复 |
 | v1.30 | 日志导出 txt 分享 / 全链路调试日志埋点 / 修复 NetworkOnMainThreadException |
 | v1.29 | 调试日志不落盘修复 |
