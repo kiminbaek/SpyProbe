@@ -1,5 +1,5 @@
 /*
- * flutter_keylog.cpp — v1.67
+ * flutter_keylog.cpp — v1.68
  * libflutter.so 静态 BoringSSL keylog 注入器
  *
  * 背景（2026-08-12 实锤）：
@@ -7,23 +7,28 @@
  *   无效（v1.66 实测 Flutter 层业务 API 全漏）。但 libc send/recv 层密文全量可抓，
  *   配合 keylog(CLIENT_RANDOM + secrets) 即可在 Java 侧内部解密 TLS → 明文。
  *
+ * v1.68 修复（2026-08-13，真机 keylog 0 行根因）：
+ *   v1.67 的 locator 用"多 label 调用者的 bl 目标取交集"选目标 → 交集命中两个
+ *   keylog 函数（TLS1.2 ssl_log_master_secret / TLS1.3 ssl_log_secret）的公共
+ *   中间块（so+0x71751c，非函数头、参数 ABI 不匹配）→ hook 空转，keylog 0 行。
+ *
+ *   根治：不取 callees 交集，直接定位真实函数头——
+ *     a) 引用 "CLIENT_RANDOM" 的函数头 = TLS1.2 ssl_log_master_secret（5 参）
+ *     b) 引用 4 个 "TRAFFIC_SECRET" label 的函数头 = TLS1.3 ssl_log_secret（6 参）
+ *   每个 wrapper 用 shadowhook hook 后，直接拿参数拼 keylog 行转发 Java：
+ *      TLS1.3: "<label> <cr_hex> <secret_hex>"
+ *      TLS1.2: "CLIENT_RANDOM <cr_hex> <ms_hex>"
+ *   （不再依赖 keylog_callback 结构偏移——彻底绕开偏移提取错误）
+ *
  * 定位策略（跨 Flutter 版本 4 样本验证）：
- *   1. 扫描 .rodata 找 5 个 label 锚点字符串（CLIENT_RANDOM 等）虚拟地址
+ *   1. 扫描 .rodata 找 label 锚点字符串（CLIENT_RANDOM / TRAFFIC_SECRET 系列）
  *   2. 扫描 .text 找 adrp+add 指令对引用锚点的位置
  *   3. 从引用点回溯函数头（sub sp / stp x29,x30）
- *   4. 收集函数体内 bl/b 目标（thunk 一层展开）
- *   5. 多 label 调用者的 bl 目标取交集 → ssl_log_secret 候选
- *   6. 结构指纹精筛：ldr(读ssl) → ldr(读ctx) → cbz(判空) → blr(调用keylog cb)
+ *   4. TLS1.3 = 4 个 TRAFFIC_SECRET label 引用函数头交集
+ *      TLS1.2 = CLIENT_RANDOM 引用函数头
  *
  * 注入（shadowhook 2.0.1 预编译 .so，dlopen 动态加载）：
- *   shadowhook_hook_func_addr(ssl_log_secret, my_ssl_log_secret, &orig)
- *   hook 里：设置 ctx->keylog_callback = 我们的回调 → 调原函数 → BoringSSL 自动
- *   组装完整 keylog 行（"CLIENT_RANDOM <64hex> <96hex>"）→ 回调转发 Java。
- *
- * 结构偏移动态提取（不依赖具体版本）：
- *   在 ssl_log_secret 函数头内找 "ldr x8,[x0,#A]" 和 "ldr x8,[x8,#B]" 序列：
- *     A = ssl->ctx 偏移（典型 0x68）
- *     B = ctx->keylog_callback 偏移（典型 0x228）
+ *   shadowhook_hook_func_addr(func, my_func, &orig) × 2（TLS1.2 + TLS1.3）
  */
 
 #include <jni.h>
@@ -61,10 +66,8 @@ static fn_shadowhook_hook_func_addr g_sh_hook_addr = nullptr;
 static fn_shadowhook_get_errno g_sh_get_errno = nullptr;
 
 // ============ 定位结果（跨函数共享） ============
-static uintptr_t g_ssl_log_secret_addr = 0;  // 运行时绝对地址（so 基址 + 偏移）
-static uintptr_t g_ctx_off = 0;              // ssl->ctx 偏移
-static uintptr_t g_cb_off = 0;               // ctx->keylog_callback 偏移
-static bool g_offsets_valid = false;
+static uintptr_t g_tls13_func = 0;  // TLS1.3 ssl_log_secret 运行时绝对地址
+static uintptr_t g_tls12_func = 0;  // TLS1.2 ssl_log_master_secret 运行时绝对地址
 
 static void kl_native_log(const char *msg);
 
@@ -91,46 +94,14 @@ static bool decode_add_imm(uint32_t insn, int *rd, int *rn, uint32_t *imm) {
     return true;
 }
 
-// bl: 0x94000000 ; b: 0x14000000（仅取 26 位立即数）
-static bool decode_bl_b(uint32_t insn, uintptr_t pc, uintptr_t *target) {
-    uint32_t op = insn & 0xFC000000u;
-    if (op != 0x94000000u && op != 0x14000000u) return false;
-    int64_t imm26 = (int64_t)(insn & 0x03FFFFFFu);
-    if (imm26 & (1 << 25)) imm26 -= (1 << 26);
-    *target = pc + (uintptr_t)(imm26 << 2);
-    return true;
-}
-
 // sub sp, sp, #imm（函数头）: 0xD10003FF mask
 static bool is_sub_sp(uint32_t insn) {
-    // sf=1 sub (imm): 0xD1000000 | Rn=sp(31) Rd=sp(31)
     return (insn & 0xFFC003FFu) == 0xD10003FFu;
 }
 
 // stp x29, x30, [sp, #-imm]!（函数头）: 0xA9A00000 变体 mask
 static bool is_stp_x29x30_pre(uint32_t insn) {
-    // 1010 1001 1 00 imm7 Rt=30 Rt2=29 Rn=31
     return (insn & 0xFFC003FFu) == 0xA98003FFu;
-}
-
-// ldr xT, [xN, #imm]（unsigned imm12, 64bit）: 0xF9400000 mask
-static bool decode_ldr_imm(uint32_t insn, int *rt, int *rn, uint32_t *imm) {
-    if ((insn & 0xFFC00000u) != 0xF9400000u) return false;
-    *imm = (insn >> 10) & 0xFFFu;
-    *rn = (int)((insn >> 5) & 0x1F);
-    *rt = (int)(insn & 0x1F);
-    return true;
-}
-
-// cbz/cbnz xT, #imm（判空）
-static bool is_cbz(uint32_t insn) {
-    uint32_t op = insn & 0x7F000000u;
-    return op == 0x34000000u || op == 0x35000000u;
-}
-
-// blr xN（间接调用）
-static bool is_blr(uint32_t insn) {
-    return (insn & 0xFFFFFC1Fu) == 0xD63F0000u;
 }
 
 // ============ ELF 段定位（读 /proc/self/maps） ============
@@ -211,11 +182,9 @@ static bool find_libflutter_ranges(SoRange &out) {
 }
 
 // 在只读段内搜字符串（返回绝对虚拟地址）
-// 安全：每页内只读到 min(页尾, 段尾)，跨页边界用逐字节缓冲拼接检测
 static uintptr_t find_anchor_in_range(const uintptr_t start, const size_t len, const char *needle) {
     size_t nlen = strlen(needle) + 1; // 含 \0
     const char *base = (const char *)start;
-    // 简单可靠：整段顺序扫描（maps 段连续可读，段尾以 len 截断）
     for (size_t i = 0; i + nlen <= len; i++) {
         if (base[i] == needle[0] && memcmp(base + i, needle, nlen) == 0) {
             return start + i;
@@ -224,14 +193,13 @@ static uintptr_t find_anchor_in_range(const uintptr_t start, const size_t len, c
     return 0;
 }
 
-// ============ 定位 ssl_log_secret ============
+// ============ 定位 keylog 函数 ============
 
 // 扫描 .text 找引用 anchor 的 adrp+add 指令对 → 返回所有 add 指令地址
 static void scan_adrp_add_refs(const SoRange &rng, uintptr_t anchor,
                                std::vector<uintptr_t> &refs) {
     const uint32_t *code = (const uint32_t *)rng.text_addr;
     size_t n = rng.text_size / 4;
-    // 维护最近 64 条 adrp 记录 (addr, rd, target_page)，超出时整体丢弃最旧一半
     struct Adrp { uintptr_t addr; int rd; uintptr_t page; };
     Adrp recent[64];
     int recent_n = 0;
@@ -243,7 +211,6 @@ static void scan_adrp_add_refs(const SoRange &rng, uintptr_t anchor,
             if (recent_n < 64) {
                 recent[recent_n++] = {pc, rd, tpage};
             } else {
-                // 滑动：移掉最旧一半，腾出空间
                 int keep = 32;
                 for (int k = 0; k < keep; k++) recent[k] = recent[recent_n - keep + k];
                 recent_n = keep;
@@ -253,7 +220,6 @@ static void scan_adrp_add_refs(const SoRange &rng, uintptr_t anchor,
         }
         int add_rd, add_rn; uint32_t add_imm;
         if (decode_add_imm(insn, &add_rd, &add_rn, &add_imm)) {
-            // 找 64 条内、同 rn、页面+imm==anchor 的 adrp（从最新往前）
             for (int k = recent_n - 1; k >= 0; k--) {
                 if (recent[k].rd == add_rn && pc - recent[k].addr < 64 * 4) {
                     if (recent[k].page + add_imm == anchor) {
@@ -278,96 +244,23 @@ static uintptr_t find_func_head(const SoRange &rng, uintptr_t ref_addr) {
     return head;
 }
 
-// movz/movn/movk（立即数 mov，thunk 常见）
-static bool is_mov_imm(uint32_t insn) {
-    return (insn & 0xFF800000u) == 0xD2800000u   // movz xD, #imm16 (sf=1)
-        || (insn & 0xFF800000u) == 0x92800000u   // movn
-        || (insn & 0xFF800000u) == 0xF2800000u;  // movk
-}
-
-// mov xD, xM（ORR xD, xzr, xM——Rn=31, imm6=0, shift=00, N=0）
-// mask: 保留 bit31-21 + bit15-10 + bit9-5；忽略 Rm/Rd
-static bool is_mov_reg(uint32_t insn) {
-    return (insn & 0xFFE0FFE0u) == 0xAA4003E0u;
-}
-
-// 收集函数体内 bl/b 目标（thunk 一层展开）
-static void collect_callees(const SoRange &rng, uintptr_t head, std::set<uintptr_t> &out) {
-    const uint32_t *code = (const uint32_t *)rng.text_addr;
-    const size_t MAX_FUNC = 0x800 / 4;
-    uintptr_t end = head + 0x800;
-    uintptr_t text_end = rng.text_addr + rng.text_size;
-    if (end > text_end) end = text_end;
-    std::vector<uintptr_t> direct;
-    for (uintptr_t pc = head; pc < end; pc += 4) {
-        uint32_t insn = code[(pc - rng.text_addr) / 4];
-        uintptr_t tgt;
-        if (decode_bl_b(insn, pc, &tgt)) {
-            direct.push_back(tgt);
-            out.insert(tgt);
-        }
-    }
-    // thunk 一层展开：mov(任意形式); b target → 展开 b 目标
-    for (uintptr_t t : direct) {
-        if (t + 8 > text_end || t < rng.text_addr) continue;
-        uint32_t i0 = code[(t - rng.text_addr) / 4];
-        uint32_t i1 = code[(t - rng.text_addr) / 4 + 1];
-        if (is_mov_imm(i0) || is_mov_reg(i0)) {
-            uintptr_t t2;
-            if (decode_bl_b(i1, t + 4, &t2)) out.insert(t2);
-        }
-    }
-}
-
-// 结构指纹：ldr(读ssl) → ldr(读ctx) → cbz(判空) 序列
-// 同时提取 ssl->ctx / ctx->keylog_callback 偏移
-// 策略（v1.67 修）：不依赖 blr 定位（blr 可能在函数中段，被中间 cbz 干扰），
-//   直接全函数扫描严格模式：ldr x8,[x0,#A] → ldr x8,[x8,#B] → 后面有 cbz/cbnz
-static bool fingerprint_and_extract(const SoRange &rng, uintptr_t cand,
-                                    uintptr_t *ctx_off, uintptr_t *cb_off) {
-    const uint32_t *code = (const uint32_t *)rng.text_addr;
-    uintptr_t text_end = rng.text_addr + rng.text_size;
-    uintptr_t end = cand + 0x800;
-    if (end > text_end) end = text_end;
-    std::vector<uint32_t> insns;
-    for (uintptr_t pc = cand; pc < end && insns.size() < 250; pc += 4) {
-        insns.push_back(code[(pc - rng.text_addr) / 4]);
-    }
-    int n = (int)insns.size();
-    for (int i = 0; i < n - 2; i++) {
-        int rt1, rn1, rt2, rn2;
-        uint32_t imm1, imm2;
-        // 严格模式：ldr x8,[x0,#A] 紧邻 ldr x8,[x8,#B]
-        if (!decode_ldr_imm(insns[i], &rt1, &rn1, &imm1)) continue;
-        if (rn1 != 0 || rt1 != 8) continue;
-        if (!decode_ldr_imm(insns[i + 1], &rt2, &rn2, &imm2)) continue;
-        if (rn2 != 8 || rt2 != 8) continue;
-        // 其后 32 条内必须有判空（cbz/cbnz）
-        bool has_cond = false;
-        for (int j = i + 2; j < n && j <= i + 34; j++) {
-            if (is_cbz(insns[j])) { has_cond = true; break; }
-        }
-        if (has_cond) {
-            // 关键：ldr x（64位）imm12 是 8 字节对齐的缩放值，真实字节偏移 = imm12 << 3
-            *ctx_off = imm1 << 3;
-            *cb_off = imm2 << 3;
-            return true;
-        }
-    }
-    return false;
-}
-
-// 主定位入口：返回 ssl_log_secret 绝对地址；*ctx_off/*cb_off 输出
-static uintptr_t locate_ssl_log_secret(SoRange &rng, uintptr_t *ctx_off, uintptr_t *cb_off) {
-    static const char *ANCHORS[] = {
-        "CLIENT_RANDOM",
+// 主定位入口：定位两个 keylog 函数绝对地址（0 = 未找到）
+// *out_tls13 = TLS1.3 ssl_log_secret（引用 4 个 TRAFFIC_SECRET label 的函数头交集）
+// *out_tls12 = TLS1.2 ssl_log_master_secret（引用 CLIENT_RANDOM 的函数头）
+static void locate_keylog_funcs(SoRange &rng, uintptr_t *out_tls13, uintptr_t *out_tls12) {
+    static const char *ANCHORS_TLS13[] = {
         "CLIENT_HANDSHAKE_TRAFFIC_SECRET",
         "SERVER_HANDSHAKE_TRAFFIC_SECRET",
         "CLIENT_TRAFFIC_SECRET_0",
         "SERVER_TRAFFIC_SECRET_0",
     };
-    const int ANCHOR_N = 5;
-    if (!find_libflutter_ranges(rng)) return 0;
+    const int TLS13_N = 4;
+    *out_tls13 = 0;
+    *out_tls12 = 0;
+    if (!find_libflutter_ranges(rng)) {
+        kl_native_log("KL locate: find_libflutter_ranges FAIL");
+        return;
+    }
 
     char buf[256];
     snprintf(buf, sizeof(buf), "KL libflutter.so base=0x%lx text=0x%lx+%zu rodata=0x%lx+%zu",
@@ -375,12 +268,13 @@ static uintptr_t locate_ssl_log_secret(SoRange &rng, uintptr_t *ctx_off, uintptr
              (unsigned long)rng.rodata_addr, rng.rodata_size);
     kl_native_log(buf);
 
-    std::set<uintptr_t> common; // 交集累积
+    // TLS1.3：4 个 TRAFFIC_SECRET label 引用函数头交集
+    std::set<uintptr_t> common;
     bool first = true;
-    for (int a = 0; a < ANCHOR_N; a++) {
-        uintptr_t anchor = find_anchor_in_range(rng.rodata_addr, rng.rodata_size, ANCHORS[a]);
+    for (int a = 0; a < TLS13_N; a++) {
+        uintptr_t anchor = find_anchor_in_range(rng.rodata_addr, rng.rodata_size, ANCHORS_TLS13[a]);
         if (!anchor) {
-            snprintf(buf, sizeof(buf), "KL anchor[%d] %s NOT FOUND", a, ANCHORS[a]);
+            snprintf(buf, sizeof(buf), "KL TLS13 anchor[%d] %s NOT FOUND", a, ANCHORS_TLS13[a]);
             kl_native_log(buf);
             continue;
         }
@@ -391,37 +285,48 @@ static uintptr_t locate_ssl_log_secret(SoRange &rng, uintptr_t *ctx_off, uintptr
             uintptr_t h = find_func_head(rng, r);
             if (h) heads.insert(h);
         }
-        std::set<uintptr_t> callees;
-        for (uintptr_t h : heads) collect_callees(rng, h, callees);
-        snprintf(buf, sizeof(buf), "KL %s: refs=%zu heads=%zu callees=%zu",
-                 ANCHORS[a], refs.size(), heads.size(), callees.size());
+        snprintf(buf, sizeof(buf), "KL TLS13[%d] %s: refs=%zu heads=%zu",
+                 a, ANCHORS_TLS13[a], refs.size(), heads.size());
         kl_native_log(buf);
-        if (first) { common = callees; first = false; }
+        if (first) { common = heads; first = false; }
         else {
             std::set<uintptr_t> inter;
-            for (uintptr_t c : common) if (callees.count(c)) inter.insert(c);
+            for (uintptr_t c : common) if (heads.count(c)) inter.insert(c);
             common = inter;
         }
         if (common.empty()) break;
     }
-    if (common.empty()) {
-        kl_native_log("KL intersection EMPTY — 定位失败");
-        return 0;
+    if (!common.empty()) {
+        *out_tls13 = *common.begin();
+        snprintf(buf, sizeof(buf), "KL TLS1.3 ssl_log_secret FOUND 0x%lx (so+0x%lx)",
+                 (unsigned long)*out_tls13, (unsigned long)(*out_tls13 - rng.base));
+        kl_native_log(buf);
+    } else {
+        kl_native_log("KL TLS1.3 交集 EMPTY — ssl_log_secret 定位失败");
     }
-    for (uintptr_t c : common) {
-        uintptr_t co, cbo;
-        if (fingerprint_and_extract(rng, c, &co, &cbo)) {
-            snprintf(buf, sizeof(buf),
-                     "KL ssl_log_secret FOUND 0x%lx (so+0x%lx) ctx_off=0x%lx cb_off=0x%lx",
-                     (unsigned long)c, (unsigned long)(c - rng.base),
-                     (unsigned long)co, (unsigned long)cbo);
-            kl_native_log(buf);
-            *ctx_off = co; *cb_off = cbo;
-            return c;
+
+    // TLS1.2：CLIENT_RANDOM 引用函数头
+    uintptr_t anchor12 = find_anchor_in_range(rng.rodata_addr, rng.rodata_size, "CLIENT_RANDOM");
+    if (anchor12) {
+        std::vector<uintptr_t> refs;
+        scan_adrp_add_refs(rng, anchor12, refs);
+        std::set<uintptr_t> heads;
+        for (uintptr_t r : refs) {
+            uintptr_t h = find_func_head(rng, r);
+            if (h) heads.insert(h);
         }
+        snprintf(buf, sizeof(buf), "KL TLS1.2 CLIENT_RANDOM: refs=%zu heads=%zu",
+                 refs.size(), heads.size());
+        kl_native_log(buf);
+        if (!heads.empty()) {
+            *out_tls12 = *heads.begin();
+            snprintf(buf, sizeof(buf), "KL TLS1.2 ssl_log_master_secret FOUND 0x%lx (so+0x%lx)",
+                     (unsigned long)*out_tls12, (unsigned long)(*out_tls12 - rng.base));
+            kl_native_log(buf);
+        }
+    } else {
+        kl_native_log("KL TLS1.2 CLIENT_RANDOM NOT FOUND");
     }
-    kl_native_log("KL 交集无指纹匹配");
-    return 0;
 }
 
 // ============ keylog 回调 → Java ============
@@ -444,7 +349,35 @@ static void kl_keylog_cb(const void *ssl, const char *line) {
     }
 }
 
-// ============ ssl_log_secret hook 函数 ============
+// 通用：拼 keylog 行并转发 Java（不依赖 keylog_callback 结构偏移）
+static void kl_emit_line(const void *ssl, const char *label,
+                         const uint8_t *cr, size_t cr_len,
+                         const uint8_t *sec, size_t sec_len) {
+    if (label == nullptr || cr == nullptr || sec == nullptr) return;
+    // label + ' ' + cr_hex + ' ' + secret_hex
+    size_t llen = strlen(label);
+    size_t need = llen + 1 + cr_len * 2 + 1 + sec_len * 2 + 1;
+    if (need > 1024) return;
+    char line[1024];
+    size_t off = 0;
+    memcpy(line + off, label, llen); off += llen;
+    line[off++] = ' ';
+    for (size_t i = 0; i < cr_len; i++) {
+        static const char HEX[] = "0123456789abcdef";
+        line[off++] = HEX[(cr[i] >> 4) & 0xF];
+        line[off++] = HEX[cr[i] & 0xF];
+    }
+    line[off++] = ' ';
+    for (size_t i = 0; i < sec_len; i++) {
+        static const char HEX[] = "0123456789abcdef";
+        line[off++] = HEX[(sec[i] >> 4) & 0xF];
+        line[off++] = HEX[sec[i] & 0xF];
+    }
+    line[off] = '\0';
+    kl_keylog_cb(ssl, line);
+}
+
+// ============ TLS1.3 ssl_log_secret hook ============
 // BoringSSL 签名：void ssl_log_secret(const SSL *ssl, const char *label,
 //   const uint8_t *client_random, size_t client_random_len,
 //   const uint8_t *secret, size_t secret_len)
@@ -456,18 +389,28 @@ static orig_ssl_log_secret_t g_orig_ssl_log_secret = nullptr;
 static void my_ssl_log_secret(const void *ssl, const char *label,
                               const uint8_t *client_random, size_t client_random_len,
                               const uint8_t *secret, size_t secret_len) {
-    if (g_orig_ssl_log_secret == nullptr) return;
-    // 确保 ctx->keylog_callback 已设置（版本无关：偏移动态提取）
-    if (g_offsets_valid && ssl != nullptr) {
-        void *ctx = *(void **)((uintptr_t)ssl + g_ctx_off);
-        if (ctx != nullptr) {
-            void **cb_slot = (void **)((uintptr_t)ctx + g_cb_off);
-            if (*cb_slot == nullptr) {
-                *cb_slot = (void *)kl_keylog_cb;
-            }
-        }
+    kl_emit_line(ssl, label, client_random, client_random_len, secret, secret_len);
+    if (g_orig_ssl_log_secret != nullptr) {
+        g_orig_ssl_log_secret(ssl, label, client_random, client_random_len, secret, secret_len);
     }
-    g_orig_ssl_log_secret(ssl, label, client_random, client_random_len, secret, secret_len);
+}
+
+// ============ TLS1.2 ssl_log_master_secret hook ============
+// BoringSSL 签名：void ssl_log_master_secret(const SSL_HANDSHAKE *hs,
+//   const uint8_t *client_random, size_t client_random_len,
+//   const uint8_t *master_secret, size_t master_secret_len)
+typedef void (*orig_ssl_log_master_secret_t)(const void *hs,
+                                             const uint8_t *client_random, size_t client_random_len,
+                                             const uint8_t *master_secret, size_t master_secret_len);
+static orig_ssl_log_master_secret_t g_orig_ssl_log_master_secret = nullptr;
+
+static void my_ssl_log_master_secret(const void *hs,
+                                     const uint8_t *client_random, size_t client_random_len,
+                                     const uint8_t *master_secret, size_t master_secret_len) {
+    kl_emit_line(hs, "CLIENT_RANDOM", client_random, client_random_len, master_secret, master_secret_len);
+    if (g_orig_ssl_log_master_secret != nullptr) {
+        g_orig_ssl_log_master_secret(hs, client_random, client_random_len, master_secret, master_secret_len);
+    }
 }
 
 // ============ shadowhook 加载 + hook ============
@@ -511,6 +454,42 @@ static void kl_native_log(const char *msg) {
     }
 }
 
+// 尝试 hook 两个 keylog 函数；返回成功 hook 数
+static int hook_keylog_funcs(SoRange &rng, uintptr_t tls13, uintptr_t tls12) {
+    int ok = 0;
+    if (tls13 != 0) {
+        void *orig = nullptr;
+        void *stub = g_sh_hook_addr((void *)tls13, (void *)my_ssl_log_secret, &orig);
+        if (stub != nullptr && orig != nullptr) {
+            g_orig_ssl_log_secret = (orig_ssl_log_secret_t)orig;
+            g_tls13_func = tls13;
+            ok++;
+            kl_native_log("KL TLS1.3 ssl_log_secret hook OK");
+        } else {
+            char buf[160];
+            int err = g_sh_get_errno ? g_sh_get_errno() : -1;
+            snprintf(buf, sizeof(buf), "KL TLS1.3 hook FAIL errno=%d", err);
+            kl_native_log(buf);
+        }
+    }
+    if (tls12 != 0) {
+        void *orig = nullptr;
+        void *stub = g_sh_hook_addr((void *)tls12, (void *)my_ssl_log_master_secret, &orig);
+        if (stub != nullptr && orig != nullptr) {
+            g_orig_ssl_log_master_secret = (orig_ssl_log_master_secret_t)orig;
+            g_tls12_func = tls12;
+            ok++;
+            kl_native_log("KL TLS1.2 ssl_log_master_secret hook OK");
+        } else {
+            char buf[160];
+            int err = g_sh_get_errno ? g_sh_get_errno() : -1;
+            snprintf(buf, sizeof(buf), "KL TLS1.2 hook FAIL errno=%d", err);
+            kl_native_log(buf);
+        }
+    }
+    return ok;
+}
+
 // ============ JNI 入口 ============
 
 // 后台轮询线程：等待 libflutter.so 加载后自动定位 + hook（Flutter 引擎可能延迟加载）
@@ -518,7 +497,6 @@ static void *kl_wait_thread(void *) {
     for (int i = 0; i < 300; i++) { // 最多等 300s（5 分钟），每 1s 检查一次
         if (g_hooked.load()) break;
         usleep(1000 * 1000);
-        // 快速检查 libflutter.so 是否已加载
         bool loaded = false;
         FILE *f = fopen("/proc/self/maps", "r");
         if (f) {
@@ -532,29 +510,20 @@ static void *kl_wait_thread(void *) {
 
         // 已加载 → 定位 + hook
         SoRange rng;
-        uintptr_t co = 0, cbo = 0;
-        uintptr_t target = locate_ssl_log_secret(rng, &co, &cbo);
-        if (!target) {
+        uintptr_t t13 = 0, t12 = 0;
+        locate_keylog_funcs(rng, &t13, &t12);
+        if (t13 == 0 && t12 == 0) {
             kl_native_log("KL retry: libflutter.so loaded but locate FAIL");
             continue; // 继续等（可能部分加载）
         }
-        g_ctx_off = co;
-        g_cb_off = cbo;
-        g_offsets_valid = (co != 0 && cbo != 0);
-        g_ssl_log_secret_addr = target;
-        void *orig = nullptr;
-        void *stub = g_sh_hook_addr((void *)target, (void *)my_ssl_log_secret, &orig);
-        if (stub == nullptr || orig == nullptr) {
+        int ok = hook_keylog_funcs(rng, t13, t12);
+        if (ok > 0) {
             char buf[128];
-            int err = g_sh_get_errno ? g_sh_get_errno() : -1;
-            snprintf(buf, sizeof(buf), "KL retry: shadowhook_hook_func_addr FAIL errno=%d", err);
+            snprintf(buf, sizeof(buf), "KL hook OK (delayed) — keylog 注入成功 (%d/%d)", ok, (t13 ? 1 : 0) + (t12 ? 1 : 0));
             kl_native_log(buf);
-            continue;
+            g_hooked.store(true);
+            break;
         }
-        g_orig_ssl_log_secret = (orig_ssl_log_secret_t)orig;
-        g_hooked.store(true);
-        kl_native_log("KL hook OK (delayed) — libflutter.so keylog 注入成功");
-        break;
     }
     return nullptr;
 }
@@ -575,27 +544,15 @@ Java_com_dustinky_spyprobe_NativeProbe_flutterKeylogInit(JNIEnv *env, jobject th
 
     // 立即尝试一次（libflutter.so 已加载场景）
     SoRange rng;
-    uintptr_t co = 0, cbo = 0;
-    uintptr_t target = locate_ssl_log_secret(rng, &co, &cbo);
-    if (target) {
-        g_ctx_off = co;
-        g_cb_off = cbo;
-        g_offsets_valid = (co != 0 && cbo != 0);
-        g_ssl_log_secret_addr = target;
-        void *orig = nullptr;
-        void *stub = g_sh_hook_addr((void *)target, (void *)my_ssl_log_secret, &orig);
-        if (stub != nullptr && orig != nullptr) {
-            g_orig_ssl_log_secret = (orig_ssl_log_secret_t)orig;
+    uintptr_t t13 = 0, t12 = 0;
+    locate_keylog_funcs(rng, &t13, &t12);
+    if (t13 != 0 || t12 != 0) {
+        int ok = hook_keylog_funcs(rng, t13, t12);
+        g_in_progress = false;
+        if (ok > 0) {
             g_hooked.store(true);
-            g_in_progress = false;
-            kl_native_log("KL hook OK — libflutter.so keylog 注入成功");
             return JNI_TRUE;
         }
-        char buf[128];
-        int err = g_sh_get_errno ? g_sh_get_errno() : -1;
-        snprintf(buf, sizeof(buf), "KL shadowhook_hook_func_addr FAIL errno=%d", err);
-        kl_native_log(buf);
-        g_in_progress = false;
         return JNI_FALSE;
     }
 
