@@ -149,6 +149,7 @@ SpyProbe 主进程（控制台 App，数据面）
 
 | 版本 | 说明 |
 |:-----|:-----|
+| **v1.64** | **更新系统支持检测测试版（Pre-release）**：设置-关于页新增「接收测试版」开关，开启后检查更新可检测最新测试版（正式版/测试版双通道）+ **关于页新增开源仓库入口**（一键直达 GitHub） |
 | **v1.47** | 修复 8 P1 + 22 P2：9901 控制面 token 鉴权 / 日志推送失败指数退避 / 会话条数元数据 sessions.json / native hook 只试一次防闪退 / 大 DATA 帧分段回调 / networkSecurityConfig 收紧 127.0.0.1 / FileProvider 单文件 / 目标端口防自推 |
 | **v1.46** | 根治播放视频闪退 + pcap 0 数据（SSL_get_fd 解析方向错误，native resolve 只试一次）+ pcap 记录头字节序修复 + 2MB chunk 截断修复（MAX_BODY 1MB→4MB）+ 导出范围选择（全部/仅当前会话）+ 清空 pcap 按钮 |
 | **v1.45** | pcap 链路修复：IPv4-mapped IPv6 全拒根治 + SSL_get_fd 延迟解析（dladdr/dlopen/ELF 符号表直读三连）+ 诊断日志 |
