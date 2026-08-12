@@ -147,17 +147,32 @@ struct SoRange {
 // 从 /proc/self/maps 中找 libflutter.so 各段的内存范围（已加载态，非文件偏移）
 static bool find_libflutter_ranges(SoRange &out) {
     FILE *f = fopen("/proc/self/maps", "r");
-    if (!f) return false;
+    if (!f) {
+        kl_native_log("KL find: fopen /proc/self/maps FAIL");
+        return false;
+    }
     char line[512];
     uintptr_t min_vaddr = 0, max_end = 0;
     std::vector<std::pair<uintptr_t, uintptr_t>> exec_ranges, ro_ranges;
+    int match_cnt = 0, parse_ok = 0;
+    char diag[768] = {0};
+    size_t diag_len = 0;
     while (fgets(line, sizeof(line), f)) {
         if (!strstr(line, "libflutter.so")) continue;
+        match_cnt++;
         uintptr_t start, end;
         char perms[8] = {0};
         unsigned long ls, le;
-        if (sscanf(line, "%lx-%lx %7s", &ls, &le, perms) != 3) continue;
+        if (sscanf(line, "%lx-%lx %7s", &ls, &le, perms) != 3) {
+            snprintf(diag + diag_len, sizeof(diag) - diag_len, "[parse-fail:%s]", line);
+            diag_len = strlen(diag);
+            continue;
+        }
+        parse_ok++;
         start = (uintptr_t)ls; end = (uintptr_t)le;
+        snprintf(diag + diag_len, sizeof(diag) - diag_len, "[%lx-%lx %s]", ls, le, perms);
+        diag_len = strlen(diag);
+        if (diag_len > 600) break;
         if (perms[0] == 'r' && perms[1] == '-') {
             ro_ranges.push_back({start, end});
         } else if (perms[0] == 'r' && perms[1] == 'x') {
@@ -167,6 +182,12 @@ static bool find_libflutter_ranges(SoRange &out) {
         if (end > max_end) max_end = end;
     }
     fclose(f);
+    {
+        char buf[512];
+        snprintf(buf, sizeof(buf), "KL find: matches=%d parse_ok=%d exec=%zu ro=%zu diag=%s",
+                 match_cnt, parse_ok, exec_ranges.size(), ro_ranges.size(), diag);
+        kl_native_log(buf);
+    }
     if (exec_ranges.empty() || ro_ranges.empty()) return false;
     out.base = min_vaddr;
     out.load_bias = min_vaddr; // maps 虚拟地址 = 文件 vaddr + load_bias（首个映射为 base）
