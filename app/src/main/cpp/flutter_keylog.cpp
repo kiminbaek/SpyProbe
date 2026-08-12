@@ -1,6 +1,6 @@
 /*
- * flutter_keylog.cpp — v1.68
- * libflutter.so 静态 BoringSSL keylog 注入器
+ * flutter_keylog.cpp — v1.69
+ * libflutter.so 静态 BoringSSL keylog 注入器 + dart:io TLS 明文入口探测
  *
  * 背景（2026-08-12 实锤）：
  *   dart:io 自带 BoringSSL，符号静态链接在 libflutter.so 内，不导出 → xhook(PLT/GOT)
@@ -20,6 +20,17 @@
  *      TLS1.2: "CLIENT_RANDOM <cr_hex> <ms_hex>"
  *   （不再依赖 keylog_callback 结构偏移——彻底绕开偏移提取错误）
  *
+ * v1.69 新增（2026-08-13，v1.68 真机日志零 KL 行排查）：
+ *   1) 日志双通道：KL 调试日志（nativeLog）同时进 LogStore（抓包日志页）——
+ *      用户导出的抓包日志即可直接看到 keylog/dart:io hook 状态（此前只走 DebugLog 看不见）。
+ *   2) 新增 dart:io native entries 函数 hook（定位来自 .rela.dyn RELATIVE 重定位实锤）：
+ *        Filter_Process      so+0x82f1f4  dart:io _SecureFilter.process   （TLS 加密前明文）
+ *        Filter_Processed    so+0x82f4a8  dart:io _SecureFilter.processed （TLS 解密后明文）
+ *        SecureSocket_Init   so+0x834140  dart:io 创建 SSL_CTX 入口
+ *        SecureSocket_Connect so+0x83507c dart:io 建立 TLS 连接入口
+ *      每次 IO 必调用（不受 keep-alive 影响）；v1.69 先打 invoked 日志验证 hook 触发，
+ *      v1.70 再基于触发情况提取明文参数（Dart_NativeArguments 解析）。
+ *
  * 定位策略（跨 Flutter 版本 4 样本验证）：
  *   1. 扫描 .rodata 找 label 锚点字符串（CLIENT_RANDOM / TRAFFIC_SECRET 系列）
  *   2. 扫描 .text 找 adrp+add 指令对引用锚点的位置
@@ -29,6 +40,7 @@
  *
  * 注入（shadowhook 2.0.1 预编译 .so，dlopen 动态加载）：
  *   shadowhook_hook_func_addr(func, my_func, &orig) × 2（TLS1.2 + TLS1.3）
+ *   + × 4（dart:io native entries，v1.69）
  */
 
 #include <jni.h>
@@ -386,9 +398,20 @@ typedef void (*orig_ssl_log_secret_t)(const void *ssl, const char *label,
                                       const uint8_t *secret, size_t secret_len);
 static orig_ssl_log_secret_t g_orig_ssl_log_secret = nullptr;
 
+static std::atomic<int> g_tls13_calls{0};
+static std::atomic<int> g_tls12_calls{0};
+
 static void my_ssl_log_secret(const void *ssl, const char *label,
                               const uint8_t *client_random, size_t client_random_len,
                               const uint8_t *secret, size_t secret_len) {
+    // v1.69 诊断：确认 hook 是否真的被握手调用（每次调用打一条，上限防刷屏）
+    int n = g_tls13_calls.fetch_add(1) + 1;
+    if (n <= 5 || (n % 50) == 0) {
+        char b[192];
+        snprintf(b, sizeof(b), "KL T13 CALL #%d ssl=%p label=%s crlen=%zu seclen=%zu",
+                 n, ssl, label ? label : "(null)", client_random_len, secret_len);
+        kl_native_log(b);
+    }
     kl_emit_line(ssl, label, client_random, client_random_len, secret, secret_len);
     if (g_orig_ssl_log_secret != nullptr) {
         g_orig_ssl_log_secret(ssl, label, client_random, client_random_len, secret, secret_len);
@@ -407,6 +430,14 @@ static orig_ssl_log_master_secret_t g_orig_ssl_log_master_secret = nullptr;
 static void my_ssl_log_master_secret(const void *hs,
                                      const uint8_t *client_random, size_t client_random_len,
                                      const uint8_t *master_secret, size_t master_secret_len) {
+    // v1.69 诊断：确认 hook 是否真的被握手调用
+    int n = g_tls12_calls.fetch_add(1) + 1;
+    if (n <= 5 || (n % 50) == 0) {
+        char b[192];
+        snprintf(b, sizeof(b), "KL T12 CALL #%d hs=%p crlen=%zu mslen=%zu",
+                 n, hs, client_random_len, master_secret_len);
+        kl_native_log(b);
+    }
     kl_emit_line(hs, "CLIENT_RANDOM", client_random, client_random_len, master_secret, master_secret_len);
     if (g_orig_ssl_log_master_secret != nullptr) {
         g_orig_ssl_log_master_secret(hs, client_random, client_random_len, master_secret, master_secret_len);
@@ -490,6 +521,81 @@ static int hook_keylog_funcs(SoRange &rng, uintptr_t tls13, uintptr_t tls12) {
     return ok;
 }
 
+// ============ v1.69: dart:io native entries 函数 hook ============
+// 91aw libflutter.so 静态 vaddr（.rela.dyn RELATIVE 重定位 addend 实锤：
+//   名槽 name_ptr 指向 rodata 字符串，函数槽 func_ptr 运行时 = base + addend）
+// 每次 dart:io TLS IO 必调用（不受 keep-alive 影响），用于验证 hook 触发 + 后续明文提取。
+static const uintptr_t OFF_FILTER_PROCESS = 0x82f1f4;        // _SecureFilter.process（TLS 加密前明文）
+static const uintptr_t OFF_FILTER_PROCESSED = 0x82f4a8;      // _SecureFilter.processed（TLS 解密后明文）
+static const uintptr_t OFF_SECURE_SOCKET_INIT = 0x834140;    // SecureSocket_Init（SSL_CTX 创建）
+static const uintptr_t OFF_SECURE_SOCKET_CONNECT = 0x83507c; // SecureSocket_Connect（TLS 握手）
+
+typedef void (*dart_native_fn_t)(void *args);
+static dart_native_fn_t g_orig_filter_process = nullptr;
+static dart_native_fn_t g_orig_filter_processed = nullptr;
+static dart_native_fn_t g_orig_secure_socket_init = nullptr;
+static dart_native_fn_t g_orig_secure_socket_connect = nullptr;
+static std::atomic<bool> g_dart_io_hooked{false};
+
+static void kl_log_invoked(const char *name, void *args) {
+    char buf[192];
+    snprintf(buf, sizeof(buf), "KL dart:io %s invoked (args=%p)", name, args);
+    kl_native_log(buf);
+}
+
+static void my_filter_process(void *args) {
+    kl_log_invoked("Filter_Process", args);
+    if (g_orig_filter_process) g_orig_filter_process(args);
+}
+static void my_filter_processed(void *args) {
+    kl_log_invoked("Filter_Processed", args);
+    if (g_orig_filter_processed) g_orig_filter_processed(args);
+}
+static void my_secure_socket_init(void *args) {
+    kl_log_invoked("SecureSocket_Init", args);
+    if (g_orig_secure_socket_init) g_orig_secure_socket_init(args);
+}
+static void my_secure_socket_connect(void *args) {
+    kl_log_invoked("SecureSocket_Connect", args);
+    if (g_orig_secure_socket_connect) g_orig_secure_socket_connect(args);
+}
+
+static int hook_dart_io_functions(const SoRange &rng) {
+    if (!g_sh_hook_addr || g_dart_io_hooked.load()) return 0;
+    int ok = 0;
+    struct HookDef {
+        const char *name;
+        uintptr_t off;
+        dart_native_fn_t *orig;
+        dart_native_fn_t wrap;
+    };
+    HookDef hooks[] = {
+        {"Filter_Process", OFF_FILTER_PROCESS, &g_orig_filter_process, my_filter_process},
+        {"Filter_Processed", OFF_FILTER_PROCESSED, &g_orig_filter_processed, my_filter_processed},
+        {"SecureSocket_Init", OFF_SECURE_SOCKET_INIT, &g_orig_secure_socket_init, my_secure_socket_init},
+        {"SecureSocket_Connect", OFF_SECURE_SOCKET_CONNECT, &g_orig_secure_socket_connect, my_secure_socket_connect},
+    };
+    for (auto &h : hooks) {
+        uintptr_t target = rng.base + h.off;
+        void *orig = nullptr;
+        void *stub = g_sh_hook_addr((void *)target, (void *)h.wrap, &orig);
+        if (stub != nullptr && orig != nullptr) {
+            *h.orig = (dart_native_fn_t)orig;
+            ok++;
+            char buf[192];
+            snprintf(buf, sizeof(buf), "KL dart:io hook %s OK (0x%lx)", h.name, (unsigned long)target);
+            kl_native_log(buf);
+        } else {
+            char buf[192];
+            int err = g_sh_get_errno ? g_sh_get_errno() : -1;
+            snprintf(buf, sizeof(buf), "KL dart:io hook %s FAIL errno=%d (0x%lx)", h.name, err, (unsigned long)target);
+            kl_native_log(buf);
+        }
+    }
+    if (ok > 0) g_dart_io_hooked.store(true);
+    return ok;
+}
+
 // ============ JNI 入口 ============
 
 // 后台轮询线程：等待 libflutter.so 加载后自动定位 + hook（Flutter 引擎可能延迟加载）
@@ -512,6 +618,8 @@ static void *kl_wait_thread(void *) {
         SoRange rng;
         uintptr_t t13 = 0, t12 = 0;
         locate_keylog_funcs(rng, &t13, &t12);
+        // v1.69: dart:io hooks 独立于 keylog 定位——rng.base 有效即 hook（一次成功不再重复）
+        hook_dart_io_functions(rng);
         if (t13 == 0 && t12 == 0) {
             kl_native_log("KL retry: libflutter.so loaded but locate FAIL");
             continue; // 继续等（可能部分加载）
@@ -546,6 +654,8 @@ Java_com_dustinky_spyprobe_NativeProbe_flutterKeylogInit(JNIEnv *env, jobject th
     SoRange rng;
     uintptr_t t13 = 0, t12 = 0;
     locate_keylog_funcs(rng, &t13, &t12);
+    // v1.69: dart:io hooks 独立于 keylog 定位——rng.base 有效即 hook
+    hook_dart_io_functions(rng);
     if (t13 != 0 || t12 != 0) {
         int ok = hook_keylog_funcs(rng, t13, t12);
         g_in_progress = false;

@@ -198,11 +198,21 @@ public class NativeProbe {
     // ================= 静态回调（native → Java，全部写 LogStore，不拦截）=================
 
     /** v1.30.4: native→Java 日志桥——shadowhook_init/hook 结果。
-     *  v1.52.1: 归调试日志（自家运行日志不进抓包日志页；DebugLog 三保险可读） */
+     *  v1.52.1: 归调试日志（自家运行日志不进抓包日志页；DebugLog 三保险可读）。
+     *  v1.69: 双通道——KL(native) 关键调试日志同时进 LogStore（抓包日志页可见），
+     *         否则用户导出抓包日志永远看不到 keylog/dart:io hook 状态，无法排障。 */
     @SuppressWarnings("unused")
     private static void nativeLog(String msg) {
         if (msg != null && !msg.isEmpty()) {
-            DebugLog.get().logNoMirror("Native", "[native] " + msg);
+            String full = "[native] " + msg;
+            DebugLog.get().logNoMirror("Native", full);
+            // v1.69: KL 前缀 = keylog/dart:io hook 调试日志 → 进抓包日志页（导出可见）
+            if (msg.startsWith("KL ")) {
+                try {
+                    LogStore.get().log("Native", full);
+                } catch (Throwable ignored) {
+                }
+            }
         }
     }
 
