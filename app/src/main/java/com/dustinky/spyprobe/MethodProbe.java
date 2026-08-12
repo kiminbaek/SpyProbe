@@ -394,6 +394,8 @@ public class MethodProbe {
         // v1.31.1 P3-11: MODE_PARAM 改了 args 后需显式 proceed(args.toArray())
         //   （此前走无参 proceed()，依赖 libxposed 用当前 args 执行——语义无法 100% 确认，防御性显式传参）
         final boolean[] paramModified = new boolean[1];
+        // v1.63 P1-1: 规则引擎结构化——RECORD_RETURN/BOTH 事件 id（proceed 后补 ret）
+        final long[] recordRuleEid = new long[1];
 
         // v1.4/v1.13/v1.14: hook 规则（7 模式：返回值/参数值/拦截执行/静态变量/记录参数/记录返回值/记录两者）
         try {
@@ -403,24 +405,22 @@ public class MethodProbe {
                 Config.HijackRule rule = Config.get().findHijack(
                         m.getDeclaringClass().getName(), m.getName(), joinParams(m.getParameterTypes()));
                 if (rule != null) {
+                    String clsName = m.getDeclaringClass().getName();
+                    String sig = clsName + "." + m.getName() + "(" + joinParams(m.getParameterTypes()) + ")";
                     switch (rule.mode) {
                         case Config.MODE_RETURN: {
                             // v1.28 P1: RandomReturn 定时刷新缓存 key 按调用点隔离（默认 "rnd" 会导致多个规则互相覆盖缓存）
-                            Object forced = coerceReturn(m.getReturnType(), rule.returnValue,
-                                    m.getDeclaringClass().getName() + "." + m.getName() + "(" + joinParams(m.getParameterTypes()) + ")");
+                            Object forced = coerceReturn(m.getReturnType(), rule.returnValue, sig);
                             String ft = forced == null ? "null" : forced.getClass().getSimpleName();
-                            LogStore.get().log(TAG, "[RULE:return] " + m.getDeclaringClass().getName() + "." + m.getName()
-                                    + "(" + joinParams(m.getParameterTypes()) + ") -> " + rule.returnValue + " (" + ft + ")");
+                            logRuleEvent("return", sig, "改返回值 -> " + rule.returnValue + " (" + ft + ")", rule, null);
                             return forced;
                         }
                         case Config.MODE_BLOCK: {
-                            LogStore.get().log(TAG, "[RULE:block] " + m.getDeclaringClass().getName() + "." + m.getName()
-                                    + "(" + joinParams(m.getParameterTypes()) + ") 已拦截执行（不执行原方法）");
+                            logRuleEvent("block", sig, "已拦截执行（不执行原方法）", rule, null);
                             return nullFor(m.getReturnType());
                         }
                         case Config.MODE_PARAM: {
-                            LogStore.get().log(TAG, "[RULE:param] " + m.getDeclaringClass().getName() + "." + m.getName()
-                                    + "(" + joinParams(m.getParameterTypes()) + ") 改参数: " + rule.paramValue);
+                            logRuleEvent("param", sig, "改参数: " + rule.paramValue, rule, null);
                             applyParamValues(args, rule.paramValue);
                             paramModified[0] = true;
                             // 参数修改后继续执行原方法
@@ -428,33 +428,31 @@ public class MethodProbe {
                         }
                         case Config.MODE_STATIC: {
                             boolean ok = setStaticField(m.getDeclaringClass(), rule.fieldName, rule.fieldType, rule.fieldValue);
-                            LogStore.get().log(TAG, "[RULE:static] " + m.getDeclaringClass().getName() + "." + rule.fieldName
-                                    + " = " + rule.fieldValue + " ok=" + ok);
+                            logRuleEvent("static", clsName + "." + rule.fieldName,
+                                    "静态字段 = " + rule.fieldValue + " ok=" + ok, rule, null);
                             // 静态字段写完后照常执行原方法
                             break;
                         }
                         case Config.MODE_RECORD_PARAMS: {
-                            StringBuilder rb = new StringBuilder("[RULE:recordParams] ")
-                                    .append(m.getDeclaringClass().getName()).append(".").append(m.getName())
-                                    .append("(").append(joinParams(m.getParameterTypes())).append(") args=");
+                            StringBuilder rb = new StringBuilder();
                             for (int i = 0; i < args.size(); i++) {
                                 if (i > 0) rb.append(", ");
                                 rb.append(str(args.get(i), 300));
                             }
-                            LogStore.get().log(TAG, rb.toString());
+                            logRuleEvent("recordParams", sig, "args=" + rb, rule, null);
                             break; // 纯观测，继续执行原方法
                         }
                         case Config.MODE_RECORD_RETURN:
                         case Config.MODE_RECORD_BOTH: {
                             if (rule.mode == Config.MODE_RECORD_BOTH) {
-                                StringBuilder rb = new StringBuilder("[RULE:recordBoth] ")
-                                        .append(m.getDeclaringClass().getName()).append(".").append(m.getName())
-                                        .append("(").append(joinParams(m.getParameterTypes())).append(") args=");
+                                StringBuilder rb = new StringBuilder();
                                 for (int i = 0; i < args.size(); i++) {
                                     if (i > 0) rb.append(", ");
                                     rb.append(str(args.get(i), 300));
                                 }
-                                LogStore.get().log(TAG, rb.toString());
+                                recordRuleEid[0] = logRuleEvent("recordBoth", sig, "args=" + rb, rule, null);
+                            } else {
+                                recordRuleEid[0] = logRuleEvent("recordReturn", sig, "记录返回值", rule, null);
                             }
                             recordRule[0] = rule; // proceed 后记录返回值
                             break;
@@ -524,9 +522,48 @@ public class MethodProbe {
             try {
                 LogStore.get().log(TAG, "[RULE:recordReturn] " + recordRule[0].className + "." + recordRule[0].methodName
                         + "(" + recordRule[0].paramTypes + ") -> " + str(result, 300));
+                // v1.63 P1-1: 结构化补返回值（详情页可看 ret）
+                if (recordRuleEid[0] > 0) {
+                    SpyEvent ev = EventStore.get().find(recordRuleEid[0]);
+                    if (ev != null) {
+                        try { ev.payload.put("ret", str(result, 300)); } catch (Throwable t) { }
+                    }
+                }
             } catch (Throwable t) { }
         }
         return result;
+    }
+
+    /**
+     * v1.63 P1-1: 规则引擎结构化——RULE 事件卡片 + 详情页。
+     * [EVT#] 日志行 + EventStore 双写（与其他 Probe 同构）。返回事件 id（0 表示失败）。
+     */
+    private static long logRuleEvent(String mode, String sig, String detail, Config.HijackRule rule, String ret) {
+        try {
+            long eid = EventStore.get().nextId();
+            String tagged = "[EVT#" + eid + "][RULE:" + mode + "] " + sig + " " + detail;
+            LogStore.get().log(TAG, tagged);
+            org.json.JSONObject payload = new org.json.JSONObject();
+            payload.put("mode", mode);
+            payload.put("sig", sig == null ? "" : sig);
+            payload.put("detail", detail == null ? "" : detail);
+            if (rule != null) {
+                payload.put("ruleClass", rule.className == null ? "" : rule.className);
+                payload.put("ruleMethod", rule.methodName == null ? "" : rule.methodName);
+                payload.put("ruleMode", rule.mode);
+                if (rule.returnValue != null) payload.put("ruleValue", String.valueOf(rule.returnValue));
+                if (rule.fieldName != null) payload.put("fieldName", rule.fieldName);
+                if (rule.fieldValue != null) payload.put("fieldValue", String.valueOf(rule.fieldValue));
+                if (rule.paramValue != null) payload.put("paramValue", String.valueOf(rule.paramValue));
+            }
+            if (ret != null) payload.put("ret", ret);
+            EventStore.get().add(new SpyEvent("RULE", eid, System.currentTimeMillis(),
+                    "[RULE:" + mode + "] " + (sig == null ? "" : sig),
+                    payload, tagged, ""));
+            return eid;
+        } catch (Throwable t) {
+            return 0;
+        }
     }
 
     /** v1.6: 字段反射缓存（WeakHashMap 防泄漏，getDeclaredFields 每次调用很贵）

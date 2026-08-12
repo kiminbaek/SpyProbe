@@ -1058,7 +1058,22 @@ public class NetProbe {
                                         ? chain.getThisObject().getClass().getMethod("request").invoke(chain.getThisObject()) : null;
                                 Object url = req != null ? req.getClass().getMethod("url").invoke(req) : "?";
                                 Object code = r != null ? r.getClass().getMethod("code").invoke(r) : "?";
-                                LogStore.get().log(TAG, "[OkHttp-混淆] <<< " + code + " " + url);
+                                // v1.63 P1-2: 混淆 execute() 兜底也结构化（此前纯文本无 REQ# 卡片）
+                                long rid = LogStore.get().nextHttpId(); // v1.62 P1-10: 独立 httpId
+                                String line = "[REQ#" + rid + "] <<< " + code + " " + url;
+                                LogStore.get().log(TAG, line);
+                                HttpEntry he = new HttpEntry("REALCALL", rid, System.currentTimeMillis(),
+                                        Thread.currentThread().getName(),
+                                        req != null ? String.valueOf(req.getClass().getMethod("method").invoke(req)) : "?",
+                                        String.valueOf(url),
+                                        new java.util.TreeMap<>(), "none", "", 0,
+                                        StackUtil.getCompact(), line);
+                                long nowMs = System.currentTimeMillis();
+                                he.setConnMeta("HTTP/1.1", nowMs, nowMs, 0, 0, "", 0, "", 0);
+                                int status = 0;
+                                try { status = ((Number) code).intValue(); } catch (Throwable ignored) { }
+                                he.complete(status, "", new java.util.TreeMap<>(), "text", "", 0, 0);
+                                HttpStore.get().add(he);
                             } catch (Throwable t) { }
                         }
                         return r;

@@ -69,6 +69,8 @@ public class TlsHttpParser {
     private int respBodyAcc = 0;
     private int respContentLength = -1;
     private boolean respChunked = false;
+    // v1.63 P2-4: chunked 结束标记跨段检测——上一段尾部缓冲（保存最后 4 字节）
+    private byte[] prevTail = new byte[0];
 
     /** 当前未完成条目（请求头完整→建，响应头完整→complete 置 null） */
     private HttpEntry current;
@@ -425,7 +427,7 @@ public class TlsHttpParser {
         respBuf.reset();
     }
 
-    /** v1.61: WAIT_RESP_BODY 态——只计数 body 字节（不存内容防 OOM），直到完整/结束标记 */
+    /** v1.61: WAIT_RESP_BODY 态——计数 body 字节 + chunked 内容追加，直到完整/结束标记 */
     private void feedResponseBody(byte[] data, int len) {
         HttpEntry e = current;
         if (e == null) { finishResp(); return; }
@@ -433,8 +435,15 @@ public class TlsHttpParser {
         respBodyAcc += len;
         e.respBodyBytes = respBodyAcc;
         if (respChunked) {
-            // chunked 结束标记：最后 chunk "0\r\n\r\n"
-            if (findChunkedEnd(data, len)) {
+            // v1.63 P2-3: chunked 后续 chunk 内容也追加进 respBody（此前只计数不存内容，
+            //   详情页 body 只有头同段部分；与 H2 appendRespBody 对齐，append 内部有 256KB 上限防 OOM）
+            try {
+                String chunk = new String(data, 0, Math.min(len, bodyMax()), StandardCharsets.UTF_8);
+                e.appendRespBody(chunk);
+            } catch (Throwable ignored) { }
+            // v1.63 P2-4: chunked 结束标记跨段检测（"0\r\n\r\n" 可能跨 feed 段：
+            //   前段尾 "0\r\n" + 后段头 "\r\n"）——拼接 prevTail+data 检测
+            if (findChunkedEnd(prevTail, data, len)) {
                 e.complete(e.status, e.statusMsg, e.respHeaders, e.respBodyType,
                         e.respBody, respBodyAcc, nowMs - e.time);
                 e.respEndMs = nowMs;
@@ -449,13 +458,35 @@ public class TlsHttpParser {
         // respContentLength < 0（close-delimited）：等连接关闭 close() 兜底
     }
 
-    /** v1.61: chunked 结束标记检测（"0\r\n\r\n"，容忍 trailing） */
-    private static boolean findChunkedEnd(byte[] data, int len) {
+    /** v1.61: chunked 结束标记检测（"0\r\n\r\n"，容忍 trailing）
+     *  v1.63 P2-4: 支持跨段——prevTail 为上一段尾部字节，与当前段拼接检测 */
+    private boolean findChunkedEnd(byte[] prev, byte[] data, int len) {
+        // 1) 当前段内检测
         for (int i = 0; i + 4 < len; i++) {
             if (data[i] == '0' && data[i + 1] == '\r' && data[i + 2] == '\n'
                     && data[i + 3] == '\r' && data[i + 4] == '\n') {
                 return true;
             }
+        }
+        // 2) 跨段：prevTail 尾部 + 当前段头部拼接检测
+        if (prev != null && prev.length > 0) {
+            byte[] joined = new byte[prev.length + Math.min(len, 4)];
+            System.arraycopy(prev, 0, joined, 0, prev.length);
+            int take = Math.min(len, 4);
+            System.arraycopy(data, 0, joined, prev.length, take);
+            for (int i = 0; i + 4 < joined.length; i++) {
+                if (joined[i] == '0' && joined[i + 1] == '\r' && joined[i + 2] == '\n'
+                        && joined[i + 3] == '\r' && joined[i + 4] == '\n') {
+                    return true;
+                }
+            }
+        }
+        // 3) 更新 prevTail：保存本段最后 4 字节供下段拼接
+        if (len > 0) {
+            int keep = Math.min(len, 4);
+            byte[] tail = new byte[keep];
+            System.arraycopy(data, len - keep, tail, 0, keep);
+            prevTail = tail;
         }
         return false;
     }
@@ -466,6 +497,7 @@ public class TlsHttpParser {
         respBodyAcc = 0;
         respContentLength = -1;
         respChunked = false;
+        prevTail = new byte[0]; // v1.63 P2-4: 跨段尾部缓冲复位
         current = null;
         state = State.WAIT_REQ_LINE;
     }

@@ -86,8 +86,15 @@ public class HomeEventStore {
         }
     }
 
-    /** 按天读取历史文件（UI 历史页回溯） */
+    /** 按天读取历史文件（UI 历史页回溯）
+     *  v1.63 P2-5: 加条数上限（对齐 HomeHttpStore 5000）——事件频率比 HTTP 更高（SQL/JSON/LOG 海量），
+     *  全读会 OOM/卡 UI */
     public List<SpyEvent> readDay(File filesDir, String day) {
+        return readDay(filesDir, day, 5000);
+    }
+
+    /** v1.63 P2-5: 带条数上限的 readDay */
+    public List<SpyEvent> readDay(File filesDir, String day, int max) {
         List<SpyEvent> out = new ArrayList<>();
         try {
             File d = new File(filesDir, "event_entries");
@@ -98,6 +105,7 @@ public class HomeEventStore {
                     new java.io.FileInputStream(f), java.nio.charset.StandardCharsets.UTF_8));
             String line;
             while ((line = br.readLine()) != null) {
+                if (out.size() >= max) break;
                 try {
                     JSONObject o = new JSONObject(line);
                     SpyEvent e = SpyEvent.fromJson(o);
@@ -109,6 +117,33 @@ public class HomeEventStore {
             DebugLog.get().log("HomeEvent", "readDay fail: " + t);
         }
         return out;
+    }
+
+    /** v1.63 P2-6: 按 id 流式查找某天事件文件（不全量读内存 + 不受 readDay 5000 截断影响） */
+    public SpyEvent findInDay(File filesDir, String day, long id) {
+        try {
+            File d = new File(filesDir, "event_entries");
+            if (!d.exists()) return null;
+            File f = new File(d, "event_entries_" + day + ".jsonl");
+            if (!f.exists()) return null;
+            java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(
+                    new java.io.FileInputStream(f), java.nio.charset.StandardCharsets.UTF_8));
+            String line;
+            SpyEvent hit = null;
+            while ((line = br.readLine()) != null) {
+                try {
+                    JSONObject o = new JSONObject(line);
+                    if (o.optLong("id", -1) != id) continue;
+                    SpyEvent e = SpyEvent.fromJson(o);
+                    if (e != null) { hit = e; break; }
+                } catch (Throwable ignored) { }
+            }
+            br.close();
+            return hit;
+        } catch (Throwable t) {
+            DebugLog.get().log("HomeEvent", "findInDay fail: " + t);
+            return null;
+        }
     }
 
     /** 写线程：攒批 2s flush（与 HomeHttpStore 同构，避免每条 open/close） */

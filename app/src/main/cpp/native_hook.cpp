@@ -72,6 +72,11 @@ typedef int (*type_close)(int);
 typedef int (*type_SSL_write)(void *ssl, const void *buf, int num);
 typedef int (*type_SSL_read)(void *ssl, void *buf, int num);
 typedef void (*type_SSL_free)(void *ssl);
+// v1.63 P1-3: SSL_write_ex/SSL_read_ex —— BoringSSL(API 29+)/OpenSSL 1.1.1+ 提供 ex 变体，
+//   部分库（Flutter/WebSocket/自定义 TLS）直接调 ex API，此前只 hook SSL_write/SSL_read
+//   会绕过 → 漏抓 TLS 明文。签名：返回 1=成功 0=失败，实际字节数写 *written/*readbytes。
+typedef int (*type_SSL_write_ex)(void *ssl, const void *buf, size_t num, size_t *written);
+typedef int (*type_SSL_read_ex)(void *ssl, void *buf, size_t num, size_t *readbytes);
 // v1.39 P0: SSL_get_fd —— SSL 数据回调里拿底层 fd 查 socket 四元组（pcap 用）
 typedef int (*type_SSL_get_fd)(const void *ssl);
 static type_SSL_get_fd real_SSL_get_fd = nullptr;
@@ -108,16 +113,19 @@ struct SslHookEntry {
     type_SSL_write orig_ssl_write;
     type_SSL_read  orig_ssl_read;
     type_SSL_free  orig_ssl_free;
+    // v1.63 P1-3: ex 变体（BoringSSL/OpenSSL 1.1.1+）
+    type_SSL_write_ex orig_ssl_write_ex;
+    type_SSL_read_ex  orig_ssl_read_ex;
     type_SSL_write orig_native_write;
     type_SSL_read  orig_native_read;
     type_SSL_free  orig_native_free;
 };
 
 static SslHookEntry g_ssl_hooks[] = {
-    { "libssl.so",             nullptr, nullptr, nullptr, nullptr, nullptr, nullptr },
-    { "libconscrypt_jni.so",   nullptr, nullptr, nullptr, nullptr, nullptr, nullptr },
-    { "libttboringssl.so",     nullptr, nullptr, nullptr, nullptr, nullptr, nullptr },
-    { "libflutter.so",         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr },
+    { "libssl.so",             nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr },
+    { "libconscrypt_jni.so",   nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr },
+    { "libttboringssl.so",     nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr },
+    { "libflutter.so",         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr },
 };
 static const int SSL_HOOK_COUNT = sizeof(g_ssl_hooks) / sizeof(g_ssl_hooks[0]);
 
@@ -645,6 +653,90 @@ int hook_NativeCrypto_SSL_read_t(void *ssl, void *buf, int num) {
     return do_ssl_read_common<IDX>(ssl, buf, num, g_ssl_hooks[IDX].orig_native_read);
 }
 
+// v1.63 P1-3: SSL_write_ex/SSL_read_ex —— 与 SSL_write/SSL_read 同构（BoringSSL/OpenSSL 1.1.1+）。
+//   签名差异：返回 1=成功 0=失败，实际写/读字节数通过 *written/*readbytes 输出。
+//   注意：ex 变体成功返回 1，不能像 SSL_write 那样用 ret 当字节数；
+//   回调 len 用 *written/*readbytes（成功时）或 num（失败时无数据不回调）。
+
+template<int IDX>
+int do_ssl_write_ex_common(void *ssl, const void *buf, size_t num, size_t *written, type_SSL_write_ex orig) {
+    if (orig == nullptr) return 0; // 符号未 hook 成功（hook 成功才写 orig）
+    if (g_is_in_hook) return orig(ssl, buf, num, written);
+    if (real_SSL_get_fd == nullptr) resolve_ssl_get_fd_via_dladdr((void*)orig);
+    ScopedHookGuard guard;
+    uintptr_t conn_id = reinterpret_cast<uintptr_t>(ssl);
+    collect_tls_meta_once(conn_id, (void*)orig);
+    std::shared_ptr<Http2Connection> h2conn = h2_get_or_create(conn_id);
+
+    std::vector<std::vector<uint8_t>> local_rst_queue;
+
+    if (h2conn != nullptr && buf != nullptr && num > 0) {
+        bool collect = h2conn->h2_checked && h2conn->is_h2 && callback_collect_resp_body();
+        auto feed_res = h2_feed(h2conn, static_cast<const uint8_t*>(buf), num, true, collect);
+        if (!feed_res.early_checks.empty() || !feed_res.data_chunks.empty() || !feed_res.completed.empty()) {
+            callback_kotlin_h2(conn_id, feed_res);
+        }
+        auto new_rst = h2_take_rst_frames(conn_id);
+        if (!new_rst.empty()) {
+            local_rst_queue.insert(local_rst_queue.end(), new_rst.begin(), new_rst.end());
+        }
+        if (h2conn->is_h2) {
+            int ret = orig(ssl, buf, num, written);
+            if (ret > 0 && !local_rst_queue.empty()) {
+                size_t dummy = 0;
+                for (const auto& frame : local_rst_queue) {
+                    orig(ssl, frame.data(), frame.size(), &dummy);
+                }
+            }
+            return ret;
+        }
+    }
+
+    if (buf != nullptr && num > 0) {
+        if (callback_kotlin(reinterpret_cast<jlong>(ssl), true, buf, num, true)) {
+            if (written != nullptr) *written = 0;
+            return 0; // 被拦截（block），ex 语义失败=0
+        }
+    }
+
+    return orig(ssl, buf, num, written);
+}
+
+template<int IDX>
+int do_ssl_read_ex_common(void *ssl, void *buf, size_t num, size_t *readbytes, type_SSL_read_ex orig) {
+    if (orig == nullptr) return 0;
+    if (g_is_in_hook) return orig(ssl, buf, num, readbytes);
+    if (real_SSL_get_fd == nullptr) resolve_ssl_get_fd_via_dladdr((void*)orig);
+    ScopedHookGuard guard;
+    collect_tls_meta_once(reinterpret_cast<uintptr_t>(ssl), (void*)orig);
+    int ret = orig(ssl, buf, num, readbytes);
+    size_t got = (ret > 0 && readbytes != nullptr) ? *readbytes : 0;
+    if (got > 0 && buf != nullptr) {
+        uintptr_t conn_id = reinterpret_cast<uintptr_t>(ssl);
+        if (h2_is_http2(conn_id)) {
+            std::shared_ptr<Http2Connection> h2conn = h2_get_or_create(conn_id);
+            if (h2conn != nullptr) {
+                bool collect = callback_collect_resp_body();
+                auto feed_res = h2_feed(h2conn, static_cast<const uint8_t*>(buf), got, false, collect);
+                if (!feed_res.early_checks.empty() || !feed_res.data_chunks.empty() || !feed_res.completed.empty()) {
+                    callback_kotlin_h2(conn_id, feed_res);
+                }
+            }
+        } else callback_kotlin(reinterpret_cast<jlong>(ssl), false, buf, got, true);
+    }
+    return ret;
+}
+
+template<int IDX>
+int hook_SSL_write_ex_t(void *ssl, const void *buf, size_t num, size_t *written) {
+    return do_ssl_write_ex_common<IDX>(ssl, buf, num, written, g_ssl_hooks[IDX].orig_ssl_write_ex);
+}
+
+template<int IDX>
+int hook_SSL_read_ex_t(void *ssl, void *buf, size_t num, size_t *readbytes) {
+    return do_ssl_read_ex_common<IDX>(ssl, buf, num, readbytes, g_ssl_hooks[IDX].orig_ssl_read_ex);
+}
+
 // v1.25 P0-3: 公共释放逻辑（orig 由调用方传入）
 template<int IDX>
 void do_ssl_free_common(void *ssl, type_SSL_free orig) {
@@ -678,6 +770,9 @@ void hook_NativeCrypto_SSL_free_t(void *ssl) {
 static type_SSL_write ssl_write_hooks[] = { hook_SSL_write_t<0>, hook_SSL_write_t<1>, hook_SSL_write_t<2>, hook_SSL_write_t<3> };
 static type_SSL_read ssl_read_hooks[] = { hook_SSL_read_t<0>, hook_SSL_read_t<1>, hook_SSL_read_t<2>, hook_SSL_read_t<3> };
 static type_SSL_free ssl_free_hooks[] = { hook_SSL_free_t<0>, hook_SSL_free_t<1>, hook_SSL_free_t<2>, hook_SSL_free_t<3> };
+// v1.63 P1-3: ex 变体 hooks 数组
+static type_SSL_write_ex ssl_write_ex_hooks[] = { hook_SSL_write_ex_t<0>, hook_SSL_write_ex_t<1>, hook_SSL_write_ex_t<2>, hook_SSL_write_ex_t<3> };
+static type_SSL_read_ex ssl_read_ex_hooks[] = { hook_SSL_read_ex_t<0>, hook_SSL_read_ex_t<1>, hook_SSL_read_ex_t<2>, hook_SSL_read_ex_t<3> };
 static type_SSL_write native_write_hooks[] = { hook_NativeCrypto_SSL_write_t<0>, hook_NativeCrypto_SSL_write_t<1>, hook_NativeCrypto_SSL_write_t<2>, hook_NativeCrypto_SSL_write_t<3> };
 static type_SSL_read native_read_hooks[] = { hook_NativeCrypto_SSL_read_t<0>, hook_NativeCrypto_SSL_read_t<1>, hook_NativeCrypto_SSL_read_t<2>, hook_NativeCrypto_SSL_read_t<3> };
 static type_SSL_free native_free_hooks[] = { hook_NativeCrypto_SSL_free_t<0>, hook_NativeCrypto_SSL_free_t<1>, hook_NativeCrypto_SSL_free_t<2>, hook_NativeCrypto_SSL_free_t<3> };
@@ -1335,6 +1430,9 @@ Java_com_dustinky_spyprobe_NativeProbe_initNativeHook(JNIEnv *env, jobject thiz,
             hook_func(lib, "SSL_write", (void*)ssl_write_hooks[i], (void**)&g_ssl_hooks[i].orig_ssl_write);
             hook_func(lib, "SSL_read", (void*)ssl_read_hooks[i], (void**)&g_ssl_hooks[i].orig_ssl_read);
             hook_func(lib, "SSL_free", (void*)ssl_free_hooks[i], (void**)&g_ssl_hooks[i].orig_ssl_free);
+            // v1.63 P1-3: ex 变体——直接调 SSL_write_ex/SSL_read_ex 的库（部分 Flutter/WebSocket/自定义 TLS）不再漏抓
+            hook_func(lib, "SSL_write_ex", (void*)ssl_write_ex_hooks[i], (void**)&g_ssl_hooks[i].orig_ssl_write_ex);
+            hook_func(lib, "SSL_read_ex", (void*)ssl_read_ex_hooks[i], (void**)&g_ssl_hooks[i].orig_ssl_read_ex);
             hook_func(lib, "NativeCrypto_SSL_write", (void*)native_write_hooks[i], (void**)&g_ssl_hooks[i].orig_native_write);
             hook_func(lib, "NativeCrypto_SSL_read", (void*)native_read_hooks[i], (void**)&g_ssl_hooks[i].orig_native_read);
             hook_func(lib, "NativeCrypto_SSL_free", (void*)native_free_hooks[i], (void**)&g_ssl_hooks[i].orig_native_free);

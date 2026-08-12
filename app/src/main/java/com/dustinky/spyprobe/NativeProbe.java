@@ -110,6 +110,8 @@ public class NativeProbe {
                 p.setTlsMeta(meta);
             }
         }
+        // v1.63 P2-1: unknown 判定后不再喂解析器（注释承诺的行为——此前一直漏实现，浪费 CPU）
+        if (p.isUnknown()) return;
         p.feed(isWrite, data, data.length);
     }
 
@@ -410,9 +412,25 @@ public class NativeProbe {
                 else he.appendRespBody(chunk);
             }
             String dir = isRequest ? ">>>" : "<<<";
-            LogStore.get().log(TAG, "[H2 DATA " + dir + " #" + streamId + (total > n ? " " + total + "B" : "") + "] " + toReadable(data, total));
+            // v1.63 P2-2: H2 DATA 文本行降级——纯二进制大块（视频/图片分片）不打行，body 已入 HttpEntry 详情页
+            //   文本（JSON/HTML/API 响应）仍打行，保持日志可读性；防视频分片刷屏
+            if (isPrintableText(data, n)) {
+                LogStore.get().log(TAG, "[H2 DATA " + dir + " #" + streamId + (total > n ? " " + total + "B" : "") + "] " + toReadable(data, total));
+            }
         } catch (Throwable ignored) {
         }
+    }
+
+    /** v1.63 P2-2: 判断数据块是否为可打印文本（H2 DATA 行降级用）——采样前 256 字节 */
+    private static boolean isPrintableText(byte[] data, int len) {
+        if (data == null || len == 0) return false;
+        int sample = Math.min(len, 256);
+        int printable = 0;
+        for (int i = 0; i < sample; i++) {
+            int b = data[i] & 0xFF;
+            if (b == 9 || b == 10 || b == 13 || (b >= 32 && b < 127) || b >= 0x80) printable++;
+        }
+        return printable * 10 >= sample * 8; // ≥80% 可打印视为文本
     }
 
     /** 是否收集响应体（H2 用）——SpyProbe 探测模式：收集 */

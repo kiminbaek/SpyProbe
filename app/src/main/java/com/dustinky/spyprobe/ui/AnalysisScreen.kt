@@ -40,16 +40,27 @@ import com.dustinky.spyprobe.SpyEvent
 
 /**
  * v1.56: 分析页——日志聚合统计（实时内存数据）
+ * v1.63 P2-7: 聚合类型补全（原只有 HTTP/SQL/CRYPTO/NET）——新增
+ *   URL/DETECT/PREFS/CLASS/METHOD/LOG/ACT/CERT/RULE 区块，概览补齐。
  *
  * 数据源（全部读主进程内存，纯 Kotlin 聚合，无新增 Java 层）：
  *   - HomeHttpStore.snapshot() —— HttpEntry（接口分析：host+path 次数/成功率/耗时）
- *   - HomeEventStore.all()      —— SpyEvent（SQL/CRYPTO/NET 聚合）
+ *   - HomeEventStore.all()      —— SpyEvent（SQL/CRYPTO/NET/URL/DETECT/... 聚合）
  *
- * 四大区块：
+ * 区块：
  *   1. 接口分析：host+path 聚合（次数/成功/失败/成功率/平均耗时/方法）
  *   2. SQL 分析：table+op 聚合（写库操作热度）
  *   3. 加密分析：algorithm 聚合（算法使用热度 + 模式分布）
  *   4. 连接分析：host 聚合（TCP/DNS 成败统计）
+ *   5. URL 分析：url 来源聚合
+ *   6. 检测分析：DETECT kind 聚合
+ *   7. 偏好分析：PREFS getter 聚合
+ *   8. 类加载：CLASS name 聚合
+ *   9. 方法探测：METHOD 聚合
+ *   10. 应用日志：LOG tag 聚合
+ *   11. 页面流：ACT class 聚合
+ *   12. 证书：CERT alias/op 聚合
+ *   13. 规则引擎：RULE mode 聚合
  */
 
 // ===== 聚合模型 =====
@@ -86,6 +97,17 @@ private data class NetStat(
     var ok: Int = 0,
     var fail: Int = 0
 )
+
+// v1.63 P2-7: 新增聚合模型（探测类事件）
+private data class UrlStat(val source: String, var count: Int = 0)
+private data class DetectStat(val kind: String, var count: Int = 0)
+private data class PrefsStat(val getter: String, val key: String, var count: Int = 0)
+private data class ClassStat(val name: String, var count: Int = 0)
+private data class MethodStat(val caller: String, var count: Int = 0)
+private data class LogStat(val tag: String, val level: String, var count: Int = 0)
+private data class ActStat(val className: String, val event: String, var count: Int = 0)
+private data class CertStat(val alias: String, val op: String, var count: Int = 0)
+private data class RuleStat(val mode: String, var count: Int = 0)
 
 // ===== 聚合计算（纯 Kotlin，内存数据）=====
 
@@ -156,6 +178,117 @@ private fun aggregateNet(): List<NetStat> {
     return map.values.sortedByDescending { it.count }
 }
 
+// ===== v1.63 P2-7: 探测类聚合 =====
+
+private fun aggregateUrl(): List<UrlStat> {
+    val map = LinkedHashMap<String, UrlStat>()
+    for (e in HomeEventStore.get().all()) {
+        if (!"URL".equals(e.type)) continue
+        val source = e.payload.optString("source", "")
+        val url = e.payload.optString("url", "")
+        // 尽量提取 host，抓包分析更有意义
+        val host = try {
+            val u = java.net.URI(url)
+            u.host ?: source
+        } catch (t: Throwable) { source }
+        val st = map.getOrPut(host) { UrlStat(host) }
+        st.count++
+    }
+    return map.values.sortedByDescending { it.count }
+}
+
+private fun aggregateDetect(): List<DetectStat> {
+    val map = LinkedHashMap<String, DetectStat>()
+    for (e in HomeEventStore.get().all()) {
+        if (!"DETECT".equals(e.type)) continue
+        val kind = e.payload.optString("kind", "")
+        val st = map.getOrPut(kind) { DetectStat(kind) }
+        st.count++
+    }
+    return map.values.sortedByDescending { it.count }
+}
+
+private fun aggregatePrefs(): List<PrefsStat> {
+    val map = LinkedHashMap<String, PrefsStat>()
+    for (e in HomeEventStore.get().all()) {
+        if (!"PREFS".equals(e.type)) continue
+        val getter = e.payload.optString("getter", "")
+        val key = e.payload.optString("key", "")
+        val st = map.getOrPut(getter + "|" + key) { PrefsStat(getter, key) }
+        st.count++
+    }
+    return map.values.sortedByDescending { it.count }
+}
+
+private fun aggregateClass(): List<ClassStat> {
+    val map = LinkedHashMap<String, ClassStat>()
+    for (e in HomeEventStore.get().all()) {
+        if (!"CLASS".equals(e.type)) continue
+        val name = e.payload.optString("name", "")
+        val st = map.getOrPut(name) { ClassStat(name) }
+        st.count++
+    }
+    return map.values.sortedByDescending { it.count }
+}
+
+private fun aggregateMethod(): List<MethodStat> {
+    val map = LinkedHashMap<String, MethodStat>()
+    for (e in HomeEventStore.get().all()) {
+        if (!"METHOD".equals(e.type)) continue
+        val caller = e.payload.optString("caller", "")
+        val st = map.getOrPut(caller) { MethodStat(caller) }
+        st.count++
+    }
+    return map.values.sortedByDescending { it.count }
+}
+
+private fun aggregateLog(): List<LogStat> {
+    val map = LinkedHashMap<String, LogStat>()
+    for (e in HomeEventStore.get().all()) {
+        if (!"LOG".equals(e.type)) continue
+        val tag = e.payload.optString("tag", "")
+        val level = e.payload.optString("level", "")
+        val st = map.getOrPut(tag + "|" + level) { LogStat(tag, level) }
+        st.count++
+    }
+    return map.values.sortedByDescending { it.count }
+}
+
+private fun aggregateAct(): List<ActStat> {
+    val map = LinkedHashMap<String, ActStat>()
+    for (e in HomeEventStore.get().all()) {
+        if (!"ACT".equals(e.type)) continue
+        val className = e.payload.optString("class", "")
+        val event = e.payload.optString("event", "")
+        val st = map.getOrPut(className + "|" + event) { ActStat(className, event) }
+        st.count++
+    }
+    return map.values.sortedByDescending { it.count }
+}
+
+private fun aggregateCert(): List<CertStat> {
+    val map = LinkedHashMap<String, CertStat>()
+    for (e in HomeEventStore.get().all()) {
+        if (!"CERT".equals(e.type)) continue
+        val alias = e.payload.optString("alias", "")
+        val op = e.payload.optString("op", "")
+        val st = map.getOrPut(alias + "|" + op) { CertStat(alias, op) }
+        st.count++
+    }
+    return map.values.sortedByDescending { it.count }
+}
+
+private fun aggregateRule(): List<RuleStat> {
+    val map = LinkedHashMap<String, RuleStat>()
+    for (e in HomeEventStore.get().all()) {
+        if (!"RULE".equals(e.type)) continue
+        val mode = e.payload.optString("mode", "")
+        val st = map.getOrPut(mode) { RuleStat(mode) }
+        st.count++
+    }
+    return map.values.sortedByDescending { it.count }
+}
+
 // ===== UI =====
 
 @Composable
@@ -167,6 +300,16 @@ fun AnalysisScreen(modifier: Modifier = Modifier) {
     val sql = remember(tick) { aggregateSql() }
     val crypto = remember(tick) { aggregateCrypto() }
     val net = remember(tick) { aggregateNet() }
+    // v1.63 P2-7: 探测类聚合
+    val url = remember(tick) { aggregateUrl() }
+    val detect = remember(tick) { aggregateDetect() }
+    val prefs = remember(tick) { aggregatePrefs() }
+    val clazz = remember(tick) { aggregateClass() }
+    val method = remember(tick) { aggregateMethod() }
+    val logAgg = remember(tick) { aggregateLog() }
+    val act = remember(tick) { aggregateAct() }
+    val cert = remember(tick) { aggregateCert() }
+    val rule = remember(tick) { aggregateRule() }
 
     Column(
         modifier = modifier
@@ -206,7 +349,10 @@ fun AnalysisScreen(modifier: Modifier = Modifier) {
                     OverviewChip("SQL", sql.sumOf { it.count }, Color(0xFF42A5F5))
                     OverviewChip("加密", crypto.sumOf { it.count }, Color(0xFFEF5350))
                     OverviewChip("连接", net.sumOf { it.count }, Color(0xFF66BB6A))
-                    OverviewChip("接口数", api.size, MaterialTheme.colorScheme.primary)
+                    OverviewChip("URL", url.sumOf { it.count }, Color(0xFF66BB6A))
+                    OverviewChip("检测", detect.sumOf { it.count }, Color(0xFFD32F2F))
+                    OverviewChip("规则", rule.sumOf { it.count }, Color(0xFFF4511E))
+                    OverviewChip("证书", cert.sumOf { it.count }, Color(0xFF9CCC65))
                 }
             }
         }
@@ -297,6 +443,179 @@ fun AnalysisScreen(modifier: Modifier = Modifier) {
                         rightText = "${st.count}次",
                         metaText = "✓${st.ok} ✗${st.fail}",
                         metaColor = if (st.fail == 0) Color(0xFF66BB6A) else MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.size(8.dp))
+
+        // ===== v1.63 P2-7: 探测类区块 =====
+
+        // 5. URL 分析
+        SectionCard(title = "URL 分析", subtitle = "来源 host · 构造点热度") {
+            if (url.isEmpty()) {
+                EmptyHint("暂无 URL 构造事件（URL 探测开启后自动聚合）")
+            } else {
+                url.take(20).forEach { st ->
+                    AnalysisRow(
+                        keyText = st.source,
+                        subText = "",
+                        rightText = "${st.count}次",
+                        metaText = "",
+                        metaColor = Color(0xFF66BB6A)
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.size(8.dp))
+
+        // 6. 检测分析
+        SectionCard(title = "检测分析", subtitle = "环境/反调试/越狱检测命中") {
+            if (detect.isEmpty()) {
+                EmptyHint("暂无检测命中（环境探测开启后自动聚合）")
+            } else {
+                detect.take(20).forEach { st ->
+                    AnalysisRow(
+                        keyText = if (st.kind.isBlank()) "?" else st.kind,
+                        subText = "",
+                        rightText = "${st.count}次",
+                        metaText = "",
+                        metaColor = Color(0xFFD32F2F)
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.size(8.dp))
+
+        // 7. 偏好读取分析
+        SectionCard(title = "偏好读取", subtitle = "SharedPreferences getter × key") {
+            if (prefs.isEmpty()) {
+                EmptyHint("暂无偏好读取（偏好探测开启后自动聚合）")
+            } else {
+                prefs.take(20).forEach { st ->
+                    AnalysisRow(
+                        keyText = if (st.key.isBlank()) st.getter else st.key,
+                        subText = st.getter,
+                        rightText = "${st.count}次",
+                        metaText = "",
+                        metaColor = Color(0xFF5C6BC0)
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.size(8.dp))
+
+        // 8. 类加载分析
+        SectionCard(title = "类加载", subtitle = "动态加载类热度") {
+            if (clazz.isEmpty()) {
+                EmptyHint("暂无类加载事件（类加载探测开启后自动聚合）")
+            } else {
+                clazz.take(20).forEach { st ->
+                    AnalysisRow(
+                        keyText = st.name,
+                        subText = "",
+                        rightText = "${st.count}次",
+                        metaText = "",
+                        metaColor = Color(0xFF7E57C2)
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.size(8.dp))
+
+        // 9. 方法探测分析
+        SectionCard(title = "方法探测", subtitle = "caller · 自定义探测热度") {
+            if (method.isEmpty()) {
+                EmptyHint("暂无方法探测（方法探测开启后自动聚合）")
+            } else {
+                method.take(20).forEach { st ->
+                    AnalysisRow(
+                        keyText = st.caller,
+                        subText = "",
+                        rightText = "${st.count}次",
+                        metaText = "",
+                        metaColor = Color(0xFFEC407A)
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.size(8.dp))
+
+        // 10. 应用日志分析
+        SectionCard(title = "应用日志", subtitle = "目标 App Log tag × level") {
+            if (logAgg.isEmpty()) {
+                EmptyHint("暂无目标 App 日志（LogCat 探测开启后自动聚合）")
+            } else {
+                logAgg.take(20).forEach { st ->
+                    AnalysisRow(
+                        keyText = st.tag,
+                        subText = "level=" + st.level,
+                        rightText = "${st.count}次",
+                        metaText = "",
+                        metaColor = Color(0xFF90A4AE)
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.size(8.dp))
+
+        // 11. 页面流分析
+        SectionCard(title = "页面流", subtitle = "Activity/Intent 跳转热度") {
+            if (act.isEmpty()) {
+                EmptyHint("暂无页面事件（页面流探测开启后自动聚合）")
+            } else {
+                act.take(20).forEach { st ->
+                    AnalysisRow(
+                        keyText = st.className,
+                        subText = st.event,
+                        rightText = "${st.count}次",
+                        metaText = "",
+                        metaColor = Color(0xFFFF8A65)
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.size(8.dp))
+
+        // 12. 证书分析
+        SectionCard(title = "证书访问", subtitle = "mTLS 证书 alias × op") {
+            if (cert.isEmpty()) {
+                EmptyHint("暂无证书访问（Keystore 探测开启后自动聚合）")
+            } else {
+                cert.take(20).forEach { st ->
+                    AnalysisRow(
+                        keyText = if (st.alias.isBlank()) st.op else st.alias,
+                        subText = st.op,
+                        rightText = "${st.count}次",
+                        metaText = "",
+                        metaColor = Color(0xFF9CCC65)
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.size(8.dp))
+
+        // 13. 规则引擎分析
+        SectionCard(title = "规则引擎", subtitle = "hook 规则命中分布") {
+            if (rule.isEmpty()) {
+                EmptyHint("暂无规则命中（配置 hook 规则后自动聚合）")
+            } else {
+                rule.forEach { st ->
+                    AnalysisRow(
+                        keyText = st.mode,
+                        subText = "",
+                        rightText = "${st.count}次",
+                        metaText = "",
+                        metaColor = Color(0xFFF4511E)
                     )
                 }
             }

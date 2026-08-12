@@ -576,14 +576,13 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                                     if (he2 != null) {
                                                         httpDetail = he2
                                                     } else {
-                                                        // 内存未命中 → 按会话日期从 http_entries 文件回溯
+                                                        // 内存未命中 → 按会话日期从 http_entries 文件流式回溯（v1.63 P2-6: 原 readDay().firstOrNull 全量读 + 5000 截断，改为 findInDay 流式查找）
                                                         val day = selectedSession?.date
                                                         if (day != null) {
                                                             scope.launch {
                                                                 val appCtx = context.applicationContext as android.app.Application
                                                                 val fromDay = withContext(Dispatchers.IO) {
-                                                                    com.dustinky.spyprobe.HomeHttpStore.get().readDay(appCtx.filesDir, day)
-                                                                        .firstOrNull { e -> e.id == rid2 }
+                                                                    com.dustinky.spyprobe.HomeHttpStore.get().findInDay(appCtx.filesDir, day, rid2)
                                                                 }
                                                                 if (fromDay != null) {
                                                                     httpDetail = fromDay
@@ -604,14 +603,13 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                                         if (ev2 != null) {
                                                             eventDetail = ev2
                                                         } else {
-                                                            // 内存未命中 → 按会话日期从 event_entries 文件回溯
+                                                            // 内存未命中 → 按会话日期从 event_entries 文件流式回溯（v1.63 P2-6: 原 readDay().firstOrNull 全量读 + 5000 截断，改为 findInDay 流式查找）
                                                             val day = selectedSession?.date
                                                             if (day != null) {
                                                                 scope.launch {
                                                                     val appCtx = context.applicationContext as android.app.Application
                                                                     val fromDay = withContext(Dispatchers.IO) {
-                                                                        com.dustinky.spyprobe.HomeEventStore.get().readDay(appCtx.filesDir, day)
-                                                                            .firstOrNull { e -> e.id == eid2 }
+                                                                        com.dustinky.spyprobe.HomeEventStore.get().findInDay(appCtx.filesDir, day, eid2)
                                                                     }
                                                                     if (fromDay != null) {
                                                                         eventDetail = fromDay

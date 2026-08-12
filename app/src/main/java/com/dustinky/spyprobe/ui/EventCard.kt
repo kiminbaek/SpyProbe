@@ -67,6 +67,7 @@ import org.json.JSONObject
  *   CLASS   —— 蓝紫（类加载）
  *   METHOD  —— 粉（自定义方法探测）
  *   CERT    —— 黄绿（mTLS 证书）
+ *   RULE    —— 深橙（hook 规则引擎：改返回值/拦执行/改参数/静态字段/记录）
  */
 
 /** v1.55: 事件类型颜色 */
@@ -84,6 +85,7 @@ internal fun eventColor(type: String): Color = when (type) {
     "CLASS" -> Color(0xFF7E57C2)
     "METHOD" -> Color(0xFFEC407A)
     "CERT" -> Color(0xFF9CCC65)
+    "RULE" -> Color(0xFFF4511E)
     else -> Color(0xFF90A4AE)
 }
 
@@ -102,6 +104,7 @@ internal fun eventTypeLabel(type: String): String = when (type) {
     "CLASS" -> "类"
     "METHOD" -> "方法"
     "CERT" -> "证书"
+    "RULE" -> "规则"
     else -> type
 }
 
@@ -517,6 +520,12 @@ private fun payloadGroups(type: String): List<PayloadGroup> = when (type) {
     "CERT" -> listOf(
         PayloadGroup("证书", listOf("op", "alias", "summary")),
         PayloadGroup("详情", listOf("detail"))
+    )
+    "RULE" -> listOf(
+        PayloadGroup("规则模式", listOf("mode")),
+        PayloadGroup("目标方法", listOf("sig")),
+        PayloadGroup("规则配置", listOf("ruleClass", "ruleMethod", "ruleMode", "ruleValue", "fieldName", "fieldValue", "paramValue")),
+        PayloadGroup("执行结果", listOf("detail", "ret"))
     )
     else -> listOf(PayloadGroup("字段", listOf()))
 }

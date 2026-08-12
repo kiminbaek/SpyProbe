@@ -148,4 +148,29 @@ public class HomeHttpStore {
         } catch (Throwable ignored) { }
         return out;
     }
+
+    /** v1.63 P2-6: 按 id 流式查找某天文件（不全量读内存 + 不受 readDay 5000 截断影响） */
+    public HttpEntry findInDay(File filesDir, String day, long id) {
+        try {
+            File d = new File(filesDir, "http_entries");
+            File f = new File(d, "http_entries_" + day + ".jsonl");
+            if (!f.isFile()) return null;
+            java.io.BufferedReader br = new java.io.BufferedReader(new java.io.FileReader(f, java.nio.charset.StandardCharsets.UTF_8));
+            String line;
+            HttpEntry hit = null;
+            while ((line = br.readLine()) != null) {
+                if (line.trim().isEmpty()) continue;
+                try {
+                    JSONObject o = new JSONObject(line);
+                    if (o.optLong("id", -1) != id) continue;
+                    HttpEntry e = HttpEntry.fromJson(o);
+                    if (e != null) { hit = e; break; }
+                } catch (Throwable ignored) { }
+            }
+            br.close();
+            return hit;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
 }
