@@ -73,6 +73,7 @@ import org.json.JSONObject
 /** v1.55: 事件类型颜色 */
 internal fun eventColor(type: String): Color = when (type) {
     "SQL" -> Color(0xFF42A5F5)
+    "SQL-AGG" -> Color(0xFF29B6F6)
     "JSON" -> Color(0xFFAB47BC)
     "CRYPTO" -> Color(0xFFEF5350)
     "NET" -> Color(0xFF00E5FF)
@@ -92,6 +93,7 @@ internal fun eventColor(type: String): Color = when (type) {
 /** v1.55: 事件类型标签（卡片左上角小标签） */
 internal fun eventTypeLabel(type: String): String = when (type) {
     "SQL" -> "SQL"
+    "SQL-AGG" -> "SQL聚合"
     "JSON" -> "JSON"
     "CRYPTO" -> "加密"
     "NET" -> "网络"
@@ -472,6 +474,11 @@ private fun payloadGroups(type: String): List<PayloadGroup> = when (type) {
         PayloadGroup("SQL 操作", listOf("op", "table")),
         PayloadGroup("语句", listOf("sql")),
         PayloadGroup("参数", listOf("args"))
+    )
+    "SQL-AGG" -> listOf(
+        PayloadGroup("SQL 操作", listOf("op", "table")),
+        PayloadGroup("模板", listOf("sql")),
+        PayloadGroup("聚合", listOf("repeatCount", "windowSecs"))
     )
     "JSON" -> listOf(
         PayloadGroup("来源", listOf("source")),

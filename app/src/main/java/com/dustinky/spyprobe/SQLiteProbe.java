@@ -71,7 +71,8 @@ public class SQLiteProbe {
             a.count++;
             if (now - a.windowStart >= AGG_WINDOW_MS) {
                 if (a.count >= AGG_MIN_REPEAT) {
-                    LogStore.get().log(TAG, "[SQL] " + tpl + " —— 30s 内重复 " + a.count + " 次，已聚合（防刷屏）");
+                    // v1.65: 聚合汇总行结构化——不再裸 LogStore 文本，走 EventStore 卡片链路
+                    logSqlAggEvent(tpl, a.count, AGG_WINDOW_MS);
                 }
                 SQL_AGG.remove(tpl);
                 return false;
@@ -79,6 +80,30 @@ public class SQLiteProbe {
             if (a.count >= AGG_MIN_REPEAT) return false;  // 窗口内高频 → 抑制，等窗口结束汇总
             return true;  // 低频重复（<5 次）逐条记
         }
+    }
+
+    /**
+     * v1.65: 高频 SQL 聚合汇总事件——同模板 30s 内重复多次，汇总为一条结构化卡片。
+     * 日志行嵌入 [EVT#id][SQL-AGG]，EventStore 写 SpyEvent（UI 卡片化 + 详情页看完整模板与次数）。
+     * @param tpl      归一化 SQL 模板（shouldLog 里的 normalizeSql 结果）
+     * @param count    窗口内重复次数
+     * @param windowMs 聚合窗口毫秒
+     */
+    static void logSqlAggEvent(String tpl, int count, long windowMs) {
+        try {
+            long eid = EventStore.get().nextId();
+            String secs = String.format(java.util.Locale.US, "%.1f", windowMs / 1000.0);
+            String msg = "[EVT#" + eid + "][SQL-AGG] " + tpl + " —— " + secs + "s 内重复 " + count + " 次，已聚合（防刷屏）";
+            LogStore.get().log(TAG, msg);
+            org.json.JSONObject payload = new org.json.JSONObject();
+            payload.put("op", extractOp(tpl));
+            payload.put("table", extractTable(tpl));
+            payload.put("sql", tpl == null ? "" : tpl);
+            payload.put("repeatCount", count);
+            payload.put("windowSecs", windowMs / 1000.0);
+            EventStore.get().add(new SpyEvent("SQL-AGG", eid, System.currentTimeMillis(),
+                    "SQL ×" + count + " 已聚合", payload, msg, ""));
+        } catch (Throwable t) { /* 结构化失败不影响文本日志 */ }
     }
 
     /**

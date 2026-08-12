@@ -49,6 +49,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -219,6 +220,10 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     var httpDetail by remember { mutableStateOf<com.dustinky.spyprobe.HttpEntry?>(null) }
     // v1.55: 通用结构化事件详情页（SQL/JSON/Crypto/TCP/DNS 卡片）——点击 [EVT#N] 行命中 HomeEventStore 时弹出
     var eventDetail by remember { mutableStateOf<com.dustinky.spyprobe.SpyEvent?>(null) }
+    // v1.65: 实时层 EVT# 行文件回溯缓存——内存环形淘汰(MAX_MEM)后早期事件 find() miss 时，
+    //   异步 findInDay 从 jsonl 文件找回并缓存，命中后重组渲染卡片（治"实时列表纯文本流"根因）
+    val evtFileHits = remember { mutableStateMapOf<Long, com.dustinky.spyprobe.SpyEvent>() }
+    val evtFileLoading = remember { mutableStateMapOf<Long, Boolean>() }
     // v1.25 P1-3: 暂停状态从局部 remember 改为 vm（此前暂停只停自动滚动不停轮询——日志还在积累；
     //   vm.paused 同时控制轮询停止 + 自动滚动暂停，语义一致）
     val paused by vm.paused.collectAsState()
@@ -681,13 +686,30 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                     )
                                 } else {
                                     val eid = parseEvtId(line)
-                                    val ev = eid?.let { com.dustinky.spyprobe.HomeEventStore.get().find(it) }
+                                    val ev = eid?.let { eid2 ->
+                                        com.dustinky.spyprobe.HomeEventStore.get().find(eid2)
+                                            ?: evtFileHits[eid2]   // v1.65: 内存 miss → 文件回溯缓存
+                                    }
                                     if (ev != null) {
                                         EventCard(
                                             entry = ev,
                                             onClick = { eventDetail = ev }
                                         )
                                     } else {
+                                        // v1.65: 实时层内存+缓存都 miss → 异步按当天文件回溯补卡
+                                        if (eid != null && !evtFileLoading.containsKey(eid)) {
+                                            evtFileLoading[eid] = true
+                                            LaunchedEffect(eid) {
+                                                val appCtx = context.applicationContext as android.app.Application
+                                                val day = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                                                    .format(java.util.Date())
+                                                val fromDay = withContext(Dispatchers.IO) {
+                                                    com.dustinky.spyprobe.HomeEventStore.get().findInDay(appCtx.filesDir, day, eid)
+                                                }
+                                                if (fromDay != null) evtFileHits[eid] = fromDay
+                                                evtFileLoading.remove(eid)
+                                            }
+                                        }
                                         Text(
                                             line,
                                             style = codeStyle,
@@ -702,7 +724,10 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                                         httpDetail = he2
                                                     } else {
                                                         val eid2 = parseEvtId(line)
-                                                        val ev2 = eid2?.let { com.dustinky.spyprobe.HomeEventStore.get().find(it) }
+                                                        val ev2 = eid2?.let { eid3 ->
+                                                            com.dustinky.spyprobe.HomeEventStore.get().find(eid3)
+                                                                ?: evtFileHits[eid3]   // v1.65: 文件回溯缓存兜底
+                                                        }
                                                         if (ev2 != null) {
                                                             eventDetail = ev2
                                                         } else {

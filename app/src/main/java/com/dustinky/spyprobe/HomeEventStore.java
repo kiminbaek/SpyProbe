@@ -17,7 +17,7 @@ import java.util.List;
  */
 public class HomeEventStore {
 
-    private static final int MAX_MEM = 500;
+    private static final int MAX_MEM = 4096;
 
     private static final HomeEventStore INSTANCE = new HomeEventStore();
     public static HomeEventStore get() { return INSTANCE; }
