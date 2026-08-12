@@ -13,8 +13,8 @@ android {
     defaultConfig {
         minSdk = 26
         targetSdk = 35
-        versionCode = 101
-        versionName = "1.66.0"
+        versionCode = 102
+        versionName = "1.67.0"
 
         // v1.10: native 抓包（shadowhook inline hook）——只编真机常用 ABI，控制体积
         ndk {
@@ -32,6 +32,13 @@ android {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
             version = "3.22.1"
+        }
+    }
+
+    // v1.67: shadowhook 预编译 .so 打包进 APK（cpp/libs/<abi>/libshadowhook.so）
+    sourceSets {
+        getByName("main") {
+            jniLibs.srcDirs("src/main/cpp/libs")
         }
     }
 

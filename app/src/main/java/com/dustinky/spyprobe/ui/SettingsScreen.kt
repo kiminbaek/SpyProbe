@@ -364,6 +364,44 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             BoolSetting(effective, "keylog", "SSL KeyLog", false,
                 inherited = inh("keylog"),
                 onSet = { setCfg("keylog", it) })
+            // v1.67: 内部 TLS 解密（keylog + libc 密文 → TLS 1.3 明文 → 实时日志结构化卡片）
+            BoolSetting(effective, "internalDecrypt", "内部 TLS 解密 (TLS1.3)", false,
+                inherited = inh("internalDecrypt"),
+                onSet = { setCfg("internalDecrypt", it) })
+            // v1.67: 导出 keylog 文件（Wireshark 导入解密 HTTPS；覆盖 Flutter 层 libflutter.so）
+            var keylogStatus by remember { mutableStateOf("") }
+            OutlinedButton(
+                onClick = {
+                    com.dustinky.spyprobe.util.UiLog.log("Settings: 点击「导出 KeyLog」")
+                    scope.launch {
+                        keylogStatus = withContext(Dispatchers.IO) {
+                            try {
+                                val content = com.dustinky.spyprobe.KeyLogStore.get().toKeylogFileContent()
+                                val uri = com.dustinky.spyprobe.util.ShareLogUtil.writeLogTxtFile(
+                                    context, "sslkeylog", content
+                                )
+                                if (uri == null) {
+                                    "KeyLog 写文件失败"
+                                } else {
+                                    val err = com.dustinky.spyprobe.util.ShareLogUtil.shareUri(
+                                        context,
+                                        "SpyProbe KeyLog ${com.dustinky.spyprobe.KeyLogStore.get().lineCount()} 行",
+                                        uri,
+                                        "text/plain"
+                                    )
+                                    if (err != null) "分享失败：$err" else "已导出 KeyLog（${com.dustinky.spyprobe.KeyLogStore.get().lineCount()} 行）"
+                                }
+                            } catch (t: Throwable) {
+                                "KeyLog 导出异常: " + t.message
+                            }
+                        }
+                        android.widget.Toast.makeText(context, keylogStatus, android.widget.Toast.LENGTH_LONG).show()
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+            ) {
+                Text("导出 KeyLog（Wireshark 解密 HTTPS）")
+            }
             Divider()
             BoolSetting(effective, "webViewDebug", "WebView 调试", false,
                 inherited = inh("webViewDebug"),

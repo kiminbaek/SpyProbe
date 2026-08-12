@@ -9,3 +9,6 @@ app/.cxx/
 
 # 003 临时备份（pre-edit）
 backups/
+__pycache__/
+*.bak.*
+tools/locator_test
