@@ -509,6 +509,41 @@ bool callback_kotlin_h2(uintptr_t conn_id, const H2FeedResult& feed_result) {
     return should_block;
 }
 
+// v1.70.1 P0: Conscrypt JNI hook（flutter_keylog.cpp）的统一明文入口
+//   —— 复用 XH SSL hook 相同的 h2 检测 + HTTP 解析：
+//      h2 帧 → h2_feed → callback_kotlin_h2（REQ# 结构化）
+//      HTTP/1.1 明文 → callback_kotlin（REQ# 结构化）
+//   否则 CS hook 直接 callback_kotlin 会把 h2 二进制帧当 HTTP/1.1 解析出乱码。
+bool callback_collect_resp_body(); // 定义在下方
+extern "C" bool process_conscrypt_plain(jlong id, bool is_write, const void *buf, size_t len) {
+    if (buf == nullptr || len == 0) return false;
+    uintptr_t conn_id = static_cast<uintptr_t>(id);
+    if (is_write) {
+        std::shared_ptr<Http2Connection> h2conn = h2_get_or_create(conn_id);
+        if (h2conn != nullptr) {
+            bool collect = h2conn->h2_checked && h2conn->is_h2 && callback_collect_resp_body();
+            auto feed_res = h2_feed(h2conn, static_cast<const uint8_t*>(buf), len, true, collect);
+            if (!feed_res.early_checks.empty() || !feed_res.data_chunks.empty() || !feed_res.completed.empty()) {
+                callback_kotlin_h2(conn_id, feed_res);
+            }
+            if (h2conn->is_h2) return false; // h2 已消费
+        }
+    } else {
+        if (h2_is_http2(conn_id)) {
+            std::shared_ptr<Http2Connection> h2conn = h2_get_or_create(conn_id);
+            if (h2conn != nullptr) {
+                bool collect = callback_collect_resp_body();
+                auto feed_res = h2_feed(h2conn, static_cast<const uint8_t*>(buf), len, false, collect);
+                if (!feed_res.early_checks.empty() || !feed_res.data_chunks.empty() || !feed_res.completed.empty()) {
+                    callback_kotlin_h2(conn_id, feed_res);
+                }
+                return false;
+            }
+        }
+    }
+    return callback_kotlin(id, is_write, buf, len, true);
+}
+
 bool callback_collect_resp_body() {
     if (gNativeRequestHookClass == nullptr || gCollectRespBodyMethod == nullptr) return false;
     JNIEnv *env = get_jni_env();

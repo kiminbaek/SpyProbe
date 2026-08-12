@@ -620,6 +620,8 @@ static int hook_dart_io_functions(const SoRange &rng) {
 //   结构化通道 REQ#）。通杀所有走 Conscrypt 的 app（Android 默认 TLS 引擎）。
 // native_hook.cpp 提供的结构化明文入口（HTTP1 解析 + REQ# 卡片）
 extern bool callback_kotlin(jlong id, bool is_write, const void *buf, size_t len, bool is_ssl);
+// v1.70.1: Conscrypt JNI 明文统一入口（h2 检测 + HTTP1/h2 解析 + REQ#）
+extern "C" bool process_conscrypt_plain(jlong id, bool is_write, const void *buf, size_t len);
 
 typedef jint (*orig_cs_ssl_write_t)(JNIEnv*, jclass, jlong, jobject, jint, jint);
 typedef jint (*orig_cs_ssl_read_t)(JNIEnv*, jclass, jlong, jobject, jint, jint, jint);
@@ -696,7 +698,8 @@ static jint my_cs_SSL_write(JNIEnv* env, jclass clazz, jlong ssl, jobject source
         uint8_t tmp[65536];
         size_t plen = 0;
         if ((size_t)len <= sizeof(tmp) && cs_extract_plain(env, source, offset, len, tmp, sizeof(tmp), &plen) && plen > 0) {
-            callback_kotlin((jlong)ssl, true, tmp, plen, true);
+            // v1.70.1: 走统一明文入口（h2 检测 + HTTP1/h2 解析 + REQ#）
+            process_conscrypt_plain((jlong)ssl, true, tmp, plen);
         }
         g_cs_in_hook.store(false);
     }
@@ -716,7 +719,8 @@ static jint my_cs_SSL_read(JNIEnv* env, jclass clazz, jlong ssl, jobject target,
         uint8_t tmp[65536];
         size_t plen = 0;
         if ((size_t)ret <= sizeof(tmp) && cs_extract_plain(env, target, offset, ret, tmp, sizeof(tmp), &plen) && plen > 0) {
-            callback_kotlin((jlong)ssl, false, tmp, plen, true);
+            // v1.70.1: 走统一明文入口（h2 检测 + HTTP1/h2 解析 + REQ#）
+            process_conscrypt_plain((jlong)ssl, false, tmp, plen);
         }
         g_cs_in_hook.store(false);
     }
@@ -739,9 +743,13 @@ static bool install_conscrypt_hook() {
         return false;
     }
     // 缓存 ByteBuffer 类与方法（heap buffer 提取用）
+    // v1.70.1: 后台线程（cs_wait_thread）调用时当前线程可能未 attach JVM
     if (!g_bb_class && g_kl_jvm) {
         JNIEnv* e = nullptr;
-        g_kl_jvm->GetEnv((void**)&e, JNI_VERSION_1_6);
+        jint gv = g_kl_jvm->GetEnv((void**)&e, JNI_VERSION_1_6);
+        if (gv != JNI_OK) {
+            g_kl_jvm->AttachCurrentThread(&e, nullptr); // 后台线程 attach（detach 由系统兜底）
+        }
         if (e) {
             jclass tmp = e->FindClass("java/nio/ByteBuffer");
             if (tmp) {
@@ -778,6 +786,39 @@ static bool install_conscrypt_hook() {
 }
 
 // ============ JNI 入口 ============
+
+// v1.70.1: Conscrypt JNI hook 延迟重试线程
+// 根因（2026-08-13 真机日志 spyprobe_logs_20260813_064449）：
+//   App 启动早期（SpyProbe 注入时 06:44:11）libconscrypt_jni.so 尚未加载
+//   （dart:io 第一次 TLS 连接 06:44:14 时才 System.loadLibrary）→ 一次性
+//   install_conscrypt_hook() 的 dlopen FAIL → 业务流量（Conscrypt 内嵌
+//   BoringSSL，xhook GOT 双失效）明文永远拿不到，只剩 TCP 密文
+//   （PcapFeed onNativeData ssl=false pcap=true）。
+// 修复：后台线程每 1s 检查 /proc/self/maps，libconscrypt_jni.so 加载后
+//   立即 install_conscrypt_hook() → 业务明文 → callback_kotlin → REQ#。
+static void *cs_wait_thread(void *) {
+    for (int i = 0; i < 180; i++) { // 最多 180s（3 分钟），每 1s 检查
+        if (g_conscrypt_hooked.load()) break;
+        usleep(1000 * 1000);
+        bool loaded = false;
+        FILE *f = fopen("/proc/self/maps", "r");
+        if (f) {
+            char line[512];
+            while (fgets(line, sizeof(line), f)) {
+                if (strstr(line, "libconscrypt_jni.so")) { loaded = true; break; }
+            }
+            fclose(f);
+        }
+        if (!loaded) continue;
+        // 已加载 → 安装 Conscrypt JNI hook（内部处理 dlsym + shadowhook inline）
+        if (install_conscrypt_hook()) {
+            kl_native_log("CS Conscrypt JNI hook OK (delayed after libconscrypt_jni.so loaded)");
+            break;
+        }
+        // dlopen 成功但 dlsym/shadowhook 失败 → 继续重试（罕见）
+    }
+    return nullptr;
+}
 
 // 后台轮询线程：等待 libflutter.so 加载后自动定位 + hook（Flutter 引擎可能延迟加载）
 static void *kl_wait_thread(void *) {
@@ -833,7 +874,14 @@ Java_com_dustinky_spyprobe_NativeProbe_flutterKeylogInit(JNIEnv *env, jobject th
 
     // v1.70: Conscrypt JNI hook（独立于 libflutter.so，App 启动早期即可安装）
     //   dart:io 业务流量走 Conscrypt → 这里 hook 其 NativeCrypto.SSL_write/SSL_read
-    install_conscrypt_hook();
+    // v1.70.1 P0: 一次性 install 在 App 启动早期会因 libconscrypt_jni.so 未加载
+    //   而 dlopen FAIL → 后台线程延迟重试（dart:io 第一次 TLS 后库加载，重试即成功）
+    if (!install_conscrypt_hook()) {
+        kl_native_log("CS install FAIL (libconscrypt_jni.so not loaded yet) — delayed retry started");
+        pthread_t cs_tid;
+        pthread_create(&cs_tid, nullptr, cs_wait_thread, nullptr);
+        pthread_detach(cs_tid);
+    }
 
     // 立即尝试一次（libflutter.so 已加载场景）
     SoRange rng;
