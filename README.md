@@ -149,18 +149,18 @@ SpyProbe 主进程（控制台 App，数据面）
 
 | 版本 | 说明 |
 |:-----|:-----|
-| **v1.47** | 全量审查修复 8 P1 + 22 P2：9901 控制面 token 鉴权 / 日志推送失败指数退避 / 会话条数元数据 sessions.json / native hook 只试一次防闪退 / 大 DATA 帧分段回调 / networkSecurityConfig 收紧 127.0.0.1 / FileProvider 单文件 / 目标端口防自推 |
+| **v1.47** | 修复 8 P1 + 22 P2：9901 控制面 token 鉴权 / 日志推送失败指数退避 / 会话条数元数据 sessions.json / native hook 只试一次防闪退 / 大 DATA 帧分段回调 / networkSecurityConfig 收紧 127.0.0.1 / FileProvider 单文件 / 目标端口防自推 |
 | **v1.46** | 根治播放视频闪退 + pcap 0 数据（SSL_get_fd 解析方向错误，native resolve 只试一次）+ pcap 记录头字节序修复 + 2MB chunk 截断修复（MAX_BODY 1MB→4MB）+ 导出范围选择（全部/仅当前会话）+ 清空 pcap 按钮 |
 | **v1.45** | pcap 链路修复：IPv4-mapped IPv6 全拒根治 + SSL_get_fd 延迟解析（dladdr/dlopen/ELF 符号表直读三连）+ 诊断日志 |
 | **v1.44** | **隐藏应用列表**（HMA 思路）：hook getInstalledPackages/getInstalledApplications/queryIntentActivities 过滤 spyprobe/LSPosed/Magisk + push 401 根治闭环（token 自举+续期+失败重试不丢） |
 | **v1.43** | UI 优化：抓包页整页可滚动 / 批量开关（全开/全关/恢复默认）/ Root 文案降级 / 新版本弹窗（完整更新日志 + 下载/忽略） |
-| **v1.42** | 全量审查修复 15 项：addHook NPE / OkHttpReplay buffer / PcapWriter flush / pcap 流式合并 / TCP 校验和 / shareUri mimeType / 大块分段映射 |
+| **v1.42** | 修复 15 项：addHook NPE / OkHttpReplay buffer / PcapWriter flush / pcap 流式合并 / TCP 校验和 / shareUri mimeType / 大块分段映射 |
 | **v1.41** | **日志架构大修正**：实时日志/分享改走自己家 9900（目标 App 不在线也能看已推回日志）+ pcap 独立于 nativeCapture + 5s 周期 flush + 推送失败留痕 |
 | **v1.40** | **OkHttp 混淆自动定位**（newCall 入口 + 特征动态 hook + DexKit 兜底）+ **请求重放**（环形 50 条，一键重放）+ 响应体重建（peekBody 不消费原流） |
 | **v1.39** | **pcap 导出**（Wireshark 直接看 HTTPS 明文）+ **JSON/Hex 双视图** + native SSL 调用栈 + SSL pinning 定位 |
 | **v1.38** | SSL 绕过增强：补齐 12 个证书校验绕过点（网络配置 pinning/Conscrypt/OkHttp 主机名/WebView/Cronet/xutils/httpclient/Platform）+ BoringSSL 五接口 verify 绕过 + SSL KeyLog（Wireshark 可还原明文）+ mTLS 客户端证书 dump（指纹不导出私钥）+ 加密追踪扩展（SecretKeySpec/DESKeySpec/Mac/SecureRandom）+ 反检测扩充（listFiles/isDebuggerConnected/ROOT_FILES 全集）+ WebView 调试开关 + DexKit 类名搜索 + 状态/日志查询路由 |
 | **v1.37** | 内置更新系统（GitHub 多镜像 + SHA-256 校验 + root 静默安装）/ Hook 失败隔离（HookSafe 统一包裹）/ 惰性 Hook（按配置按需加载）/ R8 入口发布前自动校验 / 日志推送 token 鉴权 |
-| **v1.36** | 全量审查修复 16 项：历史会话分组根治字典序陷阱 / 连接恢复 / Root 模式"本地优先"降级文案 / 代码清理与序列化收敛 |
+| **v1.36** | 修复 16 项：历史会话分组根治字典序陷阱 / 连接恢复 / Root 模式"本地优先"降级文案 / 代码清理与序列化收敛 |
 | **v1.35** | 日志架构优化：推送改纯 Socket 根治递归爆炸 / 单行化 / URL 去重 / native hex 收敛 / 请求关联 ID / 分享格式优化 |
 | **v1.34** | **shadowhook → xhook 换库**：根治 OnePlus Android 16 PAC 崩溃（inline hook 改写指令破坏 PAC 配对 → 32 tombstone 空指针；xhook 只改 GOT 表项，PAC 免疫） |
 | **v1.33** | 历史日志按会话记录（目标进程每次启动 = 新会话文件）+ 卡片式浏览 + 勾选批量分享 |
@@ -168,9 +168,9 @@ SpyProbe 主进程（控制台 App，数据面）
 | v1.31 | 工作模式（Root/普通）/ 修复 native 开关语义 / 配置持久化修复 |
 | v1.30 | 日志导出 txt 分享 / 全链路调试日志埋点 / 修复 NetworkOnMainThreadException |
 | v1.29 | 调试日志不落盘修复 |
-| v1.28 | 全量审查修复 11 P1 + 8 P2 |
+| v1.28 | 修复 11 P1 + 8 P2 |
 | v1.26 | 导出失败 P0 ×3 修复 |
-| v1.25 | 全量审查修复 20 项 |
+| v1.25 | 修复 20 项 |
 | v1.10-1.24 | Native 层抓包（shadowhook libc/SSL/HTTP2）/ DexKit 导出 + 字符串反查 / 环境检测探测 / TLS 明文 / 万能连接点 / 通用 Hook 规则引擎 7 模式 / 反检测 hook 集 / 返回值劫持 / SQLite 记录 / URL/Crypto/Log/Activity/JSON 探测 / Compose UI 重构 / Hook 失败隔离 |
 | v1.0-1.9 | 初版 + 多轮审查增强（DNS/Socket/类加载/字段快照/端口自动发现） |
 
