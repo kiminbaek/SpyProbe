@@ -78,6 +78,26 @@ public class DebugLog {
         }
     }
 
+    /**
+     * v1.74.8: 清空调试日志（内存环形 + 落盘文件）。
+     * 用户长时间不清时 files/spyprobe_debug.log 持续累积（256KB 滚动但仍在增长），
+     * 此前只能靠「清除应用数据」——那会连带清掉配置/抓包。这里提供精准清理。
+     * 清空后写一行留痕，证明清理执行过。
+     */
+    public void clear() {
+        synchronized (lock) {
+            ring.clear();
+            closeWriter();
+            File f = file;
+            if (f != null) {
+                boolean del = f.delete();
+                logLocked("DebugLog cleared (file delete=" + del + ")", false);
+            } else {
+                logLocked("DebugLog cleared (memory only)", false);
+            }
+        }
+    }
+
     /** v1.42 P2-14: 不镜像 LogStore 的入口——LogStore/PcapWriter 推送失败留痕用
      *  （推送失败 → DebugLog → 若再镜像回 LogStore → 再推送失败 → 无限递归） */
     public void logNoMirror(String tag, String msg) {

@@ -17,6 +17,7 @@
 #include <pthread.h>
 #include <cstdio>
 #include <time.h>
+#include <cerrno>
 #include <unordered_map>
 #include <unordered_set>
 #include <mutex>
@@ -1410,14 +1411,18 @@ Java_com_dustinky_spyprobe_NativeProbe_initNativeHook(JNIEnv *env, jobject thiz,
 }
 
 // v7x: MITM 透明代理——取 iptables REDIRECT 前的原始目标地址（IPv4）
+// v1.74.8 P0-11: 失败留 errno（EBADF=fd 无效 / EINVAL=非 REDIRECT 连接 / EPERM=权限），
+//   真机日志可见 SO_ORIGINAL_DST 到底为什么拿不到，不再静默 null。
 extern "C" JNIEXPORT jstring JNICALL Java_com_dustinky_spyprobe_MitmSock_getOriginalDst(JNIEnv *env, jclass, jint fd) {
     struct sockaddr_in dest;
     socklen_t len = sizeof(dest);
     if (getsockopt(fd, SOL_IP, SO_ORIGINAL_DST, &dest, &len) < 0) {
+        LOGE("getOriginalDst fd=%d fails errno=%d (%s)", fd, errno, strerror(errno));
         return nullptr;
     }
     char buf[64];
     snprintf(buf, sizeof(buf), "%s:%d", inet_ntoa(dest.sin_addr), ntohs(dest.sin_port));
+    LOGI("getOriginalDst fd=%d -> %s", fd, buf);
     return env->NewStringUTF(buf);
 }
 

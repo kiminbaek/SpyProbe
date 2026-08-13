@@ -970,6 +970,23 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             // v1.39 P0: 导出 pcap 按钮已移至「通用」区块（pcap 开关正下方），
             // 与调试日志分开 —— 调试日志=排障内部日志，pcap=抓包明文数据，语义不同
         }
+
+            // v1.74.8: 清空调试日志——用户长时间使用后 files/spyprobe_debug.log 持续累积，
+            // 此前只能「清除应用数据」（连带清掉配置/抓包）；现提供精准清理（内存环形 + 文件）。
+            Button(
+                onClick = {
+                    com.dustinky.spyprobe.util.UiLog.log("Settings: 点击「清空调试日志」")
+                    com.dustinky.spyprobe.DebugLog.get().clear()
+                    android.widget.Toast.makeText(
+                        context,
+                        "调试日志已清空（内存 + 文件）",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                },
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+            ) {
+                Text("清空调试日志（内存 + 文件）")
+            }
         }
 
         Spacer(Modifier.height(16.dp))
