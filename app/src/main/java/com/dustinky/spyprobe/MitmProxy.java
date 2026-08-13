@@ -205,34 +205,10 @@ public class MitmProxy {
                 writeRaw(appOutRaw, "HTTP/1.1 200 Connection established\r\n\r\n");
             }
 
-            // 2. 真实 TLS 连接（信任系统 CA）
-            SSLSocketFactory clientFactory = (SSLSocketFactory) SSLSocketFactory.getDefault();
-            targetSsl = (SSLSocket) clientFactory.createSocket();
-            if (transparent && connectIp != null) {
-                // 透明模式：优先用 SO_ORIGINAL_DST 的真实 IP（避免重 DNS / 走原连接目标）
-                targetSsl.connect(new InetSocketAddress(InetAddress.getByName(connectIp), targetPort), 15000);
-            } else {
-                // v1.74.8 P0-11: 预解析 + 防 DNS 屏蔽——目标 App 走 DoH（dns.alidns.com:443）拿真实 IP，
-                //   系统 DNS 把这些域名屏蔽成 127.0.0.1 → 此前傻连 localhost:443 → ECONNREFUSED 全挂。
-                //   origDst 可用时走上面真实 IP 分支；命中回环说明 origDst 仍失效 → 明确留痕不再傻连。
-                InetAddress resolved = InetAddress.getByName(hostname);
-                if (resolved.isLoopbackAddress()) {
-                    throw new IOException("DNS blocked: " + hostname + " -> " + resolved
-                            + " (origDst=null, 无法获知真实目标 IP)");
-                }
-                targetSsl.connect(new InetSocketAddress(resolved, targetPort), 15000);
-            }
-            targetSsl.setSoTimeout(60000);
-            SSLParameters clientParams = targetSsl.getSSLParameters();
-            // 与真实服务器协商，允许 h2/http1.1（服务器决定）
-            clientParams.setApplicationProtocols(new String[]{"h2", "http/1.1"});
-            targetSsl.setSSLParameters(clientParams);
-            targetSsl.startHandshake();
-
-            // 5. 本地 TLS server 端（per-host 证书）——标准 JSSE SSLEngine（v1.74.9 P0-12）
-            //    v1.74.7/74.8 的 SSLSocket 升级路线（Conscrypt 4 参 + setUseEngineSocket）在真机
-            //    Android 16 因 ClassNotFoundException 静默失效 → fd 路径丢 consumed → 连线中。
-            //    SSLEngine 全数据自喂，consumed 直接塞输入缓冲，不依赖任何系统扩展 API。
+            // 2. 本地 TLS server 端（per-host 证书）——标准 JSSE SSLEngine（v1.74.10 P0-13）
+            //    v1.74.9 顺序问题：本地握手排在 targetSsl.connect（跨洋 1-2s）之后，
+            //    App 发完 ClientHello 等 ServerHello 超时 → 主动关闭 → EOF。
+            //    → 本地握手必须先做（App 立即拿到 ServerHello），再连真实服务器。
             SSLContext ctx = buildServerContext(hostname);
             engine = ctx.createSSLEngine(hostname, targetPort);
             engine.setUseClientMode(false);
@@ -261,7 +237,31 @@ public class MitmProxy {
             MitmLog.log("[" + seq + "] TLS up host=" + hostname + " alpn=" + alpn
                     + " provider=" + ctx.getProvider().getName());
 
-            // 6. 双向转发（SSLEngine 解密/加密 + 明文喂 TlsHttpParser）
+            // 3. 真实 TLS 连接（信任系统 CA）——本地握手完成后才连，避免 App 等待超时
+            SSLSocketFactory clientFactory = (SSLSocketFactory) SSLSocketFactory.getDefault();
+            targetSsl = (SSLSocket) clientFactory.createSocket();
+            if (transparent && connectIp != null) {
+                // 透明模式：优先用 SO_ORIGINAL_DST 的真实 IP（避免重 DNS / 走原连接目标）
+                targetSsl.connect(new InetSocketAddress(InetAddress.getByName(connectIp), targetPort), 15000);
+            } else {
+                // v1.74.8 P0-11: 预解析 + 防 DNS 屏蔽——目标 App 走 DoH（dns.alidns.com:443）拿真实 IP，
+                //   系统 DNS 把这些域名屏蔽成 127.0.0.1 → 此前傻连 localhost:443 → ECONNREFUSED 全挂。
+                //   origDst 可用时走上面真实 IP 分支；命中回环说明 origDst 仍失效 → 明确留痕不再傻连。
+                InetAddress resolved = InetAddress.getByName(hostname);
+                if (resolved.isLoopbackAddress()) {
+                    throw new IOException("DNS blocked: " + hostname + " -> " + resolved
+                            + " (origDst=null, 无法获知真实目标 IP)");
+                }
+                targetSsl.connect(new InetSocketAddress(resolved, targetPort), 15000);
+            }
+            targetSsl.setSoTimeout(60000);
+            SSLParameters clientParams = targetSsl.getSSLParameters();
+            // 与真实服务器协商，允许 h2/http1.1（服务器决定）
+            clientParams.setApplicationProtocols(new String[]{"h2", "http/1.1"});
+            targetSsl.setSSLParameters(clientParams);
+            targetSsl.startHandshake();
+
+            // 4. 双向转发（SSLEngine 解密/加密 + 明文喂 TlsHttpParser）
             InputStream targetIn = targetSsl.getInputStream();
             OutputStream targetOut = targetSsl.getOutputStream();
 
