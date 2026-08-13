@@ -108,8 +108,10 @@ public class ModuleMain extends XposedModule {
         // v7x: 上报目标进程 UID 到主进程（MitmManager 维护 iptables 透明代理过滤名单）。
         // v1.74.2 P0-4: 带 token——v1.37 起主进程所有 POST 都做 x-spy-token 鉴权，不带 token 直接 401 静默丢弃
         // （v1.74.1 只修了主线程 NetworkOnMainThreadException，漏了鉴权 → POST 到主进程但被 401 吞掉，uid 仍永不上报）
+        // v1.74.5 P0-8: 传 module 引用——reportTargetUid 每次重试重新拉 token（首启时 9900/HTTP 通道
+        //   可能未就绪，固定空 token 重试 4 次全被 401 拒绝 → uid 永不上报 → iptables uids=[] → MITM 不劫持）
         try {
-            reportTargetUid(pushToken);
+            reportTargetUid(this);
         } catch (Throwable t) {
             DebugLog.get().logNoMirror("ModuleMain", "reportTargetUid FAIL: " + t);
         }
@@ -278,8 +280,10 @@ public class ModuleMain extends XposedModule {
      *  v1.74.2 P0-4【根因②】: v1.37 起主进程所有 POST 都做 x-spy-token 鉴权，裸 POST 无 token
      *  → 主进程 401 静默返回（不打日志）→ registerTargetUid 永不执行 → iptables 恒空。
      *  修复②：带上 pushToken（与日志推送同源），通过鉴权后主进程才真正注册。
-     *  （token 为空时保持老主进程兼容：无 token 可验，直接放行。） */
-    private static void reportTargetUid(String token) {
+     *  （token 为空时保持老主进程兼容：无 token 可验，直接放行。）
+     *  v1.74.5 P0-8: 每次重试重新拉 token——首启时 9900/HTTP 通道可能未就绪，
+     *  固定空 token 重试 4 次全被 401 拒绝（Connection reset），uid 永不上报。 */
+    private static void reportTargetUid(XposedModule module) {
         final int myUid = android.os.Process.myUid();
         final long[] delays = {0L, 1000L, 3000L, 8000L};
         new Thread(() -> {
@@ -287,6 +291,8 @@ public class ModuleMain extends XposedModule {
                 if (d > 0) {
                     try { Thread.sleep(d); } catch (InterruptedException ignored) {}
                 }
+                // 每次重试重新拉 token：HTTP 优先（9900 就绪后必成功），libxposed 双通道兜底
+                final String token = TokenStore.remoteToken(module);
                 try {
                     java.net.Socket sock = new java.net.Socket();
                     sock.setTcpNoDelay(true);
