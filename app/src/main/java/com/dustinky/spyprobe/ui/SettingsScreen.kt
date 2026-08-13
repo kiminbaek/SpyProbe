@@ -360,48 +360,8 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             BoolSetting(effective, "keystore", "证书 Dump (mTLS)", false,
                 inherited = inh("keystore"),
                 onSet = { setCfg("keystore", it) })
-            Divider()
-            BoolSetting(effective, "keylog", "SSL KeyLog", false,
-                inherited = inh("keylog"),
-                onSet = { setCfg("keylog", it) })
-            // v1.67: 内部 TLS 解密（keylog + libc 密文 → TLS 1.3 明文 → 实时日志结构化卡片）
-            BoolSetting(effective, "internalDecrypt", "内部 TLS 解密 (TLS1.3)", false,
-                inherited = inh("internalDecrypt"),
-                onSet = { setCfg("internalDecrypt", it) })
-            // v1.67: 导出 keylog 文件（Wireshark 导入解密 HTTPS；覆盖 Flutter 层 libflutter.so）
-            var keylogStatus by remember { mutableStateOf("") }
-            OutlinedButton(
-                onClick = {
-                    com.dustinky.spyprobe.util.UiLog.log("Settings: 点击「导出 KeyLog」")
-                    scope.launch {
-                        keylogStatus = withContext(Dispatchers.IO) {
-                            try {
-                                val content = com.dustinky.spyprobe.KeyLogStore.get().toKeylogFileContent()
-                                val uri = com.dustinky.spyprobe.util.ShareLogUtil.writeLogTxtFile(
-                                    context, "sslkeylog", content
-                                )
-                                if (uri == null) {
-                                    "KeyLog 写文件失败"
-                                } else {
-                                    val err = com.dustinky.spyprobe.util.ShareLogUtil.shareUri(
-                                        context,
-                                        "SpyProbe KeyLog ${com.dustinky.spyprobe.KeyLogStore.get().lineCount()} 行",
-                                        uri,
-                                        "text/plain"
-                                    )
-                                    if (err != null) "分享失败：$err" else "已导出 KeyLog（${com.dustinky.spyprobe.KeyLogStore.get().lineCount()} 行）"
-                                }
-                            } catch (t: Throwable) {
-                                "KeyLog 导出异常: " + t.message
-                            }
-                        }
-                        android.widget.Toast.makeText(context, keylogStatus, android.widget.Toast.LENGTH_LONG).show()
-                    }
-                },
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
-            ) {
-                Text("导出 KeyLog（Wireshark 解密 HTTPS）")
-            }
+            // v7x M5: keylog / internalDecrypt / 导出 KeyLog 全部废弃（v1.70 Conscrypt JNI hook
+            //   直接取明文，keylog 路线实锤不可通用）——UI 同步移除
             Divider()
             BoolSetting(effective, "webViewDebug", "WebView 调试", false,
                 inherited = inh("webViewDebug"),
@@ -521,6 +481,110 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                     }
                 )
             }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        // ===== v7x: MITM 代理 =====
+        // Hook + MITM 双引擎融合：代理跑主进程，数据全进自己家，UI 一次想透。
+        // mitmEnabled 总开关 → SpyHomeServer /api/config POST 联动 MitmManager.applyConfig()。
+        SettingsGroup(
+            title = "MITM 代理",
+            subtitle = "透明代理 + 动态证书，抓 dart:io/Flutter 流量",
+            expanded = expanded.contains("mitm"),
+            onToggle = { toggle("mitm") }
+        ) {
+            BoolSetting(effective, "mitmEnabled", "启用 MITM 代理", false,
+                inherited = inh("mitmEnabled"),
+                onSet = { setCfg("mitmEnabled", it) })
+            Divider()
+            BoolSetting(effective, "mitmTransparent", "透明模式 (iptables)", true,
+                inherited = inh("mitmTransparent"),
+                onSet = { setCfg("mitmTransparent", it) })
+            Divider()
+            IntSetting(effective, "mitmPort", "代理端口", 8888, 1024..65535,
+                inherited = inh("mitmPort"),
+                onSet = { setCfg("mitmPort", it) })
+
+            // CA 状态 + 安装方式（4 种多选项，不绑手机）
+            var mitmStatus by remember { mutableStateOf("") }
+            var caInstalled by remember { mutableStateOf(false) }
+            LaunchedEffect(Unit) {
+                mitmStatus = try {
+                    val m = com.dustinky.spyprobe.MitmManager.get()
+                    m?.status() ?: "(未初始化)"
+                } catch (t: Throwable) { "状态获取失败: $t" }
+                caInstalled = try {
+                    val pem = com.dustinky.spyprobe.MitmManager.get()?.certManager()?.exportCaCertPem()
+                    pem != null && com.dustinky.spyprobe.CaInstaller.isSystemInstalled(pem)
+                } catch (t: Throwable) { false }
+            }
+            Text(
+                if (caInstalled) "✅ CA 已装入系统信任库" else "⚠️ CA 未装系统（dart:io 只信系统 CA）",
+                style = MaterialTheme.typography.bodySmall,
+                fontSize = 12.sp,
+                color = if (caInstalled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+            Text(
+                "状态：$mitmStatus",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 10.sp
+            )
+
+            fun installVia(action: () -> String) {
+                mitmStatus = "执行中…"
+                scope.launch {
+                    mitmStatus = withContext(Dispatchers.IO) {
+                        try { action() } catch (t: Throwable) { "失败: $t" }
+                    }
+                    android.widget.Toast.makeText(context, mitmStatus, android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
+
+            OutlinedButton(
+                onClick = {
+                    installVia {
+                        val pem = com.dustinky.spyprobe.MitmManager.get()?.certManager()?.exportCaCertPem()
+                        if (pem == null) "CA 生成失败" else com.dustinky.spyprobe.CaInstaller.installToSystemRoot(pem)
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+            ) { Text("① Root 直接装系统 CA") }
+
+            OutlinedButton(
+                onClick = {
+                    installVia {
+                        val pem = com.dustinky.spyprobe.MitmManager.get()?.certManager()?.exportCaCertPem()
+                        if (pem == null) "CA 生成失败"
+                        else {
+                            val out = java.io.File(com.dustinky.spyprobe.MitmManager.get()!!.certManager().caDir(), "spyprobe-mitm-ca.zip")
+                            com.dustinky.spyprobe.CaInstaller.exportMagiskModule(pem, out)
+                            "已导出 Magisk 模块：${out.absolutePath}（分享/拷到手机 Magisk 刷入）"
+                        }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+            ) { Text("② 导出 Magisk 模块（用户自己装）") }
+
+            OutlinedButton(
+                onClick = {
+                    installVia {
+                        val pem = com.dustinky.spyprobe.MitmManager.get()?.certManager()?.exportCaCertPem()
+                        if (pem == null) "CA 生成失败" else com.dustinky.spyprobe.CaInstaller.installMagiskModuleRoot(pem)
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+            ) { Text("③ Root 帮装 Magisk 模块") }
+
+            Text(
+                "提示：91aw 等 dart:io App 只信系统 CA；Java/OkHttp App 可配「信任用户 CA」免 root（hook 层 sslBypass 兜底）",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 10.sp,
+                modifier = Modifier.padding(top = 6.dp)
+            )
         }
 
         Spacer(Modifier.height(8.dp))

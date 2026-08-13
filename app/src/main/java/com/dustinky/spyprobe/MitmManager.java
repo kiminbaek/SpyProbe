@@ -1,0 +1,173 @@
+package com.dustinky.spyprobe;
+
+import java.io.File;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArraySet;
+
+/**
+ * v7x: MITM 代理主进程管理器
+ *
+ * 职责：
+ *   - 初始化 MitmCertManager + MitmProxy（filesDir/mitm_ca 持久化 CA）
+ *   - 按 Config 启停代理（mitmEnabled / mitmTransparent / mitmPort）
+ *   - 透明模式：iptables REDIRECT 规则（自定义链 SPYPROBE_MITM，按目标 UID 过滤，
+ *     排除自身 UID 防回环）
+ *   - 明文融合：每连接一个 TlsHttpParser → HttpEntry → HttpStore（复用现有结构化全链路）
+ *   - 目标 UID 注册：目标进程启动时上报（SpyHomeServer /api/target_uid）
+ */
+public class MitmManager {
+
+    private static volatile MitmManager instance;
+
+    private final MitmCertManager cert;
+    private final MitmProxy proxy;
+    private final File filesDir;
+    private final ConcurrentHashMap<Integer, TlsHttpParser> parsers = new ConcurrentHashMap<>();
+    private final CopyOnWriteArraySet<Integer> targetUids = new CopyOnWriteArraySet<>();
+    private volatile boolean iptablesApplied = false;
+
+    public static MitmManager get() {
+        return instance;
+    }
+
+    /** 主进程 onCreate 调用（幂等） */
+    public static synchronized MitmManager init(File filesDir) {
+        if (instance == null) {
+            instance = new MitmManager(filesDir);
+        }
+        return instance;
+    }
+
+    private MitmManager(File filesDir) {
+        this.filesDir = filesDir;
+        this.cert = MitmCertManager.init(filesDir);
+        this.proxy = new MitmProxy(cert);
+        MitmLog.setSink(msg -> DebugLog.get().log("Mitm", msg));
+    }
+
+    public MitmCertManager certManager() {
+        return cert;
+    }
+
+    public MitmProxy proxy() {
+        return proxy;
+    }
+
+    // ===== 启停 =====
+
+    /** 设置页/启动时调用：按 Config 决定启动或停止代理 */
+    public synchronized void applyConfig() {
+        Config cfg = Config.get();
+        boolean want = cfg.mitmEnabled;
+        if (want && !proxy.isRunning()) {
+            startProxy();
+        } else if (!want && proxy.isRunning()) {
+            stopProxy();
+        }
+    }
+
+    private void startProxy() {
+        try {
+            int port = Config.get().mitmPort;
+            boolean transparent = Config.get().mitmTransparent;
+            proxy.start(port, this::onPlain, transparent);
+            DebugLog.get().log("Mitm", "proxy started port=" + port + " transparent=" + transparent);
+            if (transparent) applyIptables();
+        } catch (Throwable t) {
+            DebugLog.get().log("Mitm", "start FAIL: " + t);
+        }
+    }
+
+    private void stopProxy() {
+        try { proxy.stop(); } catch (Throwable ignored) {}
+        clearIptables();
+        parsers.clear();
+    }
+
+    // ===== 明文融合 → TlsHttpParser → HttpStore =====
+
+    private void onPlain(int connId, int dir, String host, byte[] data, int len) {
+        try {
+            TlsHttpParser p = parsers.get(connId);
+            if (p == null) {
+                // socketInfo "src->dst"（src 为主进程环回，dst 为目标）
+                p = new TlsHttpParser(connId, "127.0.0.1:0->" + host + ":443");
+                TlsHttpParser old = parsers.putIfAbsent(connId, p);
+                if (old != null) p = old;
+            }
+            p.feed(dir == 0, data, len);
+        } catch (Throwable t) {
+            DebugLog.get().log("Mitm", "parse err: " + t);
+        }
+    }
+
+    private void onConnClosed(int connId) {
+        TlsHttpParser p = parsers.remove(connId);
+        if (p != null) {
+            try { p.close(); } catch (Throwable ignored) {}
+        }
+    }
+
+    // ===== 目标 UID 注册（iptables 过滤用） =====
+
+    /** 目标进程启动时上报 uid（SpyHomeServer /api/target_uid 回调） */
+    public void registerTargetUid(int uid) {
+        if (uid <= 0) return;
+        targetUids.add(uid);
+        DebugLog.get().log("Mitm", "register uid=" + uid + " total=" + targetUids.size());
+        if (proxy.isRunning() && Config.get().mitmTransparent) {
+            applyIptables();
+        }
+    }
+
+    // ===== iptables 规则（透明模式，需 root） =====
+
+    private void applyIptables() {
+        try {
+            int port = Config.get().mitmPort;
+            String self = Integer.toString(android.os.Process.myUid());
+            StringBuilder sb = new StringBuilder();
+            sb.append("iptables -t nat -F SPYPROBE_MITM; ");
+            sb.append("iptables -t nat -D OUTPUT -j SPYPROBE_MITM 2>/dev/null; ");
+            sb.append("iptables -t nat -N SPYPROBE_MITM 2>/dev/null; ");
+            if (!targetUids.isEmpty()) {
+                for (int uid : targetUids) {
+                    sb.append("iptables -t nat -A SPYPROBE_MITM -p tcp --dport 443 ")
+                      .append("-m owner --uid-owner ").append(uid)
+                      .append(" -j REDIRECT --to-ports ").append(port).append("; ");
+                }
+                // 钩到 OUTPUT，排除自身（防回环）
+                sb.append("iptables -t nat -A OUTPUT -p tcp --dport 443 ")
+                  .append("-m owner ! --uid-owner ").append(self)
+                  .append(" -j SPYPROBE_MITM; ");
+            }
+            execRoot(sb.toString());
+            iptablesApplied = true;
+            DebugLog.get().log("Mitm", "iptables applied uids=" + targetUids + " port=" + port);
+        } catch (Throwable t) {
+            DebugLog.get().log("Mitm", "iptables FAIL: " + t);
+        }
+    }
+
+    private void clearIptables() {
+        if (!iptablesApplied) return;
+        try {
+            execRoot("iptables -t nat -F SPYPROBE_MITM 2>/dev/null; "
+                    + "iptables -t nat -D OUTPUT -j SPYPROBE_MITM 2>/dev/null; "
+                    + "iptables -t nat -X SPYPROBE_MITM 2>/dev/null");
+            iptablesApplied = false;
+        } catch (Throwable t) {
+            DebugLog.get().log("Mitm", "iptables clear FAIL: " + t);
+        }
+    }
+
+    private void execRoot(String cmd) throws Exception {
+        Process p = Runtime.getRuntime().exec(new String[]{"su", "-c", cmd});
+        p.waitFor();
+    }
+
+    // 供调试/UI 显示
+    public String status() {
+        return "running=" + proxy.isRunning() + " uids=" + targetUids + " iptables=" + iptablesApplied;
+    }
+}

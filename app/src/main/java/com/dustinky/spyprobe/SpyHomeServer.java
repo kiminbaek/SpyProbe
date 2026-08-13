@@ -237,6 +237,20 @@ public class SpyHomeServer {
                     o.put("accepted", n);
                     return o.toString();
                 }
+                case "/api/target_uid": {
+                    // v7x: 目标进程启动上报 uid → MitmManager 维护 iptables 过滤名单
+                    try {
+                        JSONObject root = new JSONObject(body == null ? "{}" : body);
+                        int uid = root.optInt("uid", 0);
+                        if (uid > 0) {
+                            MitmManager m = MitmManager.get();
+                            if (m != null) m.registerTargetUid(uid);
+                        }
+                    } catch (Throwable t) {
+                        DebugLog.get().log("Home", "target_uid err: " + t);
+                    }
+                    return "{\"ok\":true}";
+                }
                 case "/api/push_crash": {
                     // v1.53: 目标进程崩溃 → CrashCatcher 推回主进程落盘（调试日志导出自动附带）
                     CrashCatcher.saveFromTarget(body == null ? "(null)" : body);
@@ -381,6 +395,13 @@ public class SpyHomeServer {
                         if (body != null && !body.isEmpty()) {
                             Config.get().applyJson(body);
                             Config.get().saveConfig(Config.get().homeCfgFile());
+                            // v7x: MITM 代理按配置实时启停（mitmEnabled/port/transparent 变更即时生效）
+                            try {
+                                MitmManager m = MitmManager.get();
+                                if (m != null) m.applyConfig();
+                            } catch (Throwable t) {
+                                DebugLog.get().log("Home", "mitm applyConfig err: " + t);
+                            }
                         }
                         JSONObject o = new JSONObject();
                         o.put("ok", true);

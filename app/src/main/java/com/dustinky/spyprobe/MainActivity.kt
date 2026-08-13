@@ -65,6 +65,12 @@ class MainActivity : ComponentActivity() {
         } catch (t: Throwable) {
             com.dustinky.spyprobe.util.UiLog.log("Home server start FAIL: $t")
         }
+        // v7x: MITM 代理（主进程）——CA 持久化 filesDir/mitm_ca + 按 Config 启停代理/iptables
+        try {
+            com.dustinky.spyprobe.MitmManager.init(applicationContext.filesDir)?.applyConfig()
+        } catch (t: Throwable) {
+            com.dustinky.spyprobe.util.UiLog.log("MitmManager init FAIL: $t")
+        }
         enableEdgeToEdge()
         setContent {
             SpyProbeTheme {

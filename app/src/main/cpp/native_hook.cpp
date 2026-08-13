@@ -6,6 +6,7 @@
 #include <elf.h>
 #include <link.h>
 #include <sys/socket.h>
+#include <linux/netfilter_ipv4.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
@@ -47,8 +48,7 @@ static jmethodID gCollectRespBodyMethod = nullptr;
 static jmethodID gOnConnClosedMethod    = nullptr;
 // v1.30.4: native→Java 日志桥（shadowhook_init / hook 结果写 LogStore，任意线程可调）
 static jmethodID gNativeLogMethod       = nullptr;
-// v1.38 P0-3: SSL keylog 回调 → Java NativeProbe.nativeKeylog(String)
-static jmethodID gNativeKeylogMethod    = nullptr;
+// v7x M5: keylog 路线废弃（v1.70 Conscrypt JNI hook 直接取明文）——gNativeKeylogMethod 已删除
 // v1.59: TLS 元数据回调 → Java NativeProbe.onTlsMeta(long, String)
 static jmethodID gOnTlsMetaMethod       = nullptr;
 
@@ -509,7 +509,7 @@ bool callback_kotlin_h2(uintptr_t conn_id, const H2FeedResult& feed_result) {
     return should_block;
 }
 
-// v1.70.1 P0: Conscrypt JNI hook（flutter_keylog.cpp）的统一明文入口
+// v1.70.1 P0: Conscrypt JNI hook（conscrypt_hook.cpp）的统一明文入口
 //   —— 复用 XH SSL hook 相同的 h2 检测 + HTTP 解析：
 //      h2 帧 → h2_feed → callback_kotlin_h2（REQ# 结构化）
 //      HTTP/1.1 明文 → callback_kotlin（REQ# 结构化）
@@ -1212,7 +1212,7 @@ static void collect_tls_meta_once(uintptr_t conn_id, void* orig_sym) {
     }
 }
 
-// ================= v1.38 P0-2/P0-3: BoringSSL verify 绕过 + keylog =================
+// ================= v1.38 P0-2/P0-3: BoringSSL verify 绕过 =================
 // hooker just_trust_me.js (native 部分) + find_boringssl_custom_verify_func.js + ssl_log.js 借鉴
 // 符号在 libssl.so（BoringSSL），xhook PLT/GOT hook 对调用方生效（libconscrypt_jni 等 GOT 表项）
 typedef int (*ssl_verify_callback_t)(void *ssl, uint8_t *out_alert);   // ssl_verify_ok=0, invalid=1, retry=2
@@ -1221,9 +1221,6 @@ typedef void (*type_SSL_CTX_set_verify)(void *ctx, int mode, void *cb);
 typedef void (*type_SSL_set_verify)(void *ssl, int mode, void *cb);
 typedef int (*type_SSL_CTX_set_cert_verify_callback)(void *ctx, void *cb, void *arg);
 typedef long (*type_SSL_get_verify_result)(const void *ssl);
-typedef void (*ssl_keylog_callback_t)(const void *ssl, const char *line);
-typedef void (*type_SSL_CTX_set_keylog_callback)(void *ctx, ssl_keylog_callback_t cb);
-typedef void* (*type_SSL_get_SSL_CTX)(const void *ssl);
 typedef void* (*type_SSL_new)(void *ctx);
 
 static type_SSL_CTX_set_custom_verify orig_ctx_set_custom_verify = nullptr;
@@ -1231,68 +1228,15 @@ static type_SSL_CTX_set_verify orig_ctx_set_verify = nullptr;
 static type_SSL_set_verify orig_ssl_set_verify = nullptr;
 static type_SSL_CTX_set_cert_verify_callback orig_ctx_set_cert_verify = nullptr;
 static type_SSL_get_verify_result orig_ssl_get_verify_result = nullptr;
-static type_SSL_CTX_set_keylog_callback orig_ctx_set_keylog = nullptr;
 static type_SSL_new orig_ssl_new = nullptr;
 // dlsym 拿真实函数指针（在 hook 回调里调用原函数用；走 GOT 会触发 xhook 递归）
-static type_SSL_get_SSL_CTX real_SSL_get_SSL_CTX = nullptr;
-static type_SSL_CTX_set_keylog_callback real_ctx_set_keylog = nullptr;
 
-// v1.62 P2-13: keylog 同库解析——与 v1.45.6 SSL_get_fd 同款修复。
-//   此前 real_SSL_get_SSL_CTX / real_ctx_set_keylog 用 dlsym(RTLD_DEFAULT) 拿：
-//   目标进程同时加载系统 BoringSSL + App 私有 SSL 库时，RTLD_DEFAULT 命中第一个
-//   导出符号的库（通常是系统 BoringSSL），而 ssl 对象来自 App 私有库（xhook 按符号名
-//   全库 hook）→ 跨库调用 SSL_get_SSL_CTX 返回垃圾 ctx / set_keylog 不生效。
-//   改为与 orig_ssl_new 同库解析（dladdr + dlopen RTLD_NOLOAD + dlsym）。
-static void resolve_keylog_via_dladdr(void* sym) {
-    static std::atomic<bool> g_keylog_resolve_tried{false};
-    if (g_keylog_resolve_tried.load(std::memory_order_relaxed)) return;
-    g_keylog_resolve_tried.store(true, std::memory_order_relaxed);
-    if (real_SSL_get_SSL_CTX != nullptr && real_ctx_set_keylog != nullptr) return;
-    if (sym == nullptr) return;
-    Dl_info info;
-    if (dladdr(sym, &info) != 0 && info.dli_fname != nullptr) {
-        void* h = dlopen(info.dli_fname, RTLD_NOW | RTLD_NOLOAD);
-        if (h != nullptr) {
-            if (real_SSL_get_SSL_CTX == nullptr)
-                real_SSL_get_SSL_CTX = (type_SSL_get_SSL_CTX)dlsym(h, "SSL_get_SSL_CTX");
-            if (real_ctx_set_keylog == nullptr)
-                real_ctx_set_keylog = (type_SSL_CTX_set_keylog_callback)dlsym(h, "SSL_CTX_set_keylog_callback");
-            char buf[256];
-            snprintf(buf, sizeof(buf), "XH keylog: resolve via dladdr %s (ctx=%p set=%p)",
-                     info.dli_fname, (void*)real_SSL_get_SSL_CTX, (void*)real_ctx_set_keylog);
-            native_log(buf);
-            dlclose(h);
-            return;
-        }
-    }
-    // 兜底：保留 init 时 RTLD_DEFAULT 已拿到的（单 SSL 库场景仍有效）
-    native_log("XH keylog: dladdr resolve fail, keep RTLD_DEFAULT ptrs");
-}
 
 // BoringSSL: ssl_verify_ok = 0
 static int always_verify_ok(void *ssl, uint8_t *out_alert) { return 0; }
 // SSL_CTX_set_cert_verify_callback 回调：返回 1 = 验证通过
 static int always_cert_ok(void *store, void *arg) { return 1; }
 
-// keylog 回调：CLIENT_RANDOM <64hex> <96hex> → Java NativeProbe.nativeKeylog(String)
-static void keylog_cb(const void *ssl, const char *line) {
-    if (line == nullptr) return;
-    if (gNativeRequestHookClass == nullptr || gNativeKeylogMethod == nullptr) return;
-    JNIEnv* env = nullptr;
-    bool need_detach = false;
-    jint attach = gJvm->GetEnv((void**)&env, JNI_VERSION_1_6);
-    if (attach == JNI_EDETACHED) {
-        if (gJvm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
-        need_detach = true;
-    }
-    if (env == nullptr) return;
-    jstring jline = env->NewStringUTF(line);
-    if (jline != nullptr) {
-        env->CallStaticVoidMethod(gNativeRequestHookClass, gNativeKeylogMethod, jline);
-        env->DeleteLocalRef(jline);
-    }
-    if (need_detach) gJvm->DetachCurrentThread();
-}
 
 // P0-2: 自定义 verify 回调替换——无论 app 设置什么 verify 回调，都换成总是通过
 static int hook_SSL_CTX_set_custom_verify(void *ctx, int mode, ssl_verify_callback_t cb) {
@@ -1332,40 +1276,22 @@ static long hook_SSL_get_verify_result(const void *ssl) {
     return 0; // X509_V_OK
 }
 
-// P0-3: set_keylog_callback 拦截——无论 app 设置什么，都换成我们的 keylog 回调
-static void hook_SSL_CTX_set_keylog_callback(void *ctx, ssl_keylog_callback_t cb) {
-    if (orig_ctx_set_keylog == nullptr) return;
-    if (g_is_in_hook) { orig_ctx_set_keylog(ctx, cb); return; }
-    ScopedHookGuard guard;
-    native_log("BoringSSL: SSL_CTX_set_keylog_callback intercepted (keylog enabled)");
-    orig_ctx_set_keylog(ctx, keylog_cb);
-}
-// P0-3: SSL_new 时主动给 ctx 设置 keylog（即使 app 从不调用 set_keylog_callback）
-//   real_SSL_get_SSL_CTX / real_ctx_set_keylog 是 dlsym 真实指针，不触发 xhook 递归
+// v7x M5: SSL_new hook 保留（SSL_get_fd 同库解析载体），keylog 注入段已删除
+//   keylog 路线废弃：v1.70 Conscrypt JNI hook 直接取明文（见 conscrypt_hook.cpp）
+// v1.45.2 P0: SSL_get_fd 延迟解析——init 时 libssl.so 可能尚未加载导致 dlsym(RTLD_DEFAULT) 失败，
+//   real_SSL_get_fd=nullptr → SSL 回调拿不到 fd → socketInfo 全 null → pcap 永远 0 数据。
+//   SSL_new 被调用时 libssl.so 必已加载，此刻解析必成功（xhook 延迟补挂已生效）。
+// v1.45.6 P0: 改为 orig_ssl_new 同库解析（resolve_ssl_get_fd_via_dladdr 内部先 dladdr 后 phdr 同库）。
+//   不再用 dlsym(RTLD_DEFAULT)——那可能拿到系统 BoringSSL 的 SSL_get_fd，而 ssl 对象来自
+//   App 私有 SSL 库（xhook 按符号名全库 hook），跨库调用返回垃圾 fd（v1.45.5 真机 NOEP 根因）。
 static void* hook_SSL_new(void *ctx) {
     if (orig_ssl_new == nullptr) return nullptr;
     if (g_is_in_hook) return orig_ssl_new(ctx);
-    // v1.45.2 P0: SSL_get_fd 延迟解析——init 时 libssl.so 可能尚未加载导致 dlsym(RTLD_DEFAULT) 失败，
-    //   real_SSL_get_fd=nullptr → SSL 回调拿不到 fd → socketInfo 全 null → pcap 永远 0 数据。
-    //   SSL_new 被调用时 libssl.so 必已加载，此刻解析必成功（xhook 延迟补挂已生效）。
-    // v1.45.6 P0: 改为 orig_ssl_new 同库解析（resolve_ssl_get_fd_via_dladdr 内部先 dladdr 后 phdr 同库）。
-    //   不再用 dlsym(RTLD_DEFAULT)——那可能拿到系统 BoringSSL 的 SSL_get_fd，而 ssl 对象来自
-    //   App 私有 SSL 库（xhook 按符号名全库 hook），跨库调用返回垃圾 fd（v1.45.5 真机 NOEP 根因）。
     if (real_SSL_get_fd == nullptr) {
         resolve_ssl_get_fd_via_dladdr((void*)orig_ssl_new);
     }
-    // v1.62 P2-13: keylog 也改同库解析（此前 RTLD_DEFAULT 可能拿到系统 BoringSSL 的
-    //   SSL_get_SSL_CTX/SSL_CTX_set_keylog_callback，与 ssl 对象所在私有库跨库不生效）
-    if (real_SSL_get_SSL_CTX == nullptr || real_ctx_set_keylog == nullptr) {
-        resolve_keylog_via_dladdr((void*)orig_ssl_new);
-    }
     ScopedHookGuard guard;
-    void* ssl = orig_ssl_new(ctx);
-    if (ssl != nullptr && real_SSL_get_SSL_CTX != nullptr && real_ctx_set_keylog != nullptr) {
-        void* sctx = real_SSL_get_SSL_CTX(ssl);
-        if (sctx != nullptr) real_ctx_set_keylog(sctx, keylog_cb);
-    }
-    return ssl;
+    return orig_ssl_new(ctx);
 }
 
 // v1.34: shadowhook(inline) → xhook(PLT/GOT)。xhook 只改 GOT 表项、不改函数入口指令，
@@ -1406,11 +1332,6 @@ Java_com_dustinky_spyprobe_NativeProbe_initNativeHook(JNIEnv *env, jobject thiz,
     // v1.59: TLS 元数据回调（JSON 字符串）
     gOnTlsMetaMethod = env->GetStaticMethodID(clazz, "onTlsMeta", "(JLjava/lang/String;)V");
     gNativeLogMethod = env->GetStaticMethodID(clazz, "nativeLog", "(Ljava/lang/String;)V");
-    // v1.38 P0-3: keylog 回调方法
-    gNativeKeylogMethod = env->GetStaticMethodID(clazz, "nativeKeylog", "(Ljava/lang/String;)V");
-    if (gNativeKeylogMethod == nullptr) {
-        native_log("XH keylog: GetStaticMethodID(nativeKeylog) FAIL");
-    }
 
     if (enableNativeHook) {
         char buf[256];
@@ -1434,12 +1355,6 @@ Java_com_dustinky_spyprobe_NativeProbe_initNativeHook(JNIEnv *env, jobject thiz,
             snprintf(buf, sizeof(buf), "dlopen %s -> %s", lib, h != nullptr ? "OK" : (dlerror() ? dlerror() : "unknown error"));
             native_log(buf);
             if (h != nullptr) dlclose(h);
-        }
-        // v1.38 P0-3: keylog 需要的真实函数指针（dlsym 直接拿，hook 回调里调用不走 GOT → 不触发递归）
-        real_SSL_get_SSL_CTX = (type_SSL_get_SSL_CTX)dlsym(RTLD_DEFAULT, "SSL_get_SSL_CTX");
-        real_ctx_set_keylog = (type_SSL_CTX_set_keylog_callback)dlsym(RTLD_DEFAULT, "SSL_CTX_set_keylog_callback");
-        if (real_SSL_get_SSL_CTX == nullptr || real_ctx_set_keylog == nullptr) {
-            native_log("XH keylog: dlsym SSL_get_SSL_CTX/SSL_CTX_set_keylog_callback FAIL (libssl.so 未加载?)");
         }
         // v1.39 P0: pcap 导出需要 SSL_get_fd（SSL 明文 → 底层 fd → socket 四元组）
         // v1.45.6 P0: 不再直接 dlsym(RTLD_DEFAULT) 赋值！dlsym 会命中系统 BoringSSL 的
@@ -1480,8 +1395,6 @@ Java_com_dustinky_spyprobe_NativeProbe_initNativeHook(JNIEnv *env, jobject thiz,
         hook_func("libssl.so", "SSL_set_verify", (void*)hook_SSL_set_verify, (void**)&orig_ssl_set_verify);
         hook_func("libssl.so", "SSL_CTX_set_cert_verify_callback", (void*)hook_SSL_CTX_set_cert_verify_callback, (void**)&orig_ctx_set_cert_verify);
         hook_func("libssl.so", "SSL_get_verify_result", (void*)hook_SSL_get_verify_result, (void**)&orig_ssl_get_verify_result);
-        // v1.38 P0-3: SSL keylog（ssl_log.js 借鉴）——Wireshark 导入 CLIENT_RANDOM 还原 TLS 明文
-        hook_func("libssl.so", "SSL_CTX_set_keylog_callback", (void*)hook_SSL_CTX_set_keylog_callback, (void**)&orig_ctx_set_keylog);
         hook_func("libssl.so", "SSL_new", (void*)hook_SSL_new, (void**)&orig_ssl_new);
         // v1.45.6 P0: SSL_set_fd —— 标准流程必有（SSL_new→SSL_set_fd→SSL_connect），
         //   直接记录 ssl→fd 映射，绕开 SSL_get_fd 符号解析（跨库/namespace 全免疫）
@@ -1494,6 +1407,18 @@ Java_com_dustinky_spyprobe_NativeProbe_initNativeHook(JNIEnv *env, jobject thiz,
         LOGI("xHook refresh ret=%d", xh_ret);
     }
     return JNI_TRUE;
+}
+
+// v7x: MITM 透明代理——取 iptables REDIRECT 前的原始目标地址（IPv4）
+extern "C" JNIEXPORT jstring JNICALL Java_com_dustinky_spyprobe_MitmSock_getOriginalDst(JNIEnv *env, jclass, jint fd) {
+    struct sockaddr_in dest;
+    socklen_t len = sizeof(dest);
+    if (getsockopt(fd, SOL_IP, SO_ORIGINAL_DST, &dest, &len) < 0) {
+        return nullptr;
+    }
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%s:%d", inet_ntoa(dest.sin_addr), ntohs(dest.sin_port));
+    return env->NewStringUTF(buf);
 }
 
 // v1.20 P0-1: 补 JNI_OnLoad —— 之前缺此函数，System.loadLibrary("native_hook") 时

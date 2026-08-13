@@ -105,6 +105,13 @@ public class ModuleMain extends XposedModule {
             DebugLog.get().logNoMirror("ModuleMain", "early config fetch FAIL: " + t);
         }
 
+        // v7x: 上报目标进程 UID 到主进程（MitmManager 维护 iptables 透明代理过滤名单）。
+        try {
+            reportTargetUid();
+        } catch (Throwable t) {
+            DebugLog.get().logNoMirror("ModuleMain", "reportTargetUid FAIL: " + t);
+        }
+
         // 立即装网络 hook
         // v1.37 P0-2: 统一 HookSafe 包裹——单个 hook 安装失败不拖垮目标进程，失败留痕
         HookSafe.install("ModuleMain", "net.install(early)", () -> net.install("early"));
@@ -258,6 +265,33 @@ public class ModuleMain extends XposedModule {
             return null;
         } catch (Throwable t) {
             return null;
+        }
+    }
+
+    /** v7x: 上报目标进程 UID 到主进程 /api/target_uid（iptables 透明代理过滤名单）。
+     *  纯 Socket 同 fetchHomeConfig（避免 HUC hook 污染日志）；主进程不在线静默忽略。 */
+    private static void reportTargetUid() {
+        try {
+            int uid = android.os.Process.myUid();
+            java.net.Socket sock = new java.net.Socket();
+            sock.setTcpNoDelay(true);
+            sock.connect(new java.net.InetSocketAddress("127.0.0.1", 9900), 600);
+            String body = "{\"uid\":" + uid + "}";
+            String head = "POST /api/target_uid HTTP/1.1\r\nHost: 127.0.0.1:9900\r\n"
+                    + "Content-Type: application/json\r\nContent-Length: " + body.length()
+                    + "\r\nConnection: close\r\n\r\n" + body;
+            java.io.OutputStream os = sock.getOutputStream();
+            os.write(head.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            os.flush();
+            java.io.InputStream is = sock.getInputStream();
+            byte[] buf = new byte[1024];
+            while (is.read(buf) > 0) { /* 读完即关 */ }
+            is.close();
+            os.close();
+            sock.close();
+            DebugLog.get().logNoMirror("ModuleMain", "target uid reported: " + uid);
+        } catch (Throwable t) {
+            // 主进程未启动时静默（无权限/端口关闭都忽略）
         }
     }
 

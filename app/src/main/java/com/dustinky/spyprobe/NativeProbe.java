@@ -161,20 +161,13 @@ public class NativeProbe {
             if (ok) {
                 inited = true;
                 DebugLog.get().logNoMirror("Native", "native hook active: libc send/recv/read/write + SSL_write/SSL_read (4 libs) + HTTP/2");
-                // v1.67: libflutter.so keylog 注入（独立于 xhook 链路，失败不影响主链路）
+                // v7x M5: Conscrypt JNI hook（v1.70 根治 dart:io 业务流量；独立于 xhook 链路，失败不影响主链路）
                 try {
-                    boolean klOk = flutterKeylogInit();
-                    DebugLog.get().logNoMirror("Native", "flutter keylog init: " + (klOk ? "OK" : "FAILED/not-yet"));
+                    boolean csOk = conscryptHookInit();
+                    DebugLog.get().logNoMirror("Native", "conscrypt hook init: " + (csOk ? "OK" : "FAILED/not-yet"));
                 } catch (Throwable t) {
-                    DebugLog.get().logNoMirror("Native", "flutter keylog init fail: " + t);
+                    DebugLog.get().logNoMirror("Native", "conscrypt hook init fail: " + t);
                 }
-                // v1.67: TlsDecryptor 明文监听器——解出的明文走现有 tlsHttpFeed 结构化链路
-                TlsDecryptor.get().setListener((connId, isWrite, plain, socketInfo) -> {
-                    try {
-                        tlsHttpFeed(connId, isWrite, plain, socketInfo);
-                    } catch (Throwable ignored) {
-                    }
-                });
             } else {
                 DebugLog.get().logNoMirror("Native", "native hook init FAILED (shadowhook_init ret!=0) -> hooks disabled, active=false");
                 // v1.43: 删除 v1.31.2 的 shadowhook_tag root 抓取——v1.34 已把 shadowhook 换成 xhook，
@@ -191,7 +184,7 @@ public class NativeProbe {
 
     private static native boolean initNativeHook(boolean enableNativeHook);
     // v1.67: libflutter.so 静态 BoringSSL keylog 注入（shadowhook inline hook ssl_log_secret）
-    private static native boolean flutterKeylogInit();
+    private static native boolean conscryptHookInit();
     // v1.25 P2-10: 删除 feedH2Data/freeH2Conn 死代码（Java 声明 + C++ 实现从未被调用，
     //   native 层 HTTP/2 数据回调走 onH2DataChunk/onH2Request，Java→native 方向无调用者）
 
@@ -216,27 +209,6 @@ public class NativeProbe {
         }
     }
 
-    /**
-     * v1.38 P0-3: native SSL keylog 回调（hooker ssl_log.js 借鉴）
-     *
-     * BoringSSL SSL_CTX_set_keylog_callback 输出：`CLIENT_RANDOM <64hex> <96hex master_secret>`
-     * 配合抓包（native hex 或外部 pcap）可还原 TLS 会话明文——Wireshark 直接导入 keylog 文件。
-     * v1.67: 统一进 KeyLogStore（TlsDecryptor 内部解密 + keylog 文件导出双通道）。
-     *   开关 Config.keylogCapture（默认关，防刷屏：每次 TLS 握手 1 行）。
-     */
-    @SuppressWarnings("unused")
-    private static void nativeKeylog(String line) {
-        try {
-            if (line == null || line.isEmpty()) return;
-            // v1.67: 总是进 KeyLogStore（内部解密需要；文件导出也基于 store）
-            KeyLogStore.get().feed(line);
-            if (Config.get().keylogCapture) {
-                LogStore.get().log(TAG, "[KeyLog] " + line);
-            }
-        } catch (Throwable ignored) {
-        }
-    }
-
     /** libc / SSL 数据：id=socket fd 或 ssl 指针；isWrite=true 上行；isSsl=true TLS 解密明文 */
     @SuppressWarnings("unused")
     private static boolean onNativeData(long id, boolean isWrite, ByteBuffer buf, String socketInfo, String stack, boolean isSsl) {
@@ -244,20 +216,6 @@ public class NativeProbe {
             if (buf == null) return false;
             // v1.35 P0-1b: 跳过自身日志推送 + v1.51.2: 自家控制面 9901 ping（回环 9900-9910 全跳）
             if (isSelfInternal(socketInfo)) return false;
-            // v1.67: libc 层密文（isSsl=false）喂 TlsDecryptor——TLS 1.3 内部解密 → 明文走 tlsHttpFeed。
-            //   只处理网络 fd 且有 socketInfo 的连接（TlsDecryptor 内部会按 record 重组/过滤非 TLS）。
-            if (!isSsl && Config.get().internalDecrypt) {
-                try {
-                    ByteBuffer dup = buf.duplicate();
-                    int dN = dup.remaining();
-                    if (dN > 0 && dN <= 262144) {
-                        byte[] dData = new byte[dN];
-                        dup.get(dData);
-                        TlsDecryptor.get().feed(id, isWrite, dData, socketInfo);
-                    }
-                } catch (Throwable ignored) {
-                }
-            }
             // v1.45.1 诊断：每 200 次留痕一次——确认 onNativeData 在跑 / isSsl / pcapCapture 值
             if ((diagPcapCount.incrementAndGet() % 200) == 1) {
                 try { DebugLog.get().logNoMirror("PcapFeed", "onNativeData ssl=" + isSsl + " pcap=" + Config.get().pcapCapture + " info=" + (socketInfo != null ? socketInfo : "null")); } catch (Throwable ig) { }

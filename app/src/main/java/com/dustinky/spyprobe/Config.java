@@ -55,10 +55,11 @@ public class Config {
     public volatile boolean keystoreCapture = false;
     // v1.38 (hooker 借鉴 P2-7): WebView 构造后自动 setWebContentsDebuggingEnabled(true)
     public volatile boolean webViewDebug = false;
-    // v1.38 (hooker 借鉴 P0-3): native SSL keylog（CLIENT_RANDOM/master_secret，Wireshark 可导，默认关防刷屏）
-    public volatile boolean keylogCapture = false;
-    // v1.67: 内部 TLS 解密（keylog + libc 密文 → TLS 1.3 明文 → 实时日志结构化卡片）
-    public volatile boolean internalDecrypt = false;
+    // v7x M5: keylogCapture / internalDecrypt 已废弃删除（v1.70 Conscrypt JNI hook 直接取明文）
+    // v7x: MITM 代理（多选项：透明代理 / CONNECT 局部代理）
+    public volatile boolean mitmEnabled = false;       // MITM 总开关（默认关，用户在设置里开）
+    public volatile boolean mitmTransparent = true;    // true=透明代理(iptables REDIRECT 全量)，false=CONNECT 局部代理(手动配)
+    public volatile int mitmPort = 8888;               // 代理监听端口（127.0.0.1）
     // v1.39 P0 (r0capture 借鉴): pcap 导出——native SSL 明文 + 会话 seq/ack 伪 IP/TCP 头 → 标准 pcap（Wireshark 直开）。
     //   默认关（pcap 额外内存/推送开销）；开启后目标进程按 SSL 连接组装 pcap 记录推主进程落盘。
     public volatile boolean pcapCapture = false;
@@ -548,11 +549,12 @@ public class Config {
             // v1.38: 3 新字段（hooker 借鉴）
             o.put("keystore", keystoreCapture);
             o.put("webViewDebug", webViewDebug);
-            o.put("keylog", keylogCapture);
             // v1.39: pcap 导出（r0capture 借鉴）
             o.put("pcap", pcapCapture);
-            // v1.67: 内部 TLS 解密
-            o.put("internalDecrypt", internalDecrypt);
+            // v7x: MITM 代理
+            o.put("mitmEnabled", mitmEnabled);
+            o.put("mitmTransparent", mitmTransparent);
+            o.put("mitmPort", mitmPort);
             o.put("debug", debugEnabled);
         } catch (Throwable t) {
             debugLog("toJsonObject FAIL: " + t);
@@ -594,11 +596,12 @@ public class Config {
         // v1.38: 3 新字段（hooker 借鉴）
         keystoreCapture = o.optBoolean("keystore", keystoreCapture);
         webViewDebug = o.optBoolean("webViewDebug", webViewDebug);
-        keylogCapture = o.optBoolean("keylog", keylogCapture);
         // v1.39: pcap 导出（r0capture 借鉴）
         pcapCapture = o.optBoolean("pcap", pcapCapture);
-        // v1.67: 内部 TLS 解密
-        internalDecrypt = o.optBoolean("internalDecrypt", internalDecrypt);
+        // v7x: MITM 代理
+        mitmEnabled = o.optBoolean("mitmEnabled", mitmEnabled);
+        mitmTransparent = o.optBoolean("mitmTransparent", mitmTransparent);
+        mitmPort = o.optInt("mitmPort", mitmPort);
         debugEnabled = o.optBoolean("debug", debugEnabled);
     }
 

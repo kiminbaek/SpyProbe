@@ -159,7 +159,6 @@ class SpyViewModel(app: Application) : AndroidViewModel(app) {
         // v1.42 P2-6: 补 v1.38/v1.39 4 个新开关默认值（与后端 Config 默认一致，防继承逻辑失真）
         "keystore" to false,
         "webViewDebug" to false,
-        "keylog" to false,
         "pcap" to false,
         "debug" to false
     )

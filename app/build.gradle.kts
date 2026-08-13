@@ -13,8 +13,8 @@ android {
     defaultConfig {
         minSdk = 26
         targetSdk = 35
-        versionCode = 108
-        versionName = "1.70.1"
+        versionCode = 109
+        versionName = "1.71.0"
 
         // v1.10: native 抓包（shadowhook inline hook）——只编真机常用 ABI，控制体积
         ndk {
@@ -79,6 +79,9 @@ dependencies {
     implementation("io.github.libxposed:service:101.0.0")
     // v1.9: DexKit（导出 dex / 字符串反查）—— native 库会让 APK 变大
     implementation("org.luckypray:dexkit:2.0.7")
+    // v7x: MITM 代理动态证书（CA 生成 + per-host 签发，BouncyCastle）
+    implementation("org.bouncycastle:bcprov-jdk18on:1.79")
+    implementation("org.bouncycastle:bcpkix-jdk18on:1.79")
 
     // v1.11: Compose UI
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
