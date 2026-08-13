@@ -120,7 +120,14 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                 if (cfgLevel == 0) {
                     // 全局：保存 + 推送到当前连接的 App（如果有）
                     vm.saveGlobalConfig(displayCfg)
-                    if (targetPkg.isNotEmpty()) vm.pushConfig(targetPkg)
+                    // v1.74.4 P0-7: MITM 只活主进程，开关不依赖 targetPkg——
+                    //   清除数据后 targetPkg="" 导致 pushConfig 被跳过、MitmManager.applyConfig()
+                    //   永不触发（running=false 恒态）。MITM key 无论是否有目标都做本地同步：
+                    //   applyJson + saveConfig(files) + MitmManager.applyConfig()（Api.sendConfig 前置）。
+                    if (key.startsWith("mitm") || targetPkg.isNotEmpty()) {
+                        if (targetPkg.isNotEmpty()) vm.pushConfig(targetPkg)
+                        else vm.sendConfig(displayCfg)
+                    }
                 } else {
                     // 当前 App 覆盖：保存覆盖项 + 推送
                     vm.saveAppConfig(targetPkg, displayCfg)
