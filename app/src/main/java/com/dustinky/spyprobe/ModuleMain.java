@@ -269,30 +269,44 @@ public class ModuleMain extends XposedModule {
     }
 
     /** v7x: 上报目标进程 UID 到主进程 /api/target_uid（iptables 透明代理过滤名单）。
-     *  纯 Socket 同 fetchHomeConfig（避免 HUC hook 污染日志）；主进程不在线静默忽略。 */
+     *  纯 Socket 同 fetchHomeConfig（避免 HUC hook 污染日志）；主进程不在线静默忽略。
+     *  v1.74.1 P0-3【MITM 全系列真机失败根因】: onPackageReady 在 libxposed 主线程回调，
+     *  而这里直接 Socket.connect → Android 抛 NetworkOnMainThreadException → 被 catch 静默吞掉
+     *  → uid 永不上报 → MitmManager.targetUids 恒空 → iptables SPYPROBE_MITM 链恒空 → 流量永不劫持。
+     *  （同坑的 fetchHomeConfig early 有 late fallback 侥幸成功；本函数零重试 → 每次必死。）
+     *  修复：新线程执行 + 立即试一次 + 1s/3s/8s 延迟重试（主进程未 ready 也能补上）。 */
     private static void reportTargetUid() {
-        try {
-            int uid = android.os.Process.myUid();
-            java.net.Socket sock = new java.net.Socket();
-            sock.setTcpNoDelay(true);
-            sock.connect(new java.net.InetSocketAddress("127.0.0.1", 9900), 600);
-            String body = "{\"uid\":" + uid + "}";
-            String head = "POST /api/target_uid HTTP/1.1\r\nHost: 127.0.0.1:9900\r\n"
-                    + "Content-Type: application/json\r\nContent-Length: " + body.length()
-                    + "\r\nConnection: close\r\n\r\n" + body;
-            java.io.OutputStream os = sock.getOutputStream();
-            os.write(head.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            os.flush();
-            java.io.InputStream is = sock.getInputStream();
-            byte[] buf = new byte[1024];
-            while (is.read(buf) > 0) { /* 读完即关 */ }
-            is.close();
-            os.close();
-            sock.close();
-            DebugLog.get().logNoMirror("ModuleMain", "target uid reported: " + uid);
-        } catch (Throwable t) {
-            // 主进程未启动时静默（无权限/端口关闭都忽略）
-        }
+        final int myUid = android.os.Process.myUid();
+        final long[] delays = {0L, 1000L, 3000L, 8000L};
+        new Thread(() -> {
+            for (long d : delays) {
+                if (d > 0) {
+                    try { Thread.sleep(d); } catch (InterruptedException ignored) {}
+                }
+                try {
+                    java.net.Socket sock = new java.net.Socket();
+                    sock.setTcpNoDelay(true);
+                    sock.connect(new java.net.InetSocketAddress("127.0.0.1", 9900), 600);
+                    String body = "{\"uid\":" + myUid + "}";
+                    String head = "POST /api/target_uid HTTP/1.1\r\nHost: 127.0.0.1:9900\r\n"
+                            + "Content-Type: application/json\r\nContent-Length: " + body.length()
+                            + "\r\nConnection: close\r\n\r\n" + body;
+                    java.io.OutputStream os = sock.getOutputStream();
+                    os.write(head.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    os.flush();
+                    java.io.InputStream is = sock.getInputStream();
+                    byte[] buf = new byte[1024];
+                    while (is.read(buf) > 0) { /* 读完即关 */ }
+                    is.close();
+                    os.close();
+                    sock.close();
+                    DebugLog.get().logNoMirror("ModuleMain", "target uid reported: " + myUid);
+                    return; // 成功即退出重试
+                } catch (Throwable t) {
+                    DebugLog.get().logNoMirror("ModuleMain", "target uid report fail(retry " + d + "ms): " + t);
+                }
+            }
+        }).start();
     }
 
 }
