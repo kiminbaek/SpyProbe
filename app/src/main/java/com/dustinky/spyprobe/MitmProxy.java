@@ -208,13 +208,30 @@ public class MitmProxy {
             SSLSocketFactory serverFactory = ctx.getSocketFactory();
             // 注：Android SDK 的 SSLSocketFactory 方法面没有 createSocket(Socket, InputStream, boolean)，
             // 但运行时实现（Conscrypt/JDK）都有——反射调用，编译期不引用该签名，NAS 冒烟与 Android 都能跑。
+            // v1.74.7 P0-10: Android 16 默认 JSSE 的 3 参实现抛 UnsupportedOperationException
+            //   → 先试 3 参反射（Conscrypt AndroidOpenSSL），InvocationTargetException 时
+            //   fallback Conscrypt 静态 API newFileDescriptorSocket（支持 consumed 回喂）。
+            InputStream consumedIn = consumed != null ? new ByteArrayInputStream(consumed) : null;
             try {
                 java.lang.reflect.Method upM = SSLSocketFactory.class.getMethod(
                         "createSocket", Socket.class, InputStream.class, boolean.class);
-                appSsl = (SSLSocket) upM.invoke(serverFactory, appSocket,
-                        consumed != null ? new ByteArrayInputStream(consumed) : null, true);
+                appSsl = (SSLSocket) upM.invoke(serverFactory, appSocket, consumedIn, true);
             } catch (java.lang.reflect.InvocationTargetException ite) {
-                throw (Exception) ite.getCause();
+                Throwable cause = ite.getCause();
+                // 3 参反射失败（UnsupportedOperationException 等）→ Conscrypt 静态 API 兜底
+                if (cause != null && cause instanceof UnsupportedOperationException) {
+                    try {
+                        java.lang.reflect.Method newFd = Class.forName("org.conscrypt.Conscrypt")
+                                .getMethod("newFileDescriptorSocket", SSLContext.class,
+                                        Socket.class, InputStream.class, boolean.class);
+                        appSsl = (SSLSocket) newFd.invoke(null, ctx, appSocket, consumedIn, true);
+                        MitmLog.log("[" + seq + "] TLS upgrade via Conscrypt.newFileDescriptorSocket");
+                    } catch (Throwable t2) {
+                        throw new IOException("upgrade createSocket(consumed) unsupported", cause);
+                    }
+                } else {
+                    throw cause instanceof Exception ? (Exception) cause : new IOException(cause);
+                }
             } catch (NoSuchMethodException | IllegalAccessException nsme) {
                 // 极端兜底：4 参版本（Android SDK 必有），但无法回喂 consumed——
                 // 仅 CONNECT 模式（consumed==null）可用；透明模式直接失败留痕
@@ -289,7 +306,21 @@ public class MitmProxy {
         KeyStore ks = certManager.hostKeyStore(host);
         KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
         kmf.init(ks, "spyprobe".toCharArray());
-        SSLContext ctx = SSLContext.getInstance("TLS");
+        // v1.74.7 P0-10: 显式用 Conscrypt（AndroidOpenSSL）——真机 Android 16 上默认
+        //   SSLContext.getInstance("TLS") 返回的 JSSE 实现不支持 3 参
+        //   createSocket(Socket, InputStream, boolean)（父类默认抛 UnsupportedOperationException）
+        //   → MITM TLS 升级全挂 → 目标 App 全部 HTTPS 请求失败（一直连线中）。
+        //   NAS 冒烟是 JDK 走 4 参路径未暴露；真机透明模式（consumed!=null）必走 3 参。
+        SSLContext ctx = null;
+        try {
+            ctx = SSLContext.getInstance("TLS", "AndroidOpenSSL");
+        } catch (Throwable t1) {
+            try {
+                ctx = SSLContext.getInstance("TLS", "Conscrypt");
+            } catch (Throwable t2) {
+                ctx = SSLContext.getInstance("TLS");
+            }
+        }
         ctx.init(kmf.getKeyManagers(), null, null);
         return ctx;
     }
