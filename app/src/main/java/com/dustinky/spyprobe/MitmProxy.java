@@ -2,9 +2,11 @@ package com.dustinky.spyprobe;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.security.KeyStore;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.SequenceInputStream;
+import java.nio.ByteBuffer;
+import java.security.KeyStore;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
@@ -16,8 +18,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLEngine;
+import javax.net.ssl.SSLEngineResult;
 import javax.net.ssl.SSLParameters;
-import javax.net.ssl.SSLServerSocketFactory;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 
@@ -84,6 +87,14 @@ public class MitmProxy {
         });
         acceptPool.execute(this::acceptLoop);
         MitmLog.log("MitmProxy started on 127.0.0.1:" + bound + " transparent=" + transparent);
+        // v1.74.9 P0-12 诊断：记录 JSSE provider 列表（定位真机 SSLContext 实现/SSLEngine 来源）
+        try {
+            StringBuilder sb = new StringBuilder("[diag] JSSE providers: ");
+            for (java.security.Provider p : java.security.Security.getProviders()) {
+                sb.append(p.getName()).append(",");
+            }
+            MitmLog.log(sb.toString());
+        } catch (Throwable ignored) {}
         return bound;
     }
 
@@ -124,8 +135,8 @@ public class MitmProxy {
 
     private void handleConnection(Socket appSocket, int seq, boolean transparent) {
         String host = null;
-        SSLSocket appSsl = null;
         SSLSocket targetSsl = null;
+        SSLEngine engine = null;
         try {
             appSocket.setSoTimeout(60000);
             InputStream appInRaw = appSocket.getInputStream();
@@ -218,41 +229,45 @@ public class MitmProxy {
             targetSsl.setSSLParameters(clientParams);
             targetSsl.startHandshake();
 
-            // 5. 本地 TLS server 端（per-host 证书）
-            //    将已有 app TCP socket 包装升级为 TLS server（SSLSocketFactory.createSocket 后切 server 模式）
+            // 5. 本地 TLS server 端（per-host 证书）——标准 JSSE SSLEngine（v1.74.9 P0-12）
+            //    v1.74.7/74.8 的 SSLSocket 升级路线（Conscrypt 4 参 + setUseEngineSocket）在真机
+            //    Android 16 因 ClassNotFoundException 静默失效 → fd 路径丢 consumed → 连线中。
+            //    SSLEngine 全数据自喂，consumed 直接塞输入缓冲，不依赖任何系统扩展 API。
             SSLContext ctx = buildServerContext(hostname);
-            SSLSocketFactory serverFactory = ctx.getSocketFactory();
-            // v1.74.8 P0-11: 重写 upgrade——v1.74.7 用的两条路在 Android 16 全不存在（AOSP 源码实锤）：
-            //   ① SSLSocketFactory 3 参 createSocket(Socket, InputStream, boolean)
-            //      ——Conscrypt OpenSSLSocketFactoryImpl 从未实现该方法，父类默认实现
-            //      SSLSocketFactory.java:278 抛 UnsupportedOperationException
-            //   ② Conscrypt.newFileDescriptorSocket(SSLContext, Socket, InputStream, boolean)
-            //      ——Conscrypt 公共 API 根本没有这个静态方法（NoSuchMethodException，异常还被吞成 unsupported）
-            //   → v1.74.7 22 次 "upgrade createSocket(consumed) unsupported" 全是必然。
-            //   唯一可用路径：4 参 createSocket(Socket, hostname, port, autoClose)（Conscrypt 已实现），
-            //   它通过 socket.getInputStream() 读数据 → 用 ConsumedSocket 把 TlsSniffer 提前消费的
-            //   ClientHello 字节前置回流，并强制 engine 路径（fd 路径从 fd 直读会丢掉 consumed）。
-            InputStream consumedIn = consumed != null ? new ByteArrayInputStream(consumed) : null;
-            appSsl = upgradeToTlsServer(seq, ctx, serverFactory, appSocket, consumedIn, hostname, targetPort);
-            appSsl.setUseClientMode(false);
-            SSLParameters serverParams = appSsl.getSSLParameters();
+            engine = ctx.createSSLEngine(hostname, targetPort);
+            engine.setUseClientMode(false);
+            SSLParameters serverParams = engine.getSSLParameters();
             // 关键：只提供 http/1.1 → 客户端降级 → 明文 HTTP/1.1 可被 TlsHttpParser 解析
-            serverParams.setApplicationProtocols(new String[]{"http/1.1"});
-            appSsl.setSSLParameters(serverParams);
-            try { MitmLog.log("[" + seq + "] pre-handshake avail=" + appInRaw.available()); } catch (Throwable ignored) {}
-            appSsl.startHandshake();
+            try {
+                serverParams.setApplicationProtocols(new String[]{"http/1.1"});
+            } catch (Throwable t) {
+                MitmLog.log("[" + seq + "] ALPN config skip: " + t);
+            }
+            engine.setSSLParameters(serverParams);
+            engine.beginHandshake();
 
-            String alpn = appSsl.getApplicationProtocol();
-            MitmLog.log("[" + seq + "] TLS up host=" + hostname + " alpn=" + alpn);
+            // consumed 字节 + socket 剩余流合并（透明模式回喂 ClientHello）
+            InputStream appInSeq = consumed != null
+                    ? new SequenceInputStream(new ByteArrayInputStream(consumed), appInRaw)
+                    : appInRaw;
 
-            // 6. 双向转发
-            InputStream appIn = appSsl.getInputStream();
-            OutputStream appOut = appSsl.getOutputStream();
+            ByteBuffer netIn = ByteBuffer.allocate(NET_BUF);
+            ByteBuffer plain = ByteBuffer.allocate(NET_BUF);
+            ByteBuffer netOut = ByteBuffer.allocate(NET_BUF);
+
+            engineHandshake(engine, appInSeq, appOutRaw, netIn, plain, netOut, seq, hostname);
+
+            String alpn = engine.getApplicationProtocol();
+            MitmLog.log("[" + seq + "] TLS up host=" + hostname + " alpn=" + alpn
+                    + " provider=" + ctx.getProvider().getName());
+
+            // 6. 双向转发（SSLEngine 解密/加密 + 明文喂 TlsHttpParser）
             InputStream targetIn = targetSsl.getInputStream();
             OutputStream targetOut = targetSsl.getOutputStream();
 
-            Thread t1 = pump(appIn, targetOut, seq, 0, hostname, "req");
-            Thread t2 = pump(targetIn, appOut, seq, 1, hostname, "resp");
+            Object engineLock = new Object();
+            Thread t1 = pumpReq(seq, engine, engineLock, appInSeq, targetOut, netIn, plain, hostname);
+            Thread t2 = pumpResp(seq, engine, engineLock, targetIn, appOutRaw, plain, netOut, hostname);
             t1.join();
             t2.join();
         } catch (Throwable t) {
@@ -263,7 +278,7 @@ public class MitmProxy {
             }
             MitmLog.log(sb.toString());
         } finally {
-            closeQuietly(appSsl);
+            closeQuietly(appSocket);
             closeQuietly(targetSsl);
             connSeq.decrementAndGet();
             if (listener != null) {
@@ -299,84 +314,161 @@ public class MitmProxy {
     }
 
     /**
-     * v1.74.8 P0-11: 把已有 app TCP socket（+已消费的 ClientHello 字节）升级为 TLS server 端。
+     * v1.74.9 P0-12: 标准 JSSE SSLEngine 做本地 TLS server 端（per-host 证书）。
      *
-     * 实现（Android 16 AOSP 源码验证过的唯一可用路径）：
-     *   - ConsumedSocket 包装 appSocket：getInputStream() 返回「consumed 字节 + 剩余流」的合并流
-     *   - Conscrypt.setUseEngineSocket(factory, true) 强制 engine 路径（fd 路径从 fd 直读，会丢 consumed）
-     *   - 4 参 createSocket(Socket, hostname, port, autoClose)（Conscrypt OpenSSLSocketFactoryImpl 实现）
-     *   - setUseClientMode(false) 由调用方在返回后设置（升级为 TLS server）
+     * 背景：v1.74.7/v1.74.8 的 Conscrypt 4 参 createSocket + setUseEngineSocket 路线在真机
+     *   Android 16 上仍「连线中」——根因是 setUseEngineSocket 因 ClassNotFoundException 静默
+     *   失效 → fd 路径直读丢 consumed ClientHello → connection closed。
+     *   SSLEngine 不依赖任何第三方/系统扩展 API：数据全程由本类喂给 engine，
+     *   consumed 字节直接塞入输入缓冲，彻底绕开 SSLSocket 底层 fd/engine 选择问题。
      */
-    private SSLSocket upgradeToTlsServer(int seq, SSLContext ctx, SSLSocketFactory serverFactory,
-                                         Socket appSocket, InputStream consumedIn,
-                                         String hostname, int targetPort) throws Exception {
-        // ① 强制 Conscrypt engine 路径（非 Conscrypt factory 抛 IllegalArgumentException → 忽略，走默认）
-        try {
-            java.lang.reflect.Method m = Class.forName("org.conscrypt.Conscrypt")
-                    .getMethod("setUseEngineSocket", SSLSocketFactory.class, boolean.class);
-            m.invoke(null, serverFactory, Boolean.TRUE);
-        } catch (Throwable t) {
-            MitmLog.log("[" + seq + "] setUseEngineSocket skip: " + t);
-        }
-        // ② 包装 socket（consumed 字节前置回喂）
-        Socket wrap = consumedIn != null ? new ConsumedSocket(appSocket, consumedIn) : appSocket;
-        // ③ 4 参 createSocket
-        try {
-            SSLSocket s = (SSLSocket) serverFactory.createSocket(wrap, hostname, targetPort, true);
-            MitmLog.log("[" + seq + "] TLS upgrade via 4-arg createSocket"
-                    + (consumedIn != null ? " (consumed fed via ConsumedSocket)" : ""));
-            return s;
-        } catch (Throwable t) {
-            throw new IOException("upgrade createSocket(4-arg) failed: " + t, t);
+    private static final int NET_BUF = 64 * 1024;
+
+    /** SSLEngine 握手（阻塞直到 FINISHED）。netIn 初始 limit(0) 表示无有效数据。 */
+    private static void engineHandshake(SSLEngine engine, InputStream appIn, OutputStream appOut,
+                                        ByteBuffer netIn, ByteBuffer plain, ByteBuffer netOut,
+                                        int seq, String hostname) throws IOException {
+        ByteBuffer empty = ByteBuffer.allocate(0);
+        netIn.limit(0);
+        // 注意：JDK/Conscrypt 在最后一次 wrap/unwrap 后 getHandshakeStatus() 返回
+        //   NOT_HANDSHAKING（FINISHED 只在 wrap/unwrap 返回值里出现一次）→ 两者都算完成。
+        SSLEngineResult.HandshakeStatus hs;
+        while ((hs = engine.getHandshakeStatus()) != SSLEngineResult.HandshakeStatus.FINISHED
+                && hs != SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING) {
+            switch (hs) {
+                case NEED_UNWRAP: {
+                    if (!netIn.hasRemaining()) {
+                        netIn.clear();
+                        int n = appIn.read(netIn.array(), 0, netIn.capacity());
+                        if (n <= 0) throw new IOException("TLS handshake EOF (no ClientHello)");
+                        netIn.limit(n);
+                    }
+                    SSLEngineResult r = engine.unwrap(netIn, plain);
+                    if (r.getStatus() == SSLEngineResult.Status.CLOSED)
+                        throw new IOException("TLS closed during handshake");
+                    if (r.getStatus() == SSLEngineResult.Status.BUFFER_OVERFLOW)
+                        throw new IOException("TLS handshake plaintext overflow");
+                    if (r.getStatus() == SSLEngineResult.Status.BUFFER_UNDERFLOW) {
+                        netIn.compact();
+                        int n = appIn.read(netIn.array(), netIn.position(), netIn.remaining());
+                        if (n <= 0) throw new IOException("TLS handshake EOF mid-record");
+                        netIn.position(netIn.position() + n);
+                        netIn.flip();
+                    }
+                    break;
+                }
+                case NEED_WRAP: {
+                    netOut.clear();
+                    SSLEngineResult rw = engine.wrap(empty, netOut);
+                    if (rw.getStatus() == SSLEngineResult.Status.CLOSED)
+                        throw new IOException("TLS closed during handshake wrap");
+                    if (rw.bytesProduced() > 0) {
+                        netOut.flip();
+                        appOut.write(netOut.array(), 0, netOut.limit());
+                        appOut.flush();
+                    }
+                    break;
+                }
+                case NEED_TASK: {
+                    Runnable task = engine.getDelegatedTask();
+                    if (task != null) task.run();
+                    break;
+                }
+                default:
+                    MitmLog.log("[" + seq + "] handshake unexpected status=" + engine.getHandshakeStatus());
+                    return;
+            }
         }
     }
 
-    /**
-     * v1.74.8 P0-11: 「已消费字节」前置的 Socket 包装——getInputStream() 先吐 consumed，
-     *   再接真实 socket 剩余流；其余全部委托给 real。给 Conscrypt 4 参 createSocket 用，
-     *   使其引擎路径能读到被 TlsSniffer 提前消费的 ClientHello（不依赖不存在的 3 参 API）。
-     */
-    private static final class ConsumedSocket extends java.net.Socket {
-        private final Socket real;
-        private final InputStream in;
+    /** 数据阶段：app 密文 → 解密 → 明文转发真实服务器（请求方向）。 */
+    private Thread pumpReq(int seq, SSLEngine engine, Object lock, InputStream appIn,
+                           OutputStream targetOut, ByteBuffer netIn, ByteBuffer plain,
+                           String hostname) {
+        Thread t = new Thread(() -> {
+            try {
+                while (running.get()) {
+                    if (!netIn.hasRemaining()) {
+                        netIn.clear();
+                        int n = appIn.read(netIn.array(), 0, netIn.capacity());
+                        if (n <= 0) break;
+                        netIn.limit(n);
+                    }
+                    byte[] produced = null;
+                    int producedLen = 0;
+                    SSLEngineResult.Status status;
+                    synchronized (lock) {
+                        SSLEngineResult r = engine.unwrap(netIn, plain);
+                        status = r.getStatus();
+                        if (plain.position() > 0) {
+                            producedLen = plain.position();
+                            produced = new byte[producedLen];
+                            plain.flip();
+                            plain.get(produced);
+                            plain.clear();
+                        }
+                    }
+                    if (status == SSLEngineResult.Status.CLOSED) break;
+                    if (status == SSLEngineResult.Status.BUFFER_OVERFLOW) {
+                        MitmLog.log("[" + seq + "] req overflow");
+                        break;
+                    }
+                    if (status == SSLEngineResult.Status.BUFFER_UNDERFLOW) {
+                        netIn.compact();
+                        int n = appIn.read(netIn.array(), netIn.position(), netIn.remaining());
+                        if (n <= 0) break;
+                        netIn.position(netIn.position() + n);
+                        netIn.flip();
+                    }
+                    if (producedLen > 0) {
+                        if (listener != null) {
+                            try { listener.onPlain(seq, 0, hostname, produced, producedLen); } catch (Throwable ignored) {}
+                        }
+                        targetOut.write(produced, 0, producedLen);
+                        targetOut.flush();
+                    }
+                }
+            } catch (Throwable t2) {
+                if (running.get()) MitmLog.log("[" + seq + "] pump req err: " + t2);
+            }
+        }, "mitm-pump-req");
+        t.setDaemon(true);
+        t.start();
+        return t;
+    }
 
-        ConsumedSocket(Socket real, InputStream consumed) throws IOException {
-            super(); // 仅委托壳，无实际连接
-            this.real = real;
-            this.in = new java.io.SequenceInputStream(consumed, real.getInputStream());
-        }
-
-        @Override public InputStream getInputStream() throws IOException { return in; }
-        @Override public OutputStream getOutputStream() throws IOException { return real.getOutputStream(); }
-        @Override public boolean isConnected() { return true; }
-        @Override public void close() throws IOException { real.close(); }
-        @Override public void setSoTimeout(int timeout) throws java.net.SocketException { real.setSoTimeout(timeout); }
-        @Override public int getSoTimeout() throws java.net.SocketException { return real.getSoTimeout(); }
-        @Override public void setTcpNoDelay(boolean on) throws java.net.SocketException { real.setTcpNoDelay(on); }
-        @Override public boolean getTcpNoDelay() throws java.net.SocketException { return real.getTcpNoDelay(); }
-        @Override public void setKeepAlive(boolean on) throws java.net.SocketException { real.setKeepAlive(on); }
-        @Override public boolean getKeepAlive() throws java.net.SocketException { return real.getKeepAlive(); }
-        @Override public void setSoLinger(boolean on, int l) throws java.net.SocketException { real.setSoLinger(on, l); }
-        @Override public int getSoLinger() throws java.net.SocketException { return real.getSoLinger(); }
-        @Override public void setOOBInline(boolean on) throws java.net.SocketException { real.setOOBInline(on); }
-        @Override public boolean getOOBInline() throws java.net.SocketException { return real.getOOBInline(); }
-        @Override public void setReceiveBufferSize(int size) throws java.net.SocketException { real.setReceiveBufferSize(size); }
-        @Override public int getReceiveBufferSize() throws java.net.SocketException { return real.getReceiveBufferSize(); }
-        @Override public void setSendBufferSize(int size) throws java.net.SocketException { real.setSendBufferSize(size); }
-        @Override public int getSendBufferSize() throws java.net.SocketException { return real.getSendBufferSize(); }
-        @Override public java.net.InetAddress getInetAddress() { return real.getInetAddress(); }
-        @Override public java.net.InetAddress getLocalAddress() { return real.getLocalAddress(); }
-        @Override public int getPort() { return real.getPort(); }
-        @Override public int getLocalPort() { return real.getLocalPort(); }
-        @Override public java.net.SocketAddress getRemoteSocketAddress() { return real.getRemoteSocketAddress(); }
-        @Override public java.net.SocketAddress getLocalSocketAddress() { return real.getLocalSocketAddress(); }
-        @Override public void shutdownInput() throws IOException { real.shutdownInput(); }
-        @Override public void shutdownOutput() throws IOException { real.shutdownOutput(); }
-        @Override public boolean isClosed() { return real.isClosed(); }
-        @Override public boolean isBound() { return real.isBound(); }
-        @Override public boolean isInputShutdown() { return real.isInputShutdown(); }
-        @Override public boolean isOutputShutdown() { return real.isOutputShutdown(); }
-        @Override public String toString() { return "ConsumedSocket(" + real + ")"; }
+    /** 数据阶段：真实服务器明文 → 加密 → 密文写给 app（响应方向）。 */
+    private Thread pumpResp(int seq, SSLEngine engine, Object lock, InputStream targetIn,
+                            OutputStream appOut, ByteBuffer plain, ByteBuffer netOut,
+                            String hostname) {
+        Thread t = new Thread(() -> {
+            try {
+                while (running.get()) {
+                    plain.clear();
+                    int n = targetIn.read(plain.array(), 0, plain.capacity());
+                    if (n <= 0) break;
+                    plain.limit(n);
+                    if (listener != null) {
+                        try { listener.onPlain(seq, 1, hostname, plain.array(), n); } catch (Throwable ignored) {}
+                    }
+                    synchronized (lock) {
+                        SSLEngineResult r = engine.wrap(plain, netOut);
+                        if (r.getStatus() == SSLEngineResult.Status.CLOSED) break;
+                        if (netOut.position() > 0) {
+                            netOut.flip();
+                            appOut.write(netOut.array(), 0, netOut.limit());
+                            appOut.flush();
+                            netOut.clear();
+                        }
+                    }
+                }
+            } catch (Throwable t2) {
+                if (running.get()) MitmLog.log("[" + seq + "] pump resp err: " + t2);
+            }
+        }, "mitm-pump-resp");
+        t.setDaemon(true);
+        t.start();
+        return t;
     }
 
     private SSLContext buildServerContext(String host) throws Exception {
