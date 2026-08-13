@@ -120,12 +120,32 @@ object ShareLogUtil {
         }
     }
 
+    /**
+     * v1.73: Magisk/KernelSU 模块 zip 导出 —— 写公共 Download/SpyProbe/（Android 10+ MediaStore 免权限；
+     * 老系统 FileProvider 兜底）。此前导出写到 app 私有目录，用户文件管理器找不到。
+     * @return 可分享 Uri；null=失败（UiLog 有原因）
+     */
+    fun writeModuleZip(context: Context, bytes: ByteArray): Uri? {
+        val filename = "spyprobe-mitm-ca_${timestamp()}.zip"
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                writePublicDownloadBytes(context, filename, bytes, "application/zip")
+                    ?: writeAppExternalBytes(context, filename, bytes)
+            } else {
+                writeAppExternalBytes(context, filename, bytes)
+            }
+        } catch (e: Exception) {
+            UiLog.log("writeModuleZip failed: ${e.javaClass.simpleName}: ${e.message}")
+            null
+        }
+    }
+
     /** 公共 Download/SpyProbe/ 写二进制（Android 10+ MediaStore，免权限） */
-    private fun writePublicDownloadBytes(context: Context, filename: String, bytes: ByteArray): Uri? {
+    private fun writePublicDownloadBytes(context: Context, filename: String, bytes: ByteArray, mime: String = "application/vnd.tcpdump.pcap"): Uri? {
         return try {
             val values = ContentValues().apply {
                 put(MediaStore.Downloads.DISPLAY_NAME, filename)
-                put(MediaStore.Downloads.MIME_TYPE, "application/vnd.tcpdump.pcap")
+                put(MediaStore.Downloads.MIME_TYPE, mime)
                 put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/SpyProbe")
             }
             val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)

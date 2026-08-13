@@ -539,6 +539,8 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                     mitmStatus = withContext(Dispatchers.IO) {
                         try { action() } catch (t: Throwable) { "失败: $t" }
                     }
+                    // v1.73: CA 安装结果 UiLog 留痕（此前只写 UI 状态文本，导出调试日志看不到失败原因）
+                    com.dustinky.spyprobe.util.UiLog.log("CaInstall result: $mitmStatus")
                     android.widget.Toast.makeText(context, mitmStatus, android.widget.Toast.LENGTH_LONG).show()
                 }
             }
@@ -559,14 +561,18 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                         val pem = com.dustinky.spyprobe.MitmManager.get()?.certManager()?.exportCaCertPem()
                         if (pem == null) "CA 生成失败"
                         else {
-                            val out = java.io.File(com.dustinky.spyprobe.MitmManager.get()!!.certManager().caDir(), "spyprobe-mitm-ca.zip")
-                            com.dustinky.spyprobe.CaInstaller.exportMagiskModule(pem, out)
-                            "已导出 Magisk 模块：${out.absolutePath}（分享/拷到手机 Magisk 刷入）"
+                            // v1.73: 先写私有临时 zip，再转存公共 Download/SpyProbe/（用户文件管理器可见）
+                            val tmp = java.io.File(com.dustinky.spyprobe.MitmManager.get()!!.certManager().caDir(), "spyprobe-mitm-ca_tmp.zip")
+                            com.dustinky.spyprobe.CaInstaller.exportMagiskModule(pem, tmp)
+                            val uri = com.dustinky.spyprobe.util.ShareLogUtil.writeModuleZip(context, tmp.readBytes())
+                            tmp.delete()
+                            if (uri == null) "导出失败（详见调试日志）"
+                            else "已导出 Magisk/KernelSU 模块到 下载/SpyProbe/（文件管理器可见）"
                         }
                     }
                 },
                 modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
-            ) { Text("② 导出 Magisk 模块（用户自己装）") }
+            ) { Text("② 导出 Magisk/KernelSU 模块（用户自己装）") }
 
             OutlinedButton(
                 onClick = {
@@ -576,7 +582,7 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                     }
                 },
                 modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
-            ) { Text("③ Root 帮装 Magisk 模块") }
+            ) { Text("③ Root 帮装 Magisk/KernelSU 模块") }
 
             Text(
                 "提示：91aw 等 dart:io App 只信系统 CA；Java/OkHttp App 可配「信任用户 CA」免 root（hook 层 sslBypass 兜底）",

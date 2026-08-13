@@ -36,6 +36,7 @@ object UiLog {
         }
     }
 
+    @JvmStatic
     fun log(msg: String) {
         val line = "${fmt()} [UI] $msg"
         synchronized(ring) {
