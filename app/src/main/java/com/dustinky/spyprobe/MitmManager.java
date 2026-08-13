@@ -59,6 +59,9 @@ public class MitmManager {
     public synchronized void applyConfig() {
         Config cfg = Config.get();
         boolean want = cfg.mitmEnabled;
+        // v1.74.0 P0-2: 状态双写 UiLog（UI 进程，导出可见）——MITM 是否被触发、为何没触发一次到位
+        com.dustinky.spyprobe.util.UiLog.log("MitmManager.applyConfig want=" + want
+                + " running=" + proxy.isRunning() + " transparent=" + cfg.mitmTransparent + " port=" + cfg.mitmPort);
         if (want && !proxy.isRunning()) {
             startProxy();
         } else if (!want && proxy.isRunning()) {
@@ -72,9 +75,11 @@ public class MitmManager {
             boolean transparent = Config.get().mitmTransparent;
             proxy.start(port, this::onPlain, transparent);
             DebugLog.get().log("Mitm", "proxy started port=" + port + " transparent=" + transparent);
+            com.dustinky.spyprobe.util.UiLog.log("MitmManager proxy started port=" + port + " transparent=" + transparent);
             if (transparent) applyIptables();
         } catch (Throwable t) {
             DebugLog.get().log("Mitm", "start FAIL: " + t);
+            com.dustinky.spyprobe.util.UiLog.log("MitmManager proxy start FAIL: " + t);
         }
     }
 
@@ -115,6 +120,8 @@ public class MitmManager {
         if (uid <= 0) return;
         targetUids.add(uid);
         DebugLog.get().log("Mitm", "register uid=" + uid + " total=" + targetUids.size());
+        com.dustinky.spyprobe.util.UiLog.log("MitmManager register uid=" + uid + " total=" + targetUids.size()
+                + " running=" + proxy.isRunning() + " transparent=" + Config.get().mitmTransparent);
         if (proxy.isRunning() && Config.get().mitmTransparent) {
             applyIptables();
         }
@@ -144,8 +151,10 @@ public class MitmManager {
             execRoot(sb.toString());
             iptablesApplied = true;
             DebugLog.get().log("Mitm", "iptables applied uids=" + targetUids + " port=" + port);
+            com.dustinky.spyprobe.util.UiLog.log("MitmManager iptables applied uids=" + targetUids + " port=" + port);
         } catch (Throwable t) {
             DebugLog.get().log("Mitm", "iptables FAIL: " + t);
+            com.dustinky.spyprobe.util.UiLog.log("MitmManager iptables FAIL: " + t);
         }
     }
 
@@ -156,8 +165,10 @@ public class MitmManager {
                     + "iptables -t nat -D OUTPUT -j SPYPROBE_MITM 2>/dev/null; "
                     + "iptables -t nat -X SPYPROBE_MITM 2>/dev/null");
             iptablesApplied = false;
+            com.dustinky.spyprobe.util.UiLog.log("MitmManager iptables cleared");
         } catch (Throwable t) {
             DebugLog.get().log("Mitm", "iptables clear FAIL: " + t);
+            com.dustinky.spyprobe.util.UiLog.log("MitmManager iptables clear FAIL: " + t);
         }
     }
 

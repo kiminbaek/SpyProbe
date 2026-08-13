@@ -916,6 +916,13 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                 append("SpyProbe v${BuildConfig.VERSION_NAME} 调试日志\n")
                                 append("===== 目标进程 DebugLog =====\n")
                                 append(target)
+                                append("\n\n===== 主进程 DebugLog =====\n")
+                                // v1.74.0 P0-2: MITM 引擎（MitmManager/MitmProxy）日志全在主进程 DebugLog
+                                //   （files/spyprobe_debug.log + 内存环形 512 条），此前导出只含目标进程 + UI
+                                //   两段 → [Mitm] 启动/iptables/uid 上报状态对用户和诊断完全不可见 → 盲猜三天。
+                                //   现在并入导出，MITM 启动/失败根因一次到位。
+                                val home = com.dustinky.spyprobe.DebugLog.get().dump()
+                                append(if (home.isEmpty()) "（无记录）" else home)
                                 append("\n\n===== UI 进程 UiLog =====\n")
                                 val ui = com.dustinky.spyprobe.util.UiLog.dump()
                                 append(if (ui.isEmpty()) "（无记录）" else ui)
