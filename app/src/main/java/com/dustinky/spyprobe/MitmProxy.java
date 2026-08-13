@@ -171,6 +171,8 @@ public class MitmProxy {
                 TlsSniffer.Result sr = TlsSniffer.sniff(appInRaw);
                 if (sr == null) { MitmLog.log("[" + seq + "] transparent: no ClientHello"); return; }
                 consumed = sr.consumed;
+                // v1.74.12 diag: 真机 EOF no ClientHello 定位——sniff 是否成功、consumed 是否完整
+                MitmLog.log("[" + seq + "] sniffed consumed=" + sr.consumed.length + " sni=" + sr.sni);
                 hostname = sr.sni != null ? sr.sni : connectIp;
                 if (hostname == null) { MitmLog.log("[" + seq + "] transparent: no SNI no origDst"); return; }
                 host = hostname;
@@ -339,10 +341,15 @@ public class MitmProxy {
                     if (!netIn.hasRemaining()) {
                         netIn.clear();
                         int n = appIn.read(netIn.array(), 0, netIn.capacity());
+                        // v1.74.12 diag: 每次 read 打印实际字节数（真机 EOF 定位）
+                        MitmLog.log("[" + seq + "] hsk read=" + n + " hs=" + engine.getHandshakeStatus());
                         if (n <= 0) throw new IOException("TLS handshake EOF (no ClientHello)");
                         netIn.limit(n);
                     }
                     SSLEngineResult r = engine.unwrap(netIn, plain);
+                    // v1.74.12 diag: unwrap 结果
+                    MitmLog.log("[" + seq + "] hsk unwrap status=" + r.getStatus() + " consumed=" + r.bytesConsumed()
+                            + " remaining=" + netIn.remaining());
                     if (r.getStatus() == SSLEngineResult.Status.CLOSED)
                         throw new IOException("TLS closed during handshake");
                     if (r.getStatus() == SSLEngineResult.Status.BUFFER_OVERFLOW)
@@ -350,6 +357,7 @@ public class MitmProxy {
                     if (r.getStatus() == SSLEngineResult.Status.BUFFER_UNDERFLOW) {
                         netIn.compact();
                         int n = appIn.read(netIn.array(), netIn.position(), netIn.remaining());
+                        MitmLog.log("[" + seq + "] hsk underflow refill n=" + n + " need=" + netIn.remaining());
                         if (n <= 0) throw new IOException("TLS handshake EOF mid-record");
                         netIn.position(netIn.position() + n);
                         netIn.flip();
