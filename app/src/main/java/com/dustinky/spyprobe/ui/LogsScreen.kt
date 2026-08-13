@@ -224,6 +224,10 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     //   异步 findInDay 从 jsonl 文件找回并缓存，命中后重组渲染卡片（治"实时列表纯文本流"根因）
     val evtFileHits = remember { mutableStateMapOf<Long, com.dustinky.spyprobe.SpyEvent>() }
     val evtFileLoading = remember { mutableStateMapOf<Long, Boolean>() }
+    // v1.72: 实时层 REQ# 行文件回溯缓存——同 EVT# 模式（HomeHttpStore 内存环形 MAX 200，淘汰后
+    //   find() miss → 异步 findInDay 从 http_entries jsonl 找回，命中后渲染卡片 + 点击可弹详情页）
+    val httpFileHits = remember { mutableStateMapOf<Long, com.dustinky.spyprobe.HttpEntry>() }
+    val httpFileLoading = remember { mutableStateMapOf<Long, Boolean>() }
     // v1.25 P1-3: 暂停状态从局部 remember 改为 vm（此前暂停只停自动滚动不停轮询——日志还在积累；
     //   vm.paused 同时控制轮询停止 + 自动滚动暂停，语义一致）
     val paused by vm.paused.collectAsState()
@@ -677,14 +681,29 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                 // v1.49: 实时列表请求行卡片化——含 [REQ#N] 且命中 HomeHttpStore 的行渲染为小黄鸟式微卡片
                                 //（方法色块+URL+状态码+耗时+响应体摘要），普通行保持纯文本
                                 // v1.55: 含 [EVT#N] 且命中 HomeEventStore 的行渲染为通用事件卡片（SQL/JSON/Crypto/TCP/DNS）
+                                // v1.72: REQ# 内存 miss → httpFileHits 文件回溯缓存兜底（同 EVT# 模式）
                                 val rid = parseReqId(line)
-                                val he = rid?.let { com.dustinky.spyprobe.HomeHttpStore.get().find(it) }
+                                val he = rid?.let { com.dustinky.spyprobe.HomeHttpStore.get().find(it) ?: httpFileHits[it] }
                                 if (he != null) {
                                     HttpRequestCard(
                                         entry = he,
                                         onClick = { httpDetail = he }
                                     )
                                 } else {
+                                    // v1.72: 实时层 REQ# 内存+缓存都 miss → 异步按当天文件回溯补卡
+                                    if (rid != null && !httpFileLoading.containsKey(rid)) {
+                                        httpFileLoading[rid] = true
+                                        LaunchedEffect(rid) {
+                                            val appCtx = context.applicationContext as android.app.Application
+                                            val day = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                                                .format(java.util.Date())
+                                            val fromDay = withContext(Dispatchers.IO) {
+                                                com.dustinky.spyprobe.HomeHttpStore.get().findInDay(appCtx.filesDir, day, rid)
+                                            }
+                                            if (fromDay != null) httpFileHits[rid] = fromDay
+                                            httpFileLoading.remove(rid)
+                                        }
+                                    }
                                     val eid = parseEvtId(line)
                                     val ev = eid?.let { eid2 ->
                                         com.dustinky.spyprobe.HomeEventStore.get().find(eid2)
@@ -718,10 +737,30 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                             modifier = Modifier
                                                 .padding(vertical = 1.dp)
                                                 .clickable {
+                                                    // v1.72: REQ# 内存 → httpFileHits 缓存 → 都 miss 异步文件回溯（同 EVT#）
                                                     val rid2 = parseReqId(line)
-                                                    val he2 = rid2?.let { com.dustinky.spyprobe.HomeHttpStore.get().find(it) }
+                                                    val he2 = rid2?.let {
+                                                        com.dustinky.spyprobe.HomeHttpStore.get().find(it) ?: httpFileHits[it]
+                                                    }
                                                     if (he2 != null) {
                                                         httpDetail = he2
+                                                    } else if (rid2 != null && !httpFileLoading.containsKey(rid2)) {
+                                                        httpFileLoading[rid2] = true
+                                                        scope.launch {
+                                                            val appCtx = context.applicationContext as android.app.Application
+                                                            val day = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                                                                .format(java.util.Date())
+                                                            val fromDay = withContext(Dispatchers.IO) {
+                                                                com.dustinky.spyprobe.HomeHttpStore.get().findInDay(appCtx.filesDir, day, rid2)
+                                                            }
+                                                            if (fromDay != null) {
+                                                                httpFileHits[rid2] = fromDay
+                                                                httpDetail = fromDay
+                                                            } else {
+                                                                detailDialog = line
+                                                            }
+                                                            httpFileLoading.remove(rid2)
+                                                        }
                                                     } else {
                                                         val eid2 = parseEvtId(line)
                                                         val ev2 = eid2?.let { eid3 ->

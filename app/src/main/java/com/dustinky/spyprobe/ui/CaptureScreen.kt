@@ -365,7 +365,10 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
             onToggle = { expanded = if (expanded == "advanced") "" else "advanced" }
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                SwitchItem("TLS 明文", cfg["tls"] as? Boolean ?: true) { setSwitch("tls", it) }
+                // v1.72 P1-3: "TLS 明文"开关语义修正——此前只控制已降级的 Java ConscryptEngine 调试日志
+                //   （不产 REQ# 卡片），真正 TLS 明文卡片由 native 层产出，开关误导。现在它控制 native
+                //   TLS 明文解析（HTTP1 明文 + H2 卡片），依赖 native 层开启 + 重启目标 App 生效。
+                SwitchItem("TLS 明文*", cfg["tls"] as? Boolean ?: true) { setSwitch("tls", it) }
                 SwitchItem("万能连接", cfg["connect"] as? Boolean ?: true) { setSwitch("connect", it) }
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -374,8 +377,9 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
             }
             // v1.36 P1-4b: native 是"装不装 native hook"级别的全局开关（重启目标 App 生效），
             //   加显式提示避免用户以为即时生效
+            // v1.72 P1-3: TLS 明文依赖 native 层（解析在 native 链路里），合并说明
             Text(
-                "* native 层开关需重启目标 App 后生效（影响 native hook 装载）",
+                "* native 层 / TLS 明文开关需重启目标 App 后生效（native hook 装载时读取）；TLS 明文 = native TLS 明文 REQ# 卡片（依赖 native 层开启）",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 10.sp,

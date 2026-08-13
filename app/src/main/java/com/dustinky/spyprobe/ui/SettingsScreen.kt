@@ -337,7 +337,7 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                 inherited = inh("logLimit"),
                 onSet = { setCfg("logLimit", it) })
             Divider()
-            IntSetting(effective, "bodyLimit", "Body 限制(KB)", 2, 1..1024,
+            IntSetting(effective, "bodyLimit", "Body 限制(KB)", 32, 1..1024,
                 inherited = inh("bodyLimit"),
                 onSet = { setCfg("bodyLimit", it) })
             Divider()
@@ -817,16 +817,16 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                             val installed = withContext(Dispatchers.IO) {
                                 com.dustinky.spyprobe.Updater.installRoot(dest)
                             }
-                            if (installed) {
+                            if (installed == null) {
                                 updateStatus = "已静默安装，重启 SpyProbe 生效"
                                 downloading = false
                             } else {
-                                // root 失败 → 系统安装器
-                                updateStatus = "静默安装失败，改用系统安装器"
+                                // root 失败（原因带出来）→ 系统安装器
+                                updateStatus = "静默安装失败（$installed），改用系统安装器"
                                 val started = withContext(Dispatchers.IO) {
                                     com.dustinky.spyprobe.Updater.installSystem(context, dest)
                                 }
-                                updateStatus = if (started) "已打开系统安装器" else "系统安装器启动失败"
+                                updateStatus = if (started == null) "已打开系统安装器" else "系统安装器启动失败：$started"
                                 downloading = false
                             }
                         }

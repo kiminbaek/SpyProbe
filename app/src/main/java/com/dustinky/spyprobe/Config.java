@@ -36,7 +36,8 @@ public class Config {
     public volatile boolean cronetCapture = false; // Cronet 网络栈记录（默认关：与 HttpURLConnection 记录重复度高）
     public volatile String classFilter = "";       // 类加载关键字过滤（空=全部入库不刷屏）
     public volatile boolean classLogAll = false;   // 匹配类是否刷屏输出到日志
-    public volatile int bodyLimit = 2;              // v1.25 P1-2: 记录响应体最大 KB（此前误用字节，UI 发 KB 后端当字节用导致截断 32 字节）
+    public volatile int bodyLimit = 32;             // v1.25 P1-2: 记录响应体最大 KB（此前误用字节，UI 发 KB 后端当字节用导致截断 32 字节）
+                                                    // v1.72 P1-4: 默认 2→32KB——审查发现默认 2KB 详情页 body 不完整，用户感知"抓到但不全"
     // v1.12: 日志环形缓冲容量（LogStore 动态读取，防日志无限增长；借鉴 Guise 日志归档容量思想）
     public volatile int logLimit = 4096;
     // v1.13: 反检测开关（隐藏 root/Xposed 痕迹，防目标 App 检测；fckvip hook_hide_root 借鉴）

@@ -275,33 +275,41 @@ object Updater {
 
     /**
      * root 静默安装：cat apk | pm install -S <size> -r（流式喂 pm，绕过 OEM SELinux 禁 /data/local/tmp）
-     * 180s 超时；返回 true=成功
+     * 180s 超时；返回 null=成功，非 null=错误原因（v1.72 P0-2: 失败留痕——原 Boolean 吞异常无法定位）
      */
-    fun installRoot(apk: File): Boolean {
+    fun installRoot(apk: File): String? {
         try {
+            // v1.72 P1-2: 先探测 su 授权（Magisk 未授权时盲目走 pm install 必然失败，直接给可读原因）
+            val probe = runSu(arrayOf("su", "-c", "id"), 15)
+            if (probe.first != 0) {
+                val why = "su 不可用/未授权（exit=${probe.first}）: ${probe.second.take(200)}"
+                com.dustinky.spyprobe.util.UiLog.log("Updater installRoot: $why")
+                return why
+            }
             val size = apk.length()
             // su -c 执行 pm install，apk 内容从 stdin 喂入
             val cmd = "cat ${shellQuote(apk.absolutePath)} | pm install -S $size -r"
-            val process = Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
-            // 读输出（防 pipe 阻塞）
-            val errOut = StringBuilder()
-            Thread {
-                process.errorStream.bufferedReader().use { it.readLines().forEach { l -> errOut.append(l).append('\n') } }
-            }.start()
-            val ok = process.waitFor(180, java.util.concurrent.TimeUnit.SECONDS)
-            if (!ok) {
-                process.destroy()
-                return false
+            val r = runSu(arrayOf("su", "-c", cmd), 180)
+            if (r.first != 0) {
+                val why = "pm install 失败（exit=${r.first}）: ${r.second.take(300)}"
+                com.dustinky.spyprobe.util.UiLog.log("Updater installRoot: $why")
+                return why
             }
-            val code = process.exitValue()
-            return code == 0 && !errOut.toString().contains("Failure")
+            if (r.second.contains("Failure")) {
+                val why = "pm install 返回 Failure: ${r.second.take(300)}"
+                com.dustinky.spyprobe.util.UiLog.log("Updater installRoot: $why")
+                return why
+            }
+            return null
         } catch (t: Throwable) {
-            return false
+            val why = "root 安装异常: $t"
+            com.dustinky.spyprobe.util.UiLog.log("Updater installRoot: $why")
+            return why
         }
     }
 
-    /** 系统安装器回退（ACTION_VIEW + FileProvider） */
-    fun installSystem(context: Context, apk: File): Boolean {
+    /** 系统安装器回退（ACTION_VIEW + FileProvider）；返回 null=已启动安装器，非 null=失败原因 */
+    fun installSystem(context: Context, apk: File): String? {
         return try {
             val uri: Uri = FileProvider.getUriForFile(
                 context,
@@ -312,12 +320,35 @@ object Updater {
                 setDataAndType(uri, "application/vnd.android.package-archive")
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 if (Build.VERSION.SDK_INT >= 24) addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                // v1.72 P1-1: Android 12+ 部分机型 PackageInstaller 需要 clipData 才能打开安装界面
+                clipData = android.content.ClipData.newRawUri("spyprobe_apk", uri)
             }
             context.startActivity(intent)
-            true
+            null
         } catch (t: Throwable) {
-            false
+            val why = "系统安装器启动失败: $t"
+            com.dustinky.spyprobe.util.UiLog.log("Updater installSystem: $why")
+            why
         }
+    }
+
+    /** 执行 su 命令，返回 (exitCode, 输出合并)；timeoutSec 超时返回 -1 */
+    private fun runSu(args: Array<String>, timeoutSec: Long): Pair<Int, String> {
+        val process = Runtime.getRuntime().exec(args)
+        val outBuf = StringBuilder()
+        Thread {
+            try { process.inputStream.bufferedReader().use { it.readLines().forEach { l -> outBuf.append(l).append('\n') } } } catch (t: Throwable) { }
+        }.start()
+        val errBuf = StringBuilder()
+        Thread {
+            try { process.errorStream.bufferedReader().use { it.readLines().forEach { l -> errBuf.append(l).append('\n') } } } catch (t: Throwable) { }
+        }.start()
+        val ok = process.waitFor(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
+        if (!ok) {
+            process.destroy()
+            return -1 to "timeout(${timeoutSec}s)"
+        }
+        return process.exitValue() to (outBuf.toString() + errBuf.toString())
     }
 
     /** shell 参数转义（纯内部路径用，防注入） */

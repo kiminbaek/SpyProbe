@@ -237,7 +237,9 @@ public class NativeProbe {
             if (!Config.get().nativeCapture) return false;
 
             // v1.52: TLS 明文 → 结构化 HttpEntry 解析（独立 duplicate 读全部，不影响下方展示读取）
-            if (isSsl) {
+            // v1.72 P1-3: TLS 明文解析受 tlsCapture 控制——"TLS 明文"开关现在真正控制 native TLS
+            //   明文 REQ# 卡片（此前只控制已降级的 Java ConscryptEngine 调试日志，开关语义误导）
+            if (isSsl && Config.get().tlsCapture) {
                 try {
                     ByteBuffer dup = buf.duplicate();
                     int tlsN = dup.remaining();
@@ -257,6 +259,12 @@ public class NativeProbe {
             boolean unknownProto = isSsl && tlsIsUnknown(id);
             String proto = unknownProto ? "UNKNOWN" : (isSsl ? "TLS" : "TCP");
             String loc = (socketInfo != null && !socketInfo.isEmpty()) ? socketInfo : ("#" + id);
+
+            // v1.72 P1-3: tlsCapture=false 时 TLS 明文既不解析也不写行（"TLS 明文"开关语义修正——
+            //   关 = 整个 TLS 明文链路关闭，只有 TCP 非 SSL 行保留）
+            if (isSsl && !Config.get().tlsCapture) {
+                return false;
+            }
 
             // v1.52.1【用户 2026-08-11 拍板：抓包日志页 = 目标 App 数据，不是 SpyProbe 自己的日志】
             // 该连接 TLS 明文已被结构化解析（HttpEntry 已进 HttpStore，UI 卡片数据源独立于日志流）
@@ -310,6 +318,8 @@ public class NativeProbe {
         try {
             // v1.15 P0-4: native 抓包开关
             if (!Config.get().nativeCapture) return false;
+            // v1.72 P1-3: H2 是 TLS 明文协议（HTTP/2 over TLS）——"TLS 明文"开关关时 H2 卡片也不产
+            if (!Config.get().tlsCapture) return false;
             // v1.58: H2 请求/响应结构化（此前纯文本）——元数据进 HttpEntry，UI 渲染 REQ# 卡片
             long key = h2Key(connId, streamId);
             if (!isResponse) {
