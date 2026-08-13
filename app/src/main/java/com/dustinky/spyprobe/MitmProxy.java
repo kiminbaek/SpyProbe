@@ -331,25 +331,29 @@ public class MitmProxy {
                                         int seq, String hostname) throws IOException {
         ByteBuffer empty = ByteBuffer.allocate(0);
         netIn.limit(0);
-        // 注意：JDK/Conscrypt 在最后一次 wrap/unwrap 后 getHandshakeStatus() 返回
-        //   NOT_HANDSHAKING（FINISHED 只在 wrap/unwrap 返回值里出现一次）→ 两者都算完成。
-        SSLEngineResult.HandshakeStatus hs;
-        while ((hs = engine.getHandshakeStatus()) != SSLEngineResult.HandshakeStatus.FINISHED
+        // v1.74.14 修复（外部 AI 审查 + 编译验证）：
+        //   1) 用 wrap/unwrap 返回值里的 getHandshakeStatus() 驱动循环，不再用
+        //      engine.getHandshakeStatus()——Conscrypt BIO 内部状态已变但 getter 滞后返回
+        //      旧值，导致真机「连线中 → EOF」。← 核心修复
+        //   2) NEED_TASK 用 while 跑干净所有 delegated task。
+        //   ※ 对方 AI 建议的 NEED_UNWRAP_AGAIN case 已否决：它不是标准
+        //     SSLEngineResult.HandshakeStatus 枚举常量（标准仅 5 个），编译不过，
+        //     运行时 getHandshakeStatus() 也不可能返回它（类型限定）。
+        SSLEngineResult.HandshakeStatus hs = engine.getHandshakeStatus();
+        while (hs != SSLEngineResult.HandshakeStatus.FINISHED
                 && hs != SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING) {
             switch (hs) {
                 case NEED_UNWRAP: {
                     if (!netIn.hasRemaining()) {
                         netIn.clear();
                         int n = appIn.read(netIn.array(), 0, netIn.capacity());
-                        // v1.74.12 diag: 每次 read 打印实际字节数（真机 EOF 定位）
-                        MitmLog.log("[" + seq + "] hsk read=" + n + " hs=" + engine.getHandshakeStatus());
+                        MitmLog.log("[" + seq + "] hsk read=" + n + " hs=" + hs);
                         if (n <= 0) throw new IOException("TLS handshake EOF (no ClientHello)");
                         netIn.limit(n);
                     }
                     SSLEngineResult r = engine.unwrap(netIn, plain);
-                    // v1.74.12 diag: unwrap 结果
-                    MitmLog.log("[" + seq + "] hsk unwrap status=" + r.getStatus() + " consumed=" + r.bytesConsumed()
-                            + " remaining=" + netIn.remaining());
+                    MitmLog.log("[" + seq + "] hsk unwrap status=" + r.getStatus()
+                            + " consumed=" + r.bytesConsumed() + " hs=" + r.getHandshakeStatus());
                     if (r.getStatus() == SSLEngineResult.Status.CLOSED)
                         throw new IOException("TLS closed during handshake");
                     if (r.getStatus() == SSLEngineResult.Status.BUFFER_OVERFLOW)
@@ -357,16 +361,19 @@ public class MitmProxy {
                     if (r.getStatus() == SSLEngineResult.Status.BUFFER_UNDERFLOW) {
                         netIn.compact();
                         int n = appIn.read(netIn.array(), netIn.position(), netIn.remaining());
-                        MitmLog.log("[" + seq + "] hsk underflow refill n=" + n + " need=" + netIn.remaining());
+                        MitmLog.log("[" + seq + "] hsk underflow refill n=" + n);
                         if (n <= 0) throw new IOException("TLS handshake EOF mid-record");
                         netIn.position(netIn.position() + n);
                         netIn.flip();
                     }
+                    hs = r.getHandshakeStatus(); // ← 关键修复：用 result 驱动
                     break;
                 }
                 case NEED_WRAP: {
                     netOut.clear();
                     SSLEngineResult rw = engine.wrap(empty, netOut);
+                    MitmLog.log("[" + seq + "] hsk wrap status=" + rw.getStatus()
+                            + " produced=" + rw.bytesProduced() + " hs=" + rw.getHandshakeStatus());
                     if (rw.getStatus() == SSLEngineResult.Status.CLOSED)
                         throw new IOException("TLS closed during handshake wrap");
                     if (rw.bytesProduced() > 0) {
@@ -374,18 +381,24 @@ public class MitmProxy {
                         appOut.write(netOut.array(), 0, netOut.limit());
                         appOut.flush();
                     }
+                    hs = rw.getHandshakeStatus(); // ← 关键修复：用 result 驱动
                     break;
                 }
                 case NEED_TASK: {
-                    Runnable task = engine.getDelegatedTask();
-                    if (task != null) task.run();
+                    MitmLog.log("[" + seq + "] hsk NEED_TASK");
+                    Runnable task;
+                    while ((task = engine.getDelegatedTask()) != null) { // ← 修复：while 跑干净
+                        task.run();
+                    }
+                    hs = engine.getHandshakeStatus();
                     break;
                 }
                 default:
-                    MitmLog.log("[" + seq + "] handshake unexpected status=" + engine.getHandshakeStatus());
+                    MitmLog.log("[" + seq + "] handshake unexpected status=" + hs);
                     return;
             }
         }
+        MitmLog.log("[" + seq + "] hsk DONE status=" + hs);
     }
 
     /** 数据阶段：app 密文 → 解密 → 明文转发真实服务器（请求方向）。 */
@@ -407,6 +420,14 @@ public class MitmProxy {
                     synchronized (lock) {
                         SSLEngineResult r = engine.unwrap(netIn, plain);
                         status = r.getStatus();
+                        // v1.74.14: 数据阶段检测重握手（TLS1.3 KeyUpdate / 重协商）——
+                        //   保守处理：日志 + 关闭连接（pumpReq 无 appOut，无法直接回 wrap 数据；
+                        //   Flutter/dart:io 客户端基本不发 KeyUpdate，实际触发概率低）
+                        if (r.getHandshakeStatus() != SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING) {
+                            MitmLog.log("[" + seq + "] pumpReq mid-stream handshake: "
+                                    + r.getHandshakeStatus() + " (conservative close)");
+                            status = SSLEngineResult.Status.CLOSED;
+                        }
                         if (plain.position() > 0) {
                             producedLen = plain.position();
                             produced = new byte[producedLen];
