@@ -213,12 +213,11 @@ public class MitmProxy {
             engine = ctx.createSSLEngine(hostname, targetPort);
             engine.setUseClientMode(false);
             SSLParameters serverParams = engine.getSSLParameters();
-            // 关键：只提供 http/1.1 → 客户端降级 → 明文 HTTP/1.1 可被 TlsHttpParser 解析
-            try {
-                serverParams.setApplicationProtocols(new String[]{"http/1.1"});
-            } catch (Throwable t) {
-                MitmLog.log("[" + seq + "] ALPN config skip: " + t);
-            }
+            // v1.74.11 P0-14: 不设置 ALPN → 客户端（只通告 h2）fallback HTTP/1.1，明文可被
+            //   TlsHttpParser 解析。旧实现强制只提供 "http/1.1"：91暗网类 App 只通告 h2 →
+            //   ALPN 不匹配 → Conscrypt 抛 No matching application layer protocol values →
+            //   HANDSHAKE_FAILURE_ON_CLIENT_HELLO → handshake_failure → 握手失败。
+            //   服务器不通告 ALPN（RFC 7301）→ 客户端使用默认协议 HTTP/1.1。
             engine.setSSLParameters(serverParams);
             engine.beginHandshake();
 

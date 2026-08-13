@@ -103,6 +103,19 @@ public class MitmManager {
                 DebugLog.get().log("Mitm", "CA pem missing, skip auto-install");
                 return;
             }
+            boolean hasMod = CaInstaller.hasModule();
+            if (hasMod) {
+                // v1.74.11 P0-14: 模块已装 → 优先更新模块内 CA 文件（模块 post-fs-data 已挂载时
+                //   更新即生效；KernelSU 分支内部会再安全 bind-mount）。避免旧顺序：先 bind-mount
+                //   再同步模块 → 两次 bindMountCa 的 rm -rf 清空系统 CA 视图 → App 无网。
+                try {
+                    String r2 = CaInstaller.installMagiskModuleRoot(pem);
+                    DebugLog.get().log("Mitm", "CA module update: " + r2);
+                    com.dustinky.spyprobe.util.UiLog.log("MitmManager CA module update: " + r2);
+                } catch (Throwable t2) {
+                    DebugLog.get().log("Mitm", "CA module update FAIL: " + t2);
+                }
+            }
             if (CaInstaller.isSystemInstalled(pem)) {
                 DebugLog.get().log("Mitm", "CA already in system trust store");
                 return;
@@ -111,15 +124,6 @@ public class MitmManager {
             String r = CaInstaller.installToSystemRoot(pem);
             DebugLog.get().log("Mitm", "CA auto-install: " + r);
             com.dustinky.spyprobe.util.UiLog.log("MitmManager CA auto-install: " + r);
-            if (CaInstaller.hasModule()) {
-                try {
-                    String r2 = CaInstaller.installMagiskModuleRoot(pem);
-                    DebugLog.get().log("Mitm", "CA module sync: " + r2);
-                    com.dustinky.spyprobe.util.UiLog.log("MitmManager CA module sync: " + r2);
-                } catch (Throwable t2) {
-                    DebugLog.get().log("Mitm", "CA module sync FAIL: " + t2);
-                }
-            }
         } catch (Throwable t) {
             DebugLog.get().log("Mitm", "CA ensure FAIL: " + t);
             com.dustinky.spyprobe.util.UiLog.log("MitmManager CA ensure FAIL: " + t);

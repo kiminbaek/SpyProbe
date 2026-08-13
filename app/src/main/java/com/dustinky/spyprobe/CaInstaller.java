@@ -164,15 +164,31 @@ public class CaInstaller {
         String sysDir = apex ? "/apex/com.android.conscrypt/cacerts" : "/system/etc/security/cacerts";
         String tmp = "/data/local/tmp/spyprobe-cacerts";
         UiLog.log(TAG + " bindMountCa apex=" + apex + " hash=" + hash);
-        su("rm -rf " + tmp);
-        su("mkdir -p " + tmp);
-        su("cp -f " + sysDir + "/* " + tmp + "/");
-        su("cp -f '" + caPem.getAbsolutePath() + "' " + tmp + "/" + hash + ".0");
-        su("chmod 644 " + tmp + "/*");
-        su("mount --bind " + tmp + " " + sysDir);
+        // v1.74.11 P0-14: 修复重复安装清空系统 CA 的致命 bug。
+        //   旧实现每次都 `rm -rf tmp`——若 tmp 已 bind-mount 到 sysDir，删除源目录内容
+        //   = 系统 CA 视图文件全部消失 → 所有 App 无法验证任何证书 → 无网（重启才恢复）。
+        //   已挂载：只追加我们的 CA（绝不动其他系统 CA）；未挂载：完整复制后再挂载。
+        boolean mounted = isMounted(tmp, sysDir);
+        if (mounted) {
+            su("cp -f '" + caPem.getAbsolutePath() + "' " + tmp + "/" + hash + ".0");
+            su("chmod 644 " + tmp + "/" + hash + ".0");
+        } else {
+            su("rm -rf " + tmp);
+            su("mkdir -p " + tmp);
+            su("cp -f " + sysDir + "/* " + tmp + "/");
+            su("cp -f '" + caPem.getAbsolutePath() + "' " + tmp + "/" + hash + ".0");
+            su("chmod 644 " + tmp + "/*");
+            su("mount --bind " + tmp + " " + sysDir);
+        }
         boolean ok = new File(sysDir + "/" + hash + ".0").exists();
-        UiLog.log(TAG + " bindMountCa " + (ok ? "OK" : "verify FAIL") + " -> " + sysDir + "/" + hash + ".0");
+        UiLog.log(TAG + " bindMountCa mounted=" + mounted + " " + (ok ? "OK" : "verify FAIL") + " -> " + sysDir + "/" + hash + ".0");
         return ok;
+    }
+
+    /** 检查 tmp 是否已 bind-mount 到 sysDir（/proc/mounts：source + mountpoint） */
+    private static boolean isMounted(String src, String dst) throws Exception {
+        String out = suOut("cat /proc/mounts");
+        return out.contains(src + " " + dst);
     }
 
     // ===== 方式 1：root 直接装（自动选 APEX bind-mount / system remount / system bind-mount） =====
