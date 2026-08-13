@@ -95,6 +95,34 @@ object UiLog {
 
     fun logFile(): File? = file
 
+    /**
+     * v1.74.15: 清空 UI 调试日志（内存环形 + 落盘文件）。
+     * 此前 files/spyprobe_ui.log 从不清理、无限累积（UI 高频日志如 ping 失败刷屏
+     * 可占导出文件 80%+），「清空调试日志」按钮未覆盖此源 → 用户清空后导出仍巨大。
+     * 清空后写一行留痕，证明清理执行过。
+     */
+    @JvmStatic
+    fun clear() {
+        synchronized(ring) {
+            ring.clear()
+        }
+        try {
+            synchronized(fileLock) {
+                writer?.close()
+                writer = null
+                val f = file
+                if (f != null && f.exists()) {
+                    val del = f.delete()
+                    log("UiLog cleared (file delete=$del)")
+                } else {
+                    log("UiLog cleared (memory only)")
+                }
+            }
+        } catch (t: Throwable) {
+            log("UiLog clear fail: $t")
+        }
+    }
+
     private fun fmt(): String =
         SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date())
 }

@@ -592,6 +592,9 @@ public class SpyServer {
                 }
                 case "/api/clear": {
                     LogStore.get().clear();
+                    // v1.74.15: 一并清目标进程 DebugLog（内存环形）——「清空调试日志」按钮
+                    //   需覆盖目标进程段，否则导出「目标进程 DebugLog」仍带旧日志。
+                    DebugLog.get().clear();
                     JSONObject o = new JSONObject();
                     o.put("ok", true);
                     return o.toString();

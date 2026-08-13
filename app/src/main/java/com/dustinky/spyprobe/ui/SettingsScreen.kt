@@ -976,12 +976,21 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             Button(
                 onClick = {
                     com.dustinky.spyprobe.util.UiLog.log("Settings: 点击「清空调试日志」")
+                    // v1.74.15: 全链路清空——此前只清主进程 DebugLog，漏了：
+                    //   ① UI UiLog（落盘 files/spyprobe_ui.log 无限累积，可占导出 80%）
+                    //   ② 目标进程 9901 DebugLog（/api/debuglog 导出的目标进程段）
+                    //   三处全清后导出文件才真正变小；每处清空后自带留痕行证明执行过。
                     com.dustinky.spyprobe.DebugLog.get().clear()
-                    android.widget.Toast.makeText(
-                        context,
-                        "调试日志已清空（内存 + 文件）",
-                        android.widget.Toast.LENGTH_SHORT
-                    ).show()
+                    com.dustinky.spyprobe.util.UiLog.clear()
+                    scope.launch {
+                        val targetClear = withContext(Dispatchers.IO) { vm.api.clear() }
+                        com.dustinky.spyprobe.util.UiLog.log("Settings: 清空调试日志完成（目标进程 clear=" + (targetClear != null) + "）")
+                        android.widget.Toast.makeText(
+                            context,
+                            "调试日志已清空（主进程 + 目标进程 + UI）",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    }
                 },
                 modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
             ) {
