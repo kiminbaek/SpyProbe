@@ -51,6 +51,56 @@ public class TlsSniffer {
         buf.write(body, 0, len);
 
         if ((body[0] & 0xff) != 1) return null; // msg_type != ClientHello
+
+        // v1.74.13 P0-15: TLS 1.3 ClientHello 分片（RFC 8446 4.2.3，最多 2 个 record）。
+        //   根因实锤（NAS Conscrypt 2.5.2 复刻）：msgLen 字段 = payload 长度（不含 4B header）。
+        //   record 1 只含消息开头（msgLen > have）→ Conscrypt unwrap 后 NEED_UNWRAP 等 record 2
+        //   → TlsSniffer 只读 record 1 → 握手挂死/EOF（真机 254B ClientHello = 分片 record 1）。
+        //   修复：读 record 2 → 合并 payload → 重写为单 record（len = 4+msgLen）。
+        //   Conscrypt 对完整单 record ClientHello 正常处理（NEED_WRAP + ServerHello）。
+        int msgLen = ((body[1] & 0xff) << 16) | ((body[2] & 0xff) << 8) | (body[3] & 0xff);
+        int have = body.length - 4;
+        if (msgLen > have) {
+            // need = 剩余 payload = msgLen - have（record 1 已读 payload）
+            int need = msgLen - have;
+            // 读第二个 record（合法分片：type=22，body 含剩余 payload）
+            int type2 = in.read();
+            if (type2 == 22) {
+                byte[] hdr2 = new byte[4];
+                if (readFully(in, hdr2) == 4) {
+                    int len2 = ((hdr2[2] & 0xff) << 8) | (hdr2[3] & 0xff);
+                    if (len2 >= need && len2 <= 64 * 1024) {
+                        byte[] body2 = new byte[len2];
+                        if (readFully(in, body2) == len2) {
+                            // 合并 payload（record1 body[4:] + body2 前 need 字节）
+                            byte[] payload = new byte[msgLen];
+                            System.arraycopy(body, 4, payload, 0, body.length - 4);
+                            System.arraycopy(body2, 0, payload, body.length - 4, need);
+                            // 重写为单 record：22 + ver + len(4+msgLen) + header(4) + payload(msgLen)
+                            int newLen = 4 + msgLen;
+                            buf.reset();
+                            buf.write(22);
+                            buf.write(hdr[0]); buf.write(hdr[1]); // 保持 record1 的 version
+                            buf.write((newLen >> 8) & 0xff); buf.write(newLen & 0xff);
+                            buf.write(body, 0, 4);   // handshake header（msgLen 字段不变）
+                            buf.write(payload, 0, msgLen);
+                            byte[] merged = new byte[newLen];
+                            System.arraycopy(body, 0, merged, 0, 4);
+                            System.arraycopy(payload, 0, merged, 4, msgLen);
+                            body = merged;
+                        }
+                    }
+                }
+            }
+        } else if (msgLen < have) {
+            // handshake payload < record1 body 剩余：record 1 含多个消息（正常，不处理）
+        }
+        if (msgLen > have) {
+            MitmLog.log("TlsSniffer ClientHello fragmented msgLen=" + msgLen + " body1=" + have
+                    + " -> single=" + (4 + msgLen));
+        } else {
+            MitmLog.log("TlsSniffer ClientHello msgLen=" + msgLen + " body=" + have + " (not fragmented)");
+        }
         int pos = 4 + 2 + 32; // handshake hdr(4) + client_version(2) + random(32)
         if (pos >= body.length) return null;
         int sidLen = body[pos] & 0xff; pos += 1;
