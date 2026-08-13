@@ -106,8 +106,10 @@ public class ModuleMain extends XposedModule {
         }
 
         // v7x: 上报目标进程 UID 到主进程（MitmManager 维护 iptables 透明代理过滤名单）。
+        // v1.74.2 P0-4: 带 token——v1.37 起主进程所有 POST 都做 x-spy-token 鉴权，不带 token 直接 401 静默丢弃
+        // （v1.74.1 只修了主线程 NetworkOnMainThreadException，漏了鉴权 → POST 到主进程但被 401 吞掉，uid 仍永不上报）
         try {
-            reportTargetUid();
+            reportTargetUid(pushToken);
         } catch (Throwable t) {
             DebugLog.get().logNoMirror("ModuleMain", "reportTargetUid FAIL: " + t);
         }
@@ -270,12 +272,14 @@ public class ModuleMain extends XposedModule {
 
     /** v7x: 上报目标进程 UID 到主进程 /api/target_uid（iptables 透明代理过滤名单）。
      *  纯 Socket 同 fetchHomeConfig（避免 HUC hook 污染日志）；主进程不在线静默忽略。
-     *  v1.74.1 P0-3【MITM 全系列真机失败根因】: onPackageReady 在 libxposed 主线程回调，
-     *  而这里直接 Socket.connect → Android 抛 NetworkOnMainThreadException → 被 catch 静默吞掉
-     *  → uid 永不上报 → MitmManager.targetUids 恒空 → iptables SPYPROBE_MITM 链恒空 → 流量永不劫持。
-     *  （同坑的 fetchHomeConfig early 有 late fallback 侥幸成功；本函数零重试 → 每次必死。）
-     *  修复：新线程执行 + 立即试一次 + 1s/3s/8s 延迟重试（主进程未 ready 也能补上）。 */
-    private static void reportTargetUid() {
+     *  v1.74.1 P0-3【MITM 全系列真机失败根因①】: onPackageReady 在 libxposed 主线程回调，
+     *  直接 Socket.connect → NetworkOnMainThreadException 被静默吞掉 → uid 永不上报。
+     *  修复①：新线程执行 + 立即试一次 + 1s/3s/8s 延迟重试。
+     *  v1.74.2 P0-4【根因②】: v1.37 起主进程所有 POST 都做 x-spy-token 鉴权，裸 POST 无 token
+     *  → 主进程 401 静默返回（不打日志）→ registerTargetUid 永不执行 → iptables 恒空。
+     *  修复②：带上 pushToken（与日志推送同源），通过鉴权后主进程才真正注册。
+     *  （token 为空时保持老主进程兼容：无 token 可验，直接放行。） */
+    private static void reportTargetUid(String token) {
         final int myUid = android.os.Process.myUid();
         final long[] delays = {0L, 1000L, 3000L, 8000L};
         new Thread(() -> {
@@ -288,11 +292,17 @@ public class ModuleMain extends XposedModule {
                     sock.setTcpNoDelay(true);
                     sock.connect(new java.net.InetSocketAddress("127.0.0.1", 9900), 600);
                     String body = "{\"uid\":" + myUid + "}";
-                    String head = "POST /api/target_uid HTTP/1.1\r\nHost: 127.0.0.1:9900\r\n"
-                            + "Content-Type: application/json\r\nContent-Length: " + body.length()
-                            + "\r\nConnection: close\r\n\r\n" + body;
+                    StringBuilder head = new StringBuilder();
+                    head.append("POST /api/target_uid HTTP/1.1\r\n")
+                            .append("Host: 127.0.0.1:9900\r\n")
+                            .append("Content-Type: application/json\r\n");
+                    if (token != null && !token.isEmpty()) {
+                        head.append("x-spy-token: ").append(token).append("\r\n");
+                    }
+                    head.append("Content-Length: ").append(body.length())
+                            .append("\r\nConnection: close\r\n\r\n").append(body);
                     java.io.OutputStream os = sock.getOutputStream();
-                    os.write(head.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    os.write(head.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
                     os.flush();
                     java.io.InputStream is = sock.getInputStream();
                     byte[] buf = new byte[1024];
@@ -300,7 +310,7 @@ public class ModuleMain extends XposedModule {
                     is.close();
                     os.close();
                     sock.close();
-                    DebugLog.get().logNoMirror("ModuleMain", "target uid reported: " + myUid);
+                    DebugLog.get().logNoMirror("ModuleMain", "target uid reported: " + myUid + " (token " + (token != null && !token.isEmpty() ? "yes" : "none") + ")");
                     return; // 成功即退出重试
                 } catch (Throwable t) {
                     DebugLog.get().logNoMirror("ModuleMain", "target uid report fail(retry " + d + "ms): " + t);

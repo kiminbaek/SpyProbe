@@ -509,7 +509,9 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
             // CA 状态 + 安装方式（4 种多选项，不绑手机）
             var mitmStatus by remember { mutableStateOf("") }
             var caInstalled by remember { mutableStateOf(false) }
-            LaunchedEffect(Unit) {
+            // v1.74.2 P0-5: LaunchedEffect 依赖 mitmEnabled/mitmTransparent——开关变化后重读状态，
+            //   修复"开代理后状态仍显示未启动、必须杀进程重开才正确"的显示失真（原 LaunchedEffect(Unit) 只在进设置页读一次）
+            LaunchedEffect(effective["mitmEnabled"], effective["mitmTransparent"]) {
                 mitmStatus = try {
                     val m = com.dustinky.spyprobe.MitmManager.get()
                     m?.status() ?: "(未初始化)"
