@@ -146,6 +146,81 @@ public class CaInstaller {
         return false;
     }
 
+    /**
+     * v1.74.17 P0-17: 无条件把 CA bind-mount 传播到 zygote namespace。
+     * 背景：App 每次启动是新进程（继承 zygote 的 mount namespace）。即使 isSystemInstalled()
+     *   在当前进程 namespace 看到 CA 文件（旧挂载/直写），**zygote fork 的目标 App 进程
+     *   依然看不到** → 证书校验失败 → MITM 握手 ServerHello 后客户端 EOF（「连线中」）。
+     *   ensureCaInstalled 的 isSystemInstalled=true 短路路径必须也调用本方法（幂等）。
+     *   兼容 Android 14+ apex / <14 system 两个目录。
+     */
+    public static void propagateToZygote() {
+        try {
+            boolean apex = isApexCacerts();
+            String sysDir = apex ? "/apex/com.android.conscrypt/cacerts" : "/system/etc/security/cacerts";
+            String tmp = "/data/local/tmp/spyprobe-cacerts";
+            su("for pid in 1 $(pgrep zygote) $(pgrep zygote64); do "
+                    + "nsenter --mount=/proc/${pid}/ns/mnt -- mount --bind " + tmp + " " + sysDir
+                    + " 2>/dev/null; done; true");
+            UiLog.log(TAG + " propagateToZygote done sysDir=" + sysDir);
+        } catch (Throwable t) {
+            UiLog.log(TAG + " propagateToZygote FAIL: " + t);
+        }
+    }
+
+    /**
+     * v1.74.17 诊断：输出当前 CA 与系统库文件的 sha256 指纹对比 + mount 状态。
+     * 用于真机排查「CA 失配 vs mount 不可见」——一次日志看清根因。
+     */
+    public static String caDiagnostics(File caPem) {
+        try {
+            X509Certificate cert = loadCert(caPem);
+            if (cert == null) return "diag: CA PEM 解析失败";
+            String hash = subjectHashOld(cert);
+            String caSha = sha256File(caPem);
+            String mountInfo = suOut("cat /proc/mounts | grep -E 'spyprobe-cacerts|cacerts' | head -8");
+            StringBuilder sb = new StringBuilder();
+            sb.append("diag CA hash=").append(hash)
+                    .append(" sha256=").append(caSha == null ? "?" : caSha.substring(0, 16)).append("...\n");
+            File[] dirs = {
+                    new File("/apex/com.android.conscrypt/cacerts"),
+                    new File("/system/etc/security/cacerts"),
+            };
+            for (File d : dirs) {
+                File f = new File(d, hash + ".0");
+                sb.append("diag ").append(f.getPath()).append(" exists=").append(f.exists());
+                if (f.exists()) {
+                    String sysSha = sha256File(f);
+                    sb.append(" sha256=").append(sysSha == null ? "?" : sysSha.substring(0, 16)).append("...")
+                            .append(" match=").append(sysSha != null && sysSha.equals(caSha));
+                }
+                sb.append("\n");
+            }
+            sb.append("diag mounts:\n").append(mountInfo == null ? "(none)" : mountInfo);
+            return sb.toString();
+        } catch (Throwable t) {
+            return "diag FAIL: " + t;
+        }
+    }
+
+    /** 文件 sha256 hex（失败返回 null） */
+    private static String sha256File(File f) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            try (java.io.InputStream in = new java.io.FileInputStream(f)) {
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
+            }
+            byte[] d = md.digest();
+            StringBuilder sb = new StringBuilder();
+            for (byte b : d) sb.append(String.format("%02x", b));
+            return sb.toString();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     /** 执行 su 命令并返回 stdout；失败抛异常（含 rc） */
     private static String suOut(String cmd) throws Exception {
         Process p = new ProcessBuilder("su", "-c", cmd).redirectErrorStream(true).start();

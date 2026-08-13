@@ -117,12 +117,18 @@ public class MitmManager {
                 }
             }
             if (CaInstaller.isSystemInstalled(pem)) {
-                DebugLog.get().log("Mitm", "CA already in system trust store");
+                // v1.74.17 P0-17: isSystemInstalled=true 只代表当前进程 namespace 视图里有 CA 文件，
+                //   **不代表 zygote fork 的目标 App 进程可见**（旧 mount 只落在执行 su 的进程 ns）。
+                //   必须无条件传播到 zygote namespace（幂等），否则目标 App 证书校验失败 → EOF（连线中）。
+                CaInstaller.propagateToZygote();
+                DebugLog.get().log("Mitm", "CA already in system store -> propagated to zygote ns");
+                DebugLog.get().log("Mitm", CaInstaller.caDiagnostics(pem));
                 return;
             }
             DebugLog.get().log("Mitm", "CA mismatch -> auto reinstall (clear-data case)");
             String r = CaInstaller.installToSystemRoot(pem);
             DebugLog.get().log("Mitm", "CA auto-install: " + r);
+            DebugLog.get().log("Mitm", CaInstaller.caDiagnostics(pem));
             com.dustinky.spyprobe.util.UiLog.log("MitmManager CA auto-install: " + r);
         } catch (Throwable t) {
             DebugLog.get().log("Mitm", "CA ensure FAIL: " + t);
