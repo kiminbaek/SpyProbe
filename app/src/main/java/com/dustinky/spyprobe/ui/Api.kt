@@ -226,6 +226,10 @@ class SpyApi(private var port: Int = 9901) {
     }
 
     // v1.19 P2-1: 返回 Boolean —— 成功下发=true（响应含 ok），未连接/异常=false（供 UI 决定是否更新本地快照）
+    // v1.73.1 P0-2: MITM 代理只活在主进程，而设置页配置只 POST 到 9901 目标进程（SpyServer 无 MitmManager
+    //   联动）→ 代理永不启动。修复：POST 9901 成功后本地主进程 Config 同步 + MitmManager.applyConfig()
+    //   （9900 SpyHomeServer 的 /api/config POST 联动只在 UI 从不发起的路径上）。
+    //   P1: 9901 /api/config POST 返回配置 JSON（无 ok:true）→ 原判断恒 false，放宽为 sslBypass 特征也算成功。
     fun sendConfig(map: Map<String, Any>): Boolean {
         return try {
             val o = JSONObject()
@@ -239,7 +243,13 @@ class SpyApi(private var port: Int = 9901) {
                 }
             }
             val resp = httpPost("/api/config", o.toString()) ?: return false
-            resp.contains("\"ok\":true") || resp.contains("\"ok\": true")
+            // v7x P0-2: 主进程本地同步（MitmManager 只活在主进程，设置页必须联动）
+            try {
+                com.dustinky.spyprobe.Config.get().applyJson(o.toString())
+                com.dustinky.spyprobe.Config.get().saveConfig(com.dustinky.spyprobe.Config.get().homeCfgFile())
+                com.dustinky.spyprobe.MitmManager.get()?.applyConfig()
+            } catch (t: Throwable) { }
+            resp.contains("\"ok\":true") || resp.contains("\"ok\": true") || resp.contains("\"sslBypass\"")
         } catch (t: Throwable) { false }
     }
 
