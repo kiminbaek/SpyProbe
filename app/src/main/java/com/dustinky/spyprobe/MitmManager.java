@@ -71,6 +71,9 @@ public class MitmManager {
 
     private void startProxy() {
         try {
+            // v1.74.6 P0-9: 启动代理前自动检查 CA 指纹——用户清除应用数据后 mitm_ca 重新生成新 CA，
+            // 系统信任库还是旧 CA → dart:io 校验证书失败 → 目标 App TLS 握手挂起（一直连线中）。
+            ensureCaInstalled();
             int port = Config.get().mitmPort;
             boolean transparent = Config.get().mitmTransparent;
             proxy.start(port, this::onPlain, transparent);
@@ -87,6 +90,40 @@ public class MitmManager {
         try { proxy.stop(); } catch (Throwable ignored) {}
         clearIptables();
         parsers.clear();
+    }
+
+    /**
+     * v1.74.6 P0-9: 检查当前 CA 是否已装进系统信任库，不匹配则自动 root 重装（bind-mount 立即生效，无需重启）。
+     * 已装 Magisk/KernelSU 模块时同步更新模块内 CA（否则重启手机后模块挂旧 CA 又失配）。
+     */
+    private void ensureCaInstalled() {
+        try {
+            File pem = cert.caCertPem();
+            if (pem == null || !pem.exists()) {
+                DebugLog.get().log("Mitm", "CA pem missing, skip auto-install");
+                return;
+            }
+            if (CaInstaller.isSystemInstalled(pem)) {
+                DebugLog.get().log("Mitm", "CA already in system trust store");
+                return;
+            }
+            DebugLog.get().log("Mitm", "CA mismatch -> auto reinstall (clear-data case)");
+            String r = CaInstaller.installToSystemRoot(pem);
+            DebugLog.get().log("Mitm", "CA auto-install: " + r);
+            com.dustinky.spyprobe.util.UiLog.log("MitmManager CA auto-install: " + r);
+            if (CaInstaller.hasModule()) {
+                try {
+                    String r2 = CaInstaller.installMagiskModuleRoot(pem);
+                    DebugLog.get().log("Mitm", "CA module sync: " + r2);
+                    com.dustinky.spyprobe.util.UiLog.log("MitmManager CA module sync: " + r2);
+                } catch (Throwable t2) {
+                    DebugLog.get().log("Mitm", "CA module sync FAIL: " + t2);
+                }
+            }
+        } catch (Throwable t) {
+            DebugLog.get().log("Mitm", "CA ensure FAIL: " + t);
+            com.dustinky.spyprobe.util.UiLog.log("MitmManager CA ensure FAIL: " + t);
+        }
     }
 
     // ===== 明文融合 → TlsHttpParser → HttpStore =====

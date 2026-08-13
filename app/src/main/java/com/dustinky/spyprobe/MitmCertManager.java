@@ -110,6 +110,11 @@ public class MitmCertManager {
         return (caKey != null && caCert != null) || (caKeyPem.exists() && caCertPem.exists());
     }
 
+    /** v1.74.6 P0-9: 暴露 CA PEM 文件（自动安装/指纹检查用） */
+    public File caCertPem() {
+        return caCertPem;
+    }
+
     public X509Certificate caCert() {
         ensureCa();
         return caCert;

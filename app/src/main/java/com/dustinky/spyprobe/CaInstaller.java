@@ -252,6 +252,11 @@ public class CaInstaller {
         return hash;
     }
 
+    /** v1.74.6 P0-9: 是否已装 Magisk/KernelSU 模块（/data/adb/modules/spyprobe-mitm 存在） */
+    public static boolean hasModule() {
+        return new File("/data/adb/modules/" + MODULE_ID).isDirectory();
+    }
+
     /** root 直接装到模块目录（重启生效；KernelSU 下额外尝试即时 bind-mount） */
     public static String installMagiskModuleRoot(File caPem) {
         String rm = detectRootManager();
