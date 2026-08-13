@@ -48,6 +48,8 @@ public class CaInstaller {
     private static final String POST_FS_DATA_SH =
             "#!/system/bin/sh\n" +
             "# SpyProbe MITM CA - universal bind-mount (Magisk/KernelSU, no metamodule needed)\n" +
+            "# v1.74.16: 加 zygote namespace 穿透（对齐 Reqable CustomCACert）——模块 enable/disable\n" +
+            "#   即时生效场景下已运行 App 看不到当前 ns 的 bind-mount，需进 zygote/zygote64 ns 再 bind。\n" +
             "MODDIR=${0%/*}\n" +
             "CERT_DIR=$MODDIR/system/etc/security/cacerts\n" +
             "TMP=/data/local/tmp/spyprobe-cacerts\n" +
@@ -58,11 +60,17 @@ public class CaInstaller {
             "  cp -f $CERT_DIR/*.0 $TMP/ 2>/dev/null\n" +
             "  chmod 644 $TMP/* 2>/dev/null\n" +
             "  mount --bind $TMP /apex/com.android.conscrypt/cacerts\n" +
+            "  for pid in 1 $(pgrep zygote) $(pgrep zygote64); do\n" +
+            "    nsenter --mount=/proc/${pid}/ns/mnt -- mount --bind $TMP /apex/com.android.conscrypt/cacerts 2>/dev/null\n" +
+            "  done\n" +
             "else\n" +
             "  cp -f /system/etc/security/cacerts/* $TMP/ 2>/dev/null\n" +
             "  cp -f $CERT_DIR/*.0 $TMP/ 2>/dev/null\n" +
             "  chmod 644 $TMP/* 2>/dev/null\n" +
             "  mount --bind $TMP /system/etc/security/cacerts\n" +
+            "  for pid in 1 $(pgrep zygote) $(pgrep zygote64); do\n" +
+            "    nsenter --mount=/proc/${pid}/ns/mnt -- mount --bind $TMP /system/etc/security/cacerts 2>/dev/null\n" +
+            "  done\n" +
             "fi\n" +
             "exit 0\n";
 
@@ -180,6 +188,14 @@ public class CaInstaller {
             su("chmod 644 " + tmp + "/*");
             su("mount --bind " + tmp + " " + sysDir);
         }
+        // v1.74.16 P0-15: zygote namespace 穿透——对齐 Reqable(CustomCACert) 模块。
+        //   Android 每个 App 进程继承 zygote 的 mount namespace；bind-mount 只在执行 su 的
+        //   当前进程 namespace 生效，已运行的目标 App 看不到新 CA → 证书校验失败 →
+        //   MITM 握手 ServerHello 后客户端 EOF（「连线中」）。必须进 pid 1 + zygote +
+        //   zygote64 的 mount ns 逐个再 bind，之后 fork 的 App 才能继承。
+        su("for pid in 1 $(pgrep zygote) $(pgrep zygote64); do "
+                + "nsenter --mount=/proc/${pid}/ns/mnt -- mount --bind " + tmp + " " + sysDir
+                + " 2>/dev/null; done; true");
         boolean ok = new File(sysDir + "/" + hash + ".0").exists();
         UiLog.log(TAG + " bindMountCa mounted=" + mounted + " " + (ok ? "OK" : "verify FAIL") + " -> " + sysDir + "/" + hash + ".0");
         return ok;

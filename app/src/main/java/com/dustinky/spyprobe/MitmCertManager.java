@@ -161,6 +161,13 @@ public class MitmCertManager {
 
     private KeyStore loadOrCreateHostStore(String host) throws Exception {
         File p12 = new File(hostsDir, host + ".p12");
+        // v1.74.16 P0-16: 旧版对 IP host 签了 dNSName SAN（RFC 6125：IP 必须用 iPAddress 类型，
+        //   dNSName "54.255.198.114" 无法匹配 IP 直连的 hostname 校验）→ 客户端 ServerHello 后
+        //   证书校验失败直接 EOF（「连线中」）。IP host 的旧 .p12 必然 SAN 类型错误，直接删除重建。
+        if (p12.exists() && isIp(host)) {
+            MitmLog.log(TAG + " IP host old cert (dNSName SAN) -> regen: " + host);
+            p12.delete();
+        }
         if (p12.exists()) {
             try {
                 KeyStore ks = KeyStore.getInstance("PKCS12");
@@ -188,8 +195,14 @@ public class MitmCertManager {
         X500Name subject = new X500Name("CN=" + host);
         JcaX509v3CertificateBuilder b = new JcaX509v3CertificateBuilder(
                 issuer, randSerial(), notBefore, notAfter, subject, kp.getPublic());
-        // SAN：只签具体 host（不需要 *.host）
-        GeneralNames san = new GeneralNames(new GeneralName(GeneralName.dNSName, host));
+        // SAN：host 是 IP 用 iPAddress（RFC 6125：IP 必须 iPAddress 类型，dNSName 无效）；
+        //       域名用 dNSName（不需要 *.host 通配）
+        GeneralNames san;
+        if (isIp(host)) {
+            san = new GeneralNames(new GeneralName(GeneralName.iPAddress, host));
+        } else {
+            san = new GeneralNames(new GeneralName(GeneralName.dNSName, host));
+        }
         b.addExtension(Extension.subjectAlternativeName, false, san);
         b.addExtension(Extension.basicConstraints, true, new BasicConstraints(false));
         b.addExtension(Extension.keyUsage, true,
@@ -280,6 +293,24 @@ public class MitmCertManager {
 
     private BigInteger randSerial() {
         return new BigInteger(64, new SecureRandom());
+    }
+
+    /** 是否 IP 字面量（IPv4 四段或含冒号的 IPv6）——IP host 证书 SAN 必须用 iPAddress 类型 */
+    private static boolean isIp(String host) {
+        if (host == null || host.isEmpty()) return false;
+        if (host.indexOf(':') >= 0) return true; // IPv6
+        String[] p = host.split("\\.");
+        if (p.length != 4) return false;
+        for (String s : p) {
+            if (s.isEmpty() || s.length() > 3) return false;
+            for (int i = 0; i < s.length(); i++) {
+                char c = s.charAt(i);
+                if (c < '0' || c > '9') return false;
+            }
+            int v = Integer.parseInt(s);
+            if (v < 0 || v > 255) return false;
+        }
+        return true;
     }
 
     // 防混淆删除（release 未开混淆，此引用仅为显式声明依赖）
