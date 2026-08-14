@@ -7,12 +7,14 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.security.KeyStore;
 import java.security.MessageDigest;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
-
 /**
  * v7x: CA 安装器 —— 4 种方式把 SpyProbe MITM CA 装进系统信任库（多选项，不绑手机）
  * v1.73: 通用自适应 —— 应用运行时自动检测 Android 版本(getprop) + root 管理器
@@ -50,28 +52,29 @@ public class CaInstaller {
             "# SpyProbe MITM CA - universal bind-mount (Magisk/KernelSU, no metamodule needed)\n" +
             "# v1.74.16: 加 zygote namespace 穿透（对齐 Reqable CustomCACert）——模块 enable/disable\n" +
             "#   即时生效场景下已运行 App 看不到当前 ns 的 bind-mount，需进 zygote/zygote64 ns 再 bind。\n" +
+            "# v1.74.18: 双目录 bind——部分 ROM（OPPO/ColorOS 等）的 /system/etc/security/cacerts 是\n" +
+            "#   独立目录（非指向 /apex 的 symlink），native TLS 栈读它；只挂 /apex 会漏 → 证书校验\n" +
+            "#   失败 → MITM ServerHello 后客户端 EOF。两个目录都复制+bind，覆盖所有机型。\n" +
             "MODDIR=${0%/*}\n" +
             "CERT_DIR=$MODDIR/system/etc/security/cacerts\n" +
             "TMP=/data/local/tmp/spyprobe-cacerts\n" +
             "rm -rf $TMP\n" +
             "mkdir -p $TMP\n" +
-            "if [ -d /apex/com.android.conscrypt/cacerts ]; then\n" +
-            "  cp -f /apex/com.android.conscrypt/cacerts/* $TMP/ 2>/dev/null\n" +
-            "  cp -f $CERT_DIR/*.0 $TMP/ 2>/dev/null\n" +
-            "  chmod 644 $TMP/* 2>/dev/null\n" +
-            "  mount --bind $TMP /apex/com.android.conscrypt/cacerts\n" +
-            "  for pid in 1 $(pgrep zygote) $(pgrep zygote64); do\n" +
-            "    nsenter --mount=/proc/${pid}/ns/mnt -- mount --bind $TMP /apex/com.android.conscrypt/cacerts 2>/dev/null\n" +
-            "  done\n" +
-            "else\n" +
-            "  cp -f /system/etc/security/cacerts/* $TMP/ 2>/dev/null\n" +
-            "  cp -f $CERT_DIR/*.0 $TMP/ 2>/dev/null\n" +
-            "  chmod 644 $TMP/* 2>/dev/null\n" +
-            "  mount --bind $TMP /system/etc/security/cacerts\n" +
-            "  for pid in 1 $(pgrep zygote) $(pgrep zygote64); do\n" +
-            "    nsenter --mount=/proc/${pid}/ns/mnt -- mount --bind $TMP /system/etc/security/cacerts 2>/dev/null\n" +
-            "  done\n" +
-            "fi\n" +
+            "for D in /apex/com.android.conscrypt/cacerts /system/etc/security/cacerts; do\n" +
+            "  if [ -d $D ]; then\n" +
+            "    cp -f $D/* $TMP/ 2>/dev/null\n" +
+            "  fi\n" +
+            "done\n" +
+            "cp -f $CERT_DIR/*.0 $TMP/ 2>/dev/null\n" +
+            "chmod 644 $TMP/* 2>/dev/null\n" +
+            "for D in /apex/com.android.conscrypt/cacerts /system/etc/security/cacerts; do\n" +
+            "  if [ -d $D ]; then\n" +
+            "    mount --bind $TMP $D 2>/dev/null\n" +
+            "    for pid in 1 $(pgrep zygote) $(pgrep zygote64); do\n" +
+            "      nsenter --mount=/proc/${pid}/ns/mnt -- mount --bind $TMP $D 2>/dev/null\n" +
+            "    done\n" +
+            "  fi\n" +
+            "done\n" +
             "exit 0\n";
 
     private CaInstaller() {}
@@ -154,15 +157,38 @@ public class CaInstaller {
      *   ensureCaInstalled 的 isSystemInstalled=true 短路路径必须也调用本方法（幂等）。
      *   兼容 Android 14+ apex / <14 system 两个目录。
      */
+    /**
+     * 返回真机上存在的系统 CA 目录列表。
+     * v1.74.18: 双目录都算——Android 14+ 的 /apex/com.android.conscrypt/cacerts 和
+     *   传统 /system/etc/security/cacerts。部分 ROM（OPPO/ColorOS 等）的 /system 目录是
+     *   独立目录（非指向 /apex 的 symlink），native TLS 栈读它；只挂 /apex 会漏。
+     */
+    public static List<String> sysCaDirs() {
+        List<String> list = new ArrayList<>();
+        if (new File("/apex/com.android.conscrypt/cacerts").isDirectory())
+            list.add("/apex/com.android.conscrypt/cacerts");
+        if (new File("/system/etc/security/cacerts").isDirectory())
+            list.add("/system/etc/security/cacerts");
+        return list;
+    }
+
+    /**
+     * v1.74.17 P0-17: 无条件把 CA bind-mount 传播到 zygote namespace（双目录）。
+     * 背景：App 每次启动是新进程（继承 zygote 的 mount namespace）。即使 isSystemInstalled()
+     *   在当前进程 namespace 看到 CA 文件（旧挂载/直写），**zygote fork 的目标 App 进程
+     *   依然看不到** → 证书校验失败 → MITM 握手 ServerHello 后客户端 EOF（「连线中」）。
+     *   ensureCaInstalled 的 isSystemInstalled=true 短路路径必须也调用本方法（幂等）。
+     *   v1.74.18: 对 /apex 和 /system/etc/security/cacerts 两个目录都传播。
+     */
     public static void propagateToZygote() {
         try {
-            boolean apex = isApexCacerts();
-            String sysDir = apex ? "/apex/com.android.conscrypt/cacerts" : "/system/etc/security/cacerts";
             String tmp = "/data/local/tmp/spyprobe-cacerts";
-            su("for pid in 1 $(pgrep zygote) $(pgrep zygote64); do "
-                    + "nsenter --mount=/proc/${pid}/ns/mnt -- mount --bind " + tmp + " " + sysDir
-                    + " 2>/dev/null; done; true");
-            UiLog.log(TAG + " propagateToZygote done sysDir=" + sysDir);
+            for (String sysDir : sysCaDirs()) {
+                su("for pid in 1 $(pgrep zygote) $(pgrep zygote64); do "
+                        + "nsenter --mount=/proc/${pid}/ns/mnt -- mount --bind " + tmp + " " + sysDir
+                        + " 2>/dev/null; done; true");
+            }
+            UiLog.log(TAG + " propagateToZygote done dirs=" + sysCaDirs());
         } catch (Throwable t) {
             UiLog.log(TAG + " propagateToZygote FAIL: " + t);
         }
@@ -170,6 +196,8 @@ public class CaInstaller {
 
     /**
      * v1.74.17 诊断：输出当前 CA 与系统库文件的 sha256 指纹对比 + mount 状态。
+     * v1.74.18: 加目录 ls -la（区分 symlink/独立目录）+ AndroidCAStore 权威验证
+     *   （TrustManager 实际信任存储视角，native TLS 栈同源）。
      * 用于真机排查「CA 失配 vs mount 不可见」——一次日志看清根因。
      */
     public static String caDiagnostics(File caPem) {
@@ -179,6 +207,8 @@ public class CaInstaller {
             String hash = subjectHashOld(cert);
             String caSha = sha256File(caPem);
             String mountInfo = suOut("cat /proc/mounts | grep -E 'spyprobe-cacerts|cacerts' | head -8");
+            String lsInfo = suOut("ls -ld /apex/com.android.conscrypt/cacerts /system/etc/security/cacerts 2>/dev/null; "
+                    + "ls -la /system/etc/security/cacerts/ 2>/dev/null | head -3");
             StringBuilder sb = new StringBuilder();
             sb.append("diag CA hash=").append(hash)
                     .append(" sha256=").append(caSha == null ? "?" : caSha.substring(0, 16)).append("...\n");
@@ -196,6 +226,17 @@ public class CaInstaller {
                 }
                 sb.append("\n");
             }
+            // AndroidCAStore = TrustManager 实际信任存储（Java + native Conscrypt 同源），最权威
+            try {
+                KeyStore ks = KeyStore.getInstance("AndroidCAStore");
+                ks.load(null, null);
+                String alias = ks.getCertificateAlias(cert);
+                sb.append("diag AndroidCAStore(TrustManager视角) sees CA=").append(alias != null)
+                        .append(" alias=").append(alias).append("\n");
+            } catch (Throwable t) {
+                sb.append("diag AndroidCAStore check FAIL: ").append(t).append("\n");
+            }
+            sb.append("diag ls:\n").append(lsInfo == null ? "(none)" : lsInfo).append("\n");
             sb.append("diag mounts:\n").append(mountInfo == null ? "(none)" : mountInfo);
             return sb.toString();
         } catch (Throwable t) {
@@ -235,44 +276,59 @@ public class CaInstaller {
         suOut(cmd);
     }
 
-    // ===== bind-mount 核心（通用：APEX / system 二选一，立即生效） =====
+    // ===== bind-mount 核心（通用：APEX + /system 双目录，立即生效） =====
 
     /**
      * 把 CA bind-mount 进系统信任库（立即生效）。
      * 原理：复制系统 CA 目录到 /data/local/tmp/spyprobe-cacerts，追加我们的证书，再 bind-mount 回去。
      * 不 remount /system、不依赖 metamodule；Magisk/KernelSU/APatch 通用。
      * 注意：bind-mount 是非持久挂载，重启后需模块（post-fs-data.sh）重新挂。
+     * v1.74.18: 双目录——/apex/com.android.conscrypt/cacerts 和 /system/etc/security/cacerts
+     *   都复制+bind。部分 ROM 的 /system 目录是独立目录（非 symlink），native TLS 栈读它。
      */
-    private static boolean bindMountCa(File caPem, String hash, boolean apex) throws Exception {
-        String sysDir = apex ? "/apex/com.android.conscrypt/cacerts" : "/system/etc/security/cacerts";
+    private static boolean bindMountCa(File caPem, String hash) throws Exception {
+        List<String> sysDirs = sysCaDirs();
+        if (sysDirs.isEmpty()) throw new RuntimeException("no system CA dir found");
         String tmp = "/data/local/tmp/spyprobe-cacerts";
-        UiLog.log(TAG + " bindMountCa apex=" + apex + " hash=" + hash);
+        UiLog.log(TAG + " bindMountCa hash=" + hash + " dirs=" + sysDirs);
         // v1.74.11 P0-14: 修复重复安装清空系统 CA 的致命 bug。
         //   旧实现每次都 `rm -rf tmp`——若 tmp 已 bind-mount 到 sysDir，删除源目录内容
         //   = 系统 CA 视图文件全部消失 → 所有 App 无法验证任何证书 → 无网（重启才恢复）。
         //   已挂载：只追加我们的 CA（绝不动其他系统 CA）；未挂载：完整复制后再挂载。
-        boolean mounted = isMounted(tmp, sysDir);
-        if (mounted) {
+        boolean anyMounted = false;
+        for (String sysDir : sysDirs) {
+            if (isMounted(tmp, sysDir)) { anyMounted = true; break; }
+        }
+        if (anyMounted) {
             su("cp -f '" + caPem.getAbsolutePath() + "' " + tmp + "/" + hash + ".0");
             su("chmod 644 " + tmp + "/" + hash + ".0");
         } else {
             su("rm -rf " + tmp);
             su("mkdir -p " + tmp);
-            su("cp -f " + sysDir + "/* " + tmp + "/");
+            for (String sysDir : sysDirs) {
+                su("cp -f " + sysDir + "/* " + tmp + "/ 2>/dev/null");
+            }
             su("cp -f '" + caPem.getAbsolutePath() + "' " + tmp + "/" + hash + ".0");
             su("chmod 644 " + tmp + "/*");
-            su("mount --bind " + tmp + " " + sysDir);
         }
-        // v1.74.16 P0-15: zygote namespace 穿透——对齐 Reqable(CustomCACert) 模块。
+        // 挂到所有存在的系统 CA 目录（幂等，已挂的跳过；symlink 目录 mount 会跟随到目标，无害）
+        for (String sysDir : sysDirs) {
+            if (!isMounted(tmp, sysDir)) {
+                su("mount --bind " + tmp + " " + sysDir + " 2>/dev/null");
+            }
+        }
+        // v1.74.16 P0-15: zygote namespace 穿透（双目录）——对齐 Reqable(CustomCACert) 模块。
         //   Android 每个 App 进程继承 zygote 的 mount namespace；bind-mount 只在执行 su 的
         //   当前进程 namespace 生效，已运行的目标 App 看不到新 CA → 证书校验失败 →
         //   MITM 握手 ServerHello 后客户端 EOF（「连线中」）。必须进 pid 1 + zygote +
         //   zygote64 的 mount ns 逐个再 bind，之后 fork 的 App 才能继承。
-        su("for pid in 1 $(pgrep zygote) $(pgrep zygote64); do "
-                + "nsenter --mount=/proc/${pid}/ns/mnt -- mount --bind " + tmp + " " + sysDir
-                + " 2>/dev/null; done; true");
-        boolean ok = new File(sysDir + "/" + hash + ".0").exists();
-        UiLog.log(TAG + " bindMountCa mounted=" + mounted + " " + (ok ? "OK" : "verify FAIL") + " -> " + sysDir + "/" + hash + ".0");
+        propagateToZygote();
+        boolean ok = true;
+        for (String sysDir : sysDirs) {
+            if (!new File(sysDir + "/" + hash + ".0").exists()) ok = false;
+        }
+        UiLog.log(TAG + " bindMountCa " + (ok ? "OK" : "verify FAIL")
+                + " -> " + sysDirs + "/" + hash + ".0");
         return ok;
     }
 
@@ -293,11 +349,11 @@ public class CaInstaller {
         String rm = detectRootManager();
         UiLog.log(TAG + " installToSystemRoot sdk=" + sdkInt() + " rootManager=" + rm + " apex=" + apex);
         try {
-            // Android 14+（APEX）：bind-mount（不 remount，通用）
+            // Android 14+（APEX）：bind-mount（不 remount，通用；双目录都挂）
             if (apex) {
-                boolean ok = bindMountCa(caPem, hash, true);
+                boolean ok = bindMountCa(caPem, hash);
                 return ok
-                        ? "OK 已 bind-mount 到 APEX 系统 CA（立即生效；重启后需装模块保持）"
+                        ? "OK 已 bind-mount 到系统 CA（APEX + /system 双目录，立即生效；重启后需装模块保持）"
                         : "bind-mount 后验证失败（详见调试日志）";
             }
             // Android <14：先试 remount /system 直写（传统），失败回退 bind-mount
@@ -309,9 +365,9 @@ public class CaInstaller {
                 return "OK 已写入 " + dst + "（部分设备需重启生效）";
             } catch (Throwable t) {
                 UiLog.log(TAG + " remount fail -> fallback bind-mount: " + t);
-                boolean ok = bindMountCa(caPem, hash, false);
+                boolean ok = bindMountCa(caPem, hash);
                 return ok
-                        ? "remount 失败，已改用 bind-mount 生效（立即生效；重启后需装模块保持）"
+                        ? "remount 失败，已改用 bind-mount（双目录）生效（立即生效；重启后需装模块保持）"
                         : "remount + bind-mount 均失败（详见调试日志）";
             }
         } catch (Throwable t) {
@@ -383,7 +439,7 @@ public class CaInstaller {
             // KernelSU/APatch：尝试即时 bind-mount（立即生效，不等重启）；Magisk 走 magic mount 重启生效
             if ("KernelSU".equals(rm) || "APatch".equals(rm)) {
                 try {
-                    boolean ok = bindMountCa(caPem, hash, apex);
+                    boolean ok = bindMountCa(caPem, hash);
                     return ok
                             ? "OK 模块已写入 " + MODULE_ID + "，并已即时 bind-mount（hash=" + hash + "，立即生效，重启后仍保持）"
                             : "OK 模块已写入 " + MODULE_ID + "（hash=" + hash + "，即时 bind-mount 验证失败，重启后生效）";
