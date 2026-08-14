@@ -165,13 +165,65 @@ public class MitmManager {
     /** 目标进程启动时上报 uid（SpyHomeServer /api/target_uid 回调） */
     public void registerTargetUid(int uid) {
         if (uid <= 0) return;
-        targetUids.add(uid);
+        boolean isNew = targetUids.add(uid);
         DebugLog.get().log("Mitm", "register uid=" + uid + " total=" + targetUids.size());
         com.dustinky.spyprobe.util.UiLog.log("MitmManager register uid=" + uid + " total=" + targetUids.size()
                 + " running=" + proxy.isRunning() + " transparent=" + Config.get().mitmTransparent);
+        // v1.74.19 P0-18: 目标 App 进程若先于 CA 安装/代理启动，其进程内 TrustManager /
+        //   native SSL_CTX 的 X509_STORE 缓存没有新 CA → ServerHello 后证书校验失败 →
+        //   客户端 1ms 内关闭 → 握手 EOF（「连线中」）。
+        //   首次注册且代理已在运行 = 目标 App 大概率先于 CA 启动 → force-stop 强制重启目标应用，
+        //   新进程重新加载系统 CA（UiLog 提示用户重新打开）。
+        if (isNew && proxy.isRunning() && Config.get().mitmTransparent) {
+            restartTargetAppForCa(uid);
+        }
         if (proxy.isRunning() && Config.get().mitmTransparent) {
             applyIptables();
         }
+    }
+
+    /** P0-18: force-stop 目标应用，让新进程重新加载系统 CA（幂等：重开后 uid 已存在不再杀） */
+    private void restartTargetAppForCa(int uid) {
+        try {
+            String pkg = packageForUid(uid);
+            if (pkg == null) {
+                DebugLog.get().log("Mitm", "restartTargetApp: no pkg for uid=" + uid);
+                return;
+            }
+            DebugLog.get().log("Mitm", "P0-18: CA 需新进程加载 → force-stop " + pkg);
+            execRoot("am force-stop " + pkg);
+            com.dustinky.spyprobe.util.UiLog.log("MitmManager 已自动重启目标应用 " + pkg
+                    + "（系统 CA 需新进程加载），请重新打开应用");
+        } catch (Throwable t) {
+            DebugLog.get().log("Mitm", "restartTargetApp FAIL: " + t);
+        }
+    }
+
+    /** 通过 uid 找包名（root pm） */
+    private String packageForUid(int uid) {
+        try {
+            String out = execRootOut("pm list packages --uid " + uid);
+            if (out != null) {
+                for (String line : out.split("\n")) {
+                    String t = line.trim();
+                    if (t.startsWith("package:")) return t.substring("package:".length()).trim();
+                }
+            }
+        } catch (Throwable t) {
+            DebugLog.get().log("Mitm", "packageForUid FAIL: " + t);
+        }
+        return null;
+    }
+
+    /** root 执行并返回标准输出（首 4KB） */
+    private String execRootOut(String cmd) throws Exception {
+        Process p = Runtime.getRuntime().exec(new String[]{"su", "-c", cmd});
+        java.io.InputStream is = p.getInputStream();
+        byte[] buf = new byte[4096];
+        int n = is.read(buf);
+        p.waitFor();
+        if (n > 0) return new String(buf, 0, n, java.nio.charset.StandardCharsets.UTF_8);
+        return null;
     }
 
     // ===== iptables 规则（透明模式，需 root） =====

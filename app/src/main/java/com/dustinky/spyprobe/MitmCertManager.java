@@ -164,7 +164,10 @@ public class MitmCertManager {
         // v1.74.16 P0-16: 旧版对 IP host 签了 dNSName SAN（RFC 6125：IP 必须用 iPAddress 类型，
         //   dNSName "54.255.198.114" 无法匹配 IP 直连的 hostname 校验）→ 客户端 ServerHello 后
         //   证书校验失败直接 EOF（「连线中」）。IP host 的旧 .p12 必然 SAN 类型错误，直接删除重建。
-        if (p12.exists() && isIp(host)) {
+        // v1.74.19 P0-18: 只删「dNSName SAN 的旧 IP 证书」——此前无条件删除导致 IP 直连每次连接
+        //   都重新生成 RSA 2048 密钥（0.3-0.6s）→ ServerHello 延迟 0.47s+ → 客户端握手超时 EOF
+        //   （91aw 全 IP 直连，首连必挂）。iPAddress SAN 的新证书直接复用。
+        if (p12.exists() && isIp(host) && hostStoreHasDnsSan(p12)) {
             MitmLog.log(TAG + " IP host old cert (dNSName SAN) -> regen: " + host);
             p12.delete();
         }
@@ -293,6 +296,34 @@ public class MitmCertManager {
 
     private BigInteger randSerial() {
         return new BigInteger(64, new SecureRandom());
+    }
+
+    /**
+     * v1.74.19 P0-18: 检查 p12 里 leaf 证书对 IP host 是否误用了 dNSName SAN（v1.74.16 旧版 bug）。
+     *   true=旧格式需重建；false=已是 iPAddress SAN（或无法读取）→ 直接复用，避免每次连接重生成 RSA。
+     */
+    private boolean hostStoreHasDnsSan(File p12) {
+        try {
+            KeyStore ks = KeyStore.getInstance("PKCS12");
+            try (FileInputStream fis = new FileInputStream(p12)) {
+                ks.load(fis, HOST_STORE_PASS);
+            }
+            java.security.cert.Certificate[] chain = ks.getCertificateChain("leaf");
+            if (chain == null || chain.length == 0) return false;
+            java.security.cert.X509Certificate leaf = (java.security.cert.X509Certificate) chain[0];
+            java.util.Collection<java.util.List<?>> sans = leaf.getSubjectAlternativeNames();
+            if (sans == null) return false;
+            for (java.util.List<?> san : sans) {
+                // GeneralName type=2 → dNSName
+                if (san != null && san.size() >= 2 && san.get(0) instanceof Integer
+                        && ((Integer) san.get(0)).intValue() == 2) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (Throwable t) {
+            return false; // 读不了就不强制重建（后续 load 校验逻辑会兜底）
+        }
     }
 
     /** 是否 IP 字面量（IPv4 四段或含冒号的 IPv6）——IP host 证书 SAN 必须用 iPAddress 类型 */
