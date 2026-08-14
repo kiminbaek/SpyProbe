@@ -3,6 +3,7 @@ package com.dustinky.spyprobe;
 import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.security.Key;
 import java.security.spec.AlgorithmParameterSpec;
 import java.util.Collections;
@@ -550,6 +551,171 @@ public class CryptoProbe {
                 });
             } catch (Throwable t) { }
             DebugLog.get().logNoMirror(TAG, "[" + phase + "] hooked SecureRandom.setSeed");
+        } catch (Throwable t) { }
+
+        // v8x P2 (HookNext 借鉴): Base64 编解码记录 —— 敏感数据常 Base64 后传输，
+        //   解码能看到明文业务内容（如 91aw 的 token/签名/参数）。
+        //   HookNext 的 Base64 记录类型 = android.util.Base64 + java.util.Base64 双 hook。
+        installBase64(phase);
+
+        DebugLog.get().logNoMirror(TAG, "[" + phase + "] hooked Base64 (android.util + java.util)");
+    }
+
+    /** v8x P2 (HookNext 借鉴): Base64 编解码记录（默认随 cryptoCapture 开关，5s 同签名限频防刷屏） */
+    private void installBase64(String phase) {
+        final int MAX_B64 = 512; // 单次记录最大字节（超限截断，防大文件刷屏）
+        // ---- android.util.Base64（API 8+ 系统级） ----
+        try {
+            Class<?> b64 = Class.forName("android.util.Base64");
+            // decode(String, int) → byte[]：解码最有用（明文内容直接可见）
+            try {
+                Method m = b64.getMethod("decode", String.class, int.class);
+                module.hook(m).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (Config.get().cryptoCapture) {
+                        try {
+                            Object in = chain.getArg(0);
+                            if (in instanceof String) {
+                                String s = (String) in;
+                                if (s.length() > 4096) return r; // 大块跳过（避免高频刷屏）
+                                byte[] out = r instanceof byte[] ? (byte[]) r : null;
+                                logBase64Event("DECODE", "android.util.Base64", s, out, MAX_B64);
+                            }
+                        } catch (Throwable t) { }
+                    }
+                    return r;
+                });
+            } catch (Throwable t) { }
+            // decode(byte[], int) → byte[]
+            try {
+                Method m = b64.getMethod("decode", byte[].class, int.class);
+                module.hook(m).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (Config.get().cryptoCapture) {
+                        try {
+                            Object in = chain.getArg(0);
+                            if (in instanceof byte[] && ((byte[]) in).length <= 4096) {
+                                byte[] out = r instanceof byte[] ? (byte[]) r : null;
+                                logBase64Event("DECODE", "android.util.Base64", new String((byte[]) in, StandardCharsets.UTF_8), out, MAX_B64);
+                            }
+                        } catch (Throwable t) { }
+                    }
+                    return r;
+                });
+            } catch (Throwable t) { }
+            // encodeToString(byte[], int) → String：编码方向（同签名限频）
+            try {
+                Method m = b64.getMethod("encodeToString", byte[].class, int.class);
+                module.hook(m).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (Config.get().cryptoCapture) {
+                        try {
+                            Object in = chain.getArg(0);
+                            if (in instanceof byte[] && ((byte[]) in).length <= 4096) {
+                                String out = r instanceof String ? (String) r : null;
+                                logBase64Event("ENCODE", "android.util.Base64", out, (byte[]) in, MAX_B64);
+                            }
+                        } catch (Throwable t) { }
+                    }
+                    return r;
+                });
+            } catch (Throwable t) { }
+        } catch (Throwable t) { }
+
+        // ---- java.util.Base64（API 26+，现代 App 常用） ----
+        try {
+            // Decoder.decode(String) / decode(byte[])
+            try {
+                Class<?> dec = Class.forName("java.util.Base64$Decoder");
+                Method m = dec.getMethod("decode", String.class);
+                module.hook(m).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (Config.get().cryptoCapture) {
+                        try {
+                            Object in = chain.getArg(0);
+                            if (in instanceof String && ((String) in).length() <= 4096) {
+                                byte[] out = r instanceof byte[] ? (byte[]) r : null;
+                                logBase64Event("DECODE", "java.util.Base64", (String) in, out, MAX_B64);
+                            }
+                        } catch (Throwable t) { }
+                    }
+                    return r;
+                });
+            } catch (Throwable t) { }
+            try {
+                Class<?> dec = Class.forName("java.util.Base64$Decoder");
+                Method m = dec.getMethod("decode", byte[].class);
+                module.hook(m).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (Config.get().cryptoCapture) {
+                        try {
+                            Object in = chain.getArg(0);
+                            if (in instanceof byte[] && ((byte[]) in).length <= 4096) {
+                                byte[] out = r instanceof byte[] ? (byte[]) r : null;
+                                logBase64Event("DECODE", "java.util.Base64", new String((byte[]) in, StandardCharsets.UTF_8), out, MAX_B64);
+                            }
+                        } catch (Throwable t) { }
+                    }
+                    return r;
+                });
+            } catch (Throwable t) { }
+            // Encoder.encode(byte[]) → byte[]
+            try {
+                Class<?> enc = Class.forName("java.util.Base64$Encoder");
+                Method m = enc.getMethod("encode", byte[].class);
+                module.hook(m).intercept(chain -> {
+                    Object r = chain.proceed();
+                    if (Config.get().cryptoCapture) {
+                        try {
+                            Object in = chain.getArg(0);
+                            if (in instanceof byte[] && ((byte[]) in).length <= 4096) {
+                                byte[] out = r instanceof byte[] ? (byte[]) r : null;
+                                logBase64Event("ENCODE", "java.util.Base64", out == null ? "" : new String(out, StandardCharsets.UTF_8), (byte[]) in, MAX_B64);
+                            }
+                        } catch (Throwable t) { }
+                    }
+                    return r;
+                });
+            } catch (Throwable t) { }
+        } catch (Throwable t) { }
+    }
+
+    /** v8x P2: Base64 结构化事件（op=DECODE/ENCODE，data 存截断内容 + 可读文本） */
+    private static void logBase64Event(String op, String src, String b64In, byte[] rawOut, int maxBytes) {
+        try {
+            String b64 = b64In == null ? "" : (b64In.length() > 128 ? b64In.substring(0, 128) + "...(" + b64In.length() + ")" : b64In);
+            String rawHex = "";
+            String rawText = "";
+            if (rawOut != null) {
+                byte[] view = rawOut.length > maxBytes ? java.util.Arrays.copyOf(rawOut, maxBytes) : rawOut;
+                rawHex = MethodProbe.hex(view, Math.min(view.length, 128))
+                        + (rawOut.length > maxBytes ? "...(" + rawOut.length + "B)" : "");
+                rawText = new String(view, StandardCharsets.UTF_8);
+                // 可打印才展示文本（二进制乱码不刷屏）
+                boolean printable = true;
+                for (byte b : view) {
+                    int c = b & 0xFF;
+                    if (c < 0x20 && c != '\n' && c != '\r' && c != '\t') { printable = false; break; }
+                }
+                if (!printable) rawText = "<binary " + rawOut.length + "B>";
+                else if (rawText.length() > 200) rawText = rawText.substring(0, 200) + "...";
+            }
+            String sig = "b64:" + op + ":" + b64 + ":" + rawHex;
+            if (cryptoRateLimited(sig)) return;
+            String fullMsg = "[Base64 " + op + "] " + src + " in=\"" + b64 + "\" out=" + rawHex
+                    + (rawText.isEmpty() ? "" : " text=\"" + rawText + "\"");
+            long eid = EventStore.get().nextId();
+            String msg = "[EVT#" + eid + "]" + fullMsg;
+            LogStore.get().log(TAG, msg);
+            org.json.JSONObject payload = new org.json.JSONObject();
+            payload.put("op", op);
+            payload.put("algorithm", "Base64");
+            payload.put("mode", src);
+            payload.put("key", "");
+            payload.put("iv", "");
+            payload.put("data", rawHex + (rawText.isEmpty() ? "" : " | text: " + rawText));
+            EventStore.get().add(new SpyEvent("CRYPTO", eid, System.currentTimeMillis(),
+                    "Base64 " + op + " " + src, payload, msg, ""));
         } catch (Throwable t) { }
     }
 
