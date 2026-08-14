@@ -1434,3 +1434,67 @@ extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     gJvm = vm;
     return JNI_VERSION_1_6;
 }
+
+// ================= v8x: TUN 设备辅助（Magisk 模式，Clash MIX 借鉴） =================
+// Java 无公开 ioctl，这里提供 4 个 JNI：
+//   MagiskTun.nativeOpenTun(devName)  —— open /dev/net/tun + TUNSETIFF 绑定设备
+//   PacketLoop.nativeReadTun / nativeWriteTun / nativeCloseTun —— raw fd 读写
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <linux/if.h>
+#include <linux/if_tun.h>
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_dustinky_spyprobe_MagiskTun_nativeOpenTun(JNIEnv *env, jclass clazz, jstring devName) {
+    const char *name = env->GetStringUTFChars(devName, nullptr);
+    if (!name) return -1;
+    int fd = open("/dev/net/tun", O_RDWR | O_NONBLOCK);
+    if (fd < 0) {
+        int e = errno;
+        env->ReleaseStringUTFChars(devName, name);
+        return -200 - e; // -200 - errno（open 失败）
+    }
+    struct ifreq ifr;
+    memset(&ifr, 0, sizeof(ifr));
+    ifr.ifr_flags = IFF_TUN | IFF_NO_PI; // 无包信息头（与 VpnService establish 一致）
+    strncpy(ifr.ifr_name, name, IFNAMSIZ - 1);
+    if (ioctl(fd, TUNSETIFF, &ifr) < 0) {
+        int e = errno;
+        close(fd);
+        env->ReleaseStringUTFChars(devName, name);
+        return -300 - e; // -300 - errno（TUNSETIFF 失败）
+    }
+    env->ReleaseStringUTFChars(devName, name);
+    native_log("TUN open ok fd");
+    return (jint) fd;
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_dustinky_spyprobe_PacketLoop_nativeReadTun(JNIEnv *env, jclass clazz, jint fd, jbyteArray buf, jint len) {
+    jbyte *p = env->GetByteArrayElements(buf, nullptr);
+    if (!p) return -1;
+    ssize_t n = read((int) fd, p, (size_t) len);
+    env->ReleaseByteArrayElements(buf, p, 0);
+    if (n < 0) {
+        // EAGAIN（非阻塞无数据）→ 返回 0，Java 层小睡后重试；真错误 → -1
+        return (errno == EAGAIN || errno == EWOULDBLOCK) ? 0 : -1;
+    }
+    return (jint) n;
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_dustinky_spyprobe_PacketLoop_nativeWriteTun(JNIEnv *env, jclass clazz, jint fd, jbyteArray buf, jint len) {
+    jbyte *p = env->GetByteArrayElements(buf, nullptr);
+    if (!p) return -1;
+    ssize_t n = write((int) fd, p, (size_t) len);
+    env->ReleaseByteArrayElements(buf, p, 0);
+    if (n < 0) {
+        return (errno == EAGAIN || errno == EWOULDBLOCK) ? 0 : -1;
+    }
+    return (jint) n;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_dustinky_spyprobe_PacketLoop_nativeCloseTun(JNIEnv *env, jclass clazz, jint fd) {
+    if (fd >= 0) close((int) fd);
+}

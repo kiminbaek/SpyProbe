@@ -88,6 +88,14 @@ public class ModuleMain extends XposedModule {
         HttpStore.get().enablePush(pushToken, () -> TokenStore.remoteToken(this));
         // v1.55: 通用结构化事件推送主进程（SQL/JSON/Crypto/TCP/DNS 卡片化数据源）
         EventStore.get().enablePush(pushToken, () -> TokenStore.remoteToken(this));
+        // v8x: TUN 接管（Clash MIX 借鉴）——hook 通道与 TUN 五元组关联：
+        //   目标包名上报 TunController（状态显示/日志标注用）；TUN 连接事件走 EventStore（已启用推送）
+        try {
+            TunController c = TunController.get();
+            if (c != null) c.setTargetPkg(pkg);
+        } catch (Throwable t) {
+            DebugLog.get().logNoMirror("ModuleMain", "TunController.setTargetPkg FAIL: " + t);
+        }
         SpyServer server = new SpyServer(net, mth, clsProbe, pkg, dexKit, cfgFile, pushToken); // v1.47 P1-3: 9901 控制面鉴权
 
         // v1.37 P0-1: 尽早拉主进程权威配置（惰性 hook 的前提——net.install 之前就知道

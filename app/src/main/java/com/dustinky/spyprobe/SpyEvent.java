@@ -24,6 +24,7 @@ import org.json.JSONObject;
  *   CLASS   —— 类加载（name）
  *   METHOD  —— 自定义方法探测（caller/invoke + stack）
  *   CERT    —— mTLS 证书访问（op/alias/summary/detail）
+ *   TUN     —— v8x TUN 接管连接（proto/src/dst/srcPort/dstPort，done=关闭+时长）
  *   REQ     —— HTTP 请求（与 HttpEntry 并存，暂不迁移）
  *
  * 字段约定：

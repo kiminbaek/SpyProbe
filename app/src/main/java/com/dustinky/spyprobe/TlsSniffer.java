@@ -23,6 +23,10 @@ import java.nio.charset.StandardCharsets;
  *              + extensions(2+len) [TLS1.2/1.3]
  *   extension: type(2) + len(2) + data；type=0(server_name) → list(2) + name_type(1)=0 + name(2+len)
  */
+
+// v8x: MITM 透明代理方案已终止（2026-08-14 用户拍板：代理开关致手机卡死/升温 + 真机连续失败）。
+//   保留代码（不删）供查；抓 dart:io/Flutter 改走 TUN 接管（TunController/PacketLoop）。
+@Deprecated
 public class TlsSniffer {
 
     public static class Result {

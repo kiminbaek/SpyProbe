@@ -37,6 +37,10 @@ import java.util.TreeMap;
  *   TLS/自定义二进制协议等）→ isUnknown()=true → NativeProbe 打 [UNKNOWN] 标签，用户能
  *   从日志里看出"抓到了但没分析出来"的数据。
  */
+
+// v8x: MITM 透明代理方案已终止（2026-08-14 用户拍板：代理开关致手机卡死/升温 + 真机连续失败）。
+//   保留代码（不删）供查；抓 dart:io/Flutter 改走 TUN 接管（TunController/PacketLoop）。
+@Deprecated
 public class TlsHttpParser {
 
     /** 单连接累积缓冲上限（头未完整时的防护上限） */

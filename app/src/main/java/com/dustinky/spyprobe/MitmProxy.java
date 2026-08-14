@@ -39,6 +39,10 @@ import javax.net.ssl.SSLSocketFactory;
  *   - ALPN 只提供 http/1.1 → 客户端降级 HTTP/1.1 明文 → TlsHttpParser 直接可解析
  *   - 纯 Java + 不依赖 Android API（NAS 可编译冒烟）；日志走 LogSink
  */
+
+// v8x: MITM 透明代理方案已终止（2026-08-14 用户拍板：代理开关致手机卡死/升温 + 真机连续失败）。
+//   保留代码（不删）供查；抓 dart:io/Flutter 改走 TUN 接管（TunController/PacketLoop）。
+@Deprecated
 public class MitmProxy {
 
     public static final String TAG = "SpyProbe.MitmProxy";

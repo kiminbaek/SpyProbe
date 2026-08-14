@@ -1,5 +1,6 @@
 package com.dustinky.spyprobe.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
 import com.dustinky.spyprobe.BuildConfig
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -124,7 +125,8 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                     //   清除数据后 targetPkg="" 导致 pushConfig 被跳过、MitmManager.applyConfig()
                     //   永不触发（running=false 恒态）。MITM key 无论是否有目标都做本地同步：
                     //   applyJson + saveConfig(files) + MitmManager.applyConfig()（Api.sendConfig 前置）。
-                    if (key.startsWith("mitm") || targetPkg.isNotEmpty()) {
+                    // v8x: TUN 同款——只活主进程，tun key 也必须本地同步（TunController.applyConfig）
+                    if (key.startsWith("mitm") || key.startsWith("tun") || targetPkg.isNotEmpty()) {
                         if (targetPkg.isNotEmpty()) vm.pushConfig(targetPkg)
                         else vm.sendConfig(displayCfg)
                     }
@@ -491,116 +493,144 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
         }
 
         Spacer(Modifier.height(8.dp))
-
-        // ===== v7x: MITM 代理 =====
-        // Hook + MITM 双引擎融合：代理跑主进程，数据全进自己家，UI 一次想透。
-        // mitmEnabled 总开关 → SpyHomeServer /api/config POST 联动 MitmManager.applyConfig()。
+        // ===== v8x: TUN 接管（Clash MIX 借鉴）=====
+        // v7x MITM 透明代理已终止（2026-08-14 用户拍板：代理开关致手机卡死/升温 + 真机连续失败）。
+        // TUN 在系统网络栈层接管流量，不依赖 CA、不依赖 hook 时机，天然覆盖 dart:io/Flutter。
+        // 模式：0=关（默认） 1=VpnService（无 root，系统弹授权） 2=Magisk/KernelSU（root 自动建 TUN）
         SettingsGroup(
-            title = "MITM 代理",
-            subtitle = "透明代理 + 动态证书，抓 dart:io/Flutter 流量",
-            expanded = expanded.contains("mitm"),
-            onToggle = { toggle("mitm") }
+            title = "TUN 抓包",
+            subtitle = "系统网络栈层接管流量，抓 dart:io/Flutter",
+            expanded = expanded.contains("tun"),
+            onToggle = { toggle("tun") }
         ) {
-            BoolSetting(effective, "mitmEnabled", "启用 MITM 代理", false,
-                inherited = inh("mitmEnabled"),
-                onSet = { setCfg("mitmEnabled", it) })
-            Divider()
-            BoolSetting(effective, "mitmTransparent", "透明模式 (iptables)", true,
-                inherited = inh("mitmTransparent"),
-                onSet = { setCfg("mitmTransparent", it) })
-            Divider()
-            IntSetting(effective, "mitmPort", "代理端口", 8888, 1024..65535,
-                inherited = inh("mitmPort"),
-                onSet = { setCfg("mitmPort", it) })
+            // 模式选择（3 选 1）
+            Text("模式", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                val curMode = (effective["tunMode"] as? Number)?.toInt() ?: 0
+                listOf(
+                    0 to "关",
+                    1 to "VpnService（免root）",
+                    2 to "Magisk TUN（root）"
+                ).forEach { (m, label) ->
+                    OutlinedButton(
+                        onClick = { setCfg("tunMode", m) },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = if (curMode == m) MaterialTheme.colorScheme.primaryContainer
+                            else MaterialTheme.colorScheme.surface
+                        )
+                    ) { Text(label, fontSize = 12.sp) }
+                }
+            }
+            HorizontalDivider(Modifier.padding(vertical = 4.dp))
+            BoolSetting(effective, "tunEnabled", "启用 TUN 抓包", false,
+                inherited = inh("tunEnabled"),
+                onSet = { setCfg("tunEnabled", it) })
 
-            // CA 状态 + 安装方式（4 种多选项，不绑手机）
-            var mitmStatus by remember { mutableStateOf("") }
-            var caInstalled by remember { mutableStateOf(false) }
-            // v1.74.2 P0-5: LaunchedEffect 依赖 mitmEnabled/mitmTransparent——开关变化后重读状态，
-            //   修复"开代理后状态仍显示未启动、必须杀进程重开才正确"的显示失真（原 LaunchedEffect(Unit) 只在进设置页读一次）
-            LaunchedEffect(effective["mitmEnabled"], effective["mitmTransparent"]) {
-                mitmStatus = try {
-                    val m = com.dustinky.spyprobe.MitmManager.get()
-                    m?.status() ?: "(未初始化)"
+            // VpnService 授权 + 启停
+            var tunStatus by remember { mutableStateOf("") }
+            var tunStateTick by remember { mutableStateOf(0) }
+            LaunchedEffect(effective["tunEnabled"], effective["tunMode"], tunStateTick) {
+                tunStatus = try {
+                    val c = com.dustinky.spyprobe.TunController.get()
+                    if (c == null) "(TunController 未初始化)"
+                    else c.status()
                 } catch (t: Throwable) { "状态获取失败: $t" }
-                caInstalled = try {
-                    val pem = com.dustinky.spyprobe.MitmManager.get()?.certManager()?.exportCaCertPem()
-                    pem != null && com.dustinky.spyprobe.CaInstaller.isSystemInstalled(pem)
-                } catch (t: Throwable) { false }
             }
             Text(
-                if (caInstalled) "✅ CA 已装入系统信任库" else "⚠️ CA 未装系统（dart:io 只信系统 CA）",
-                style = MaterialTheme.typography.bodySmall,
-                fontSize = 12.sp,
-                color = if (caInstalled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(top = 6.dp)
-            )
-            Text(
-                "状态：$mitmStatus",
+                "状态：$tunStatus",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 10.sp
             )
 
-            fun installVia(action: () -> String) {
-                mitmStatus = "执行中…"
-                scope.launch {
-                    mitmStatus = withContext(Dispatchers.IO) {
-                        try { action() } catch (t: Throwable) { "失败: $t" }
+            // v8x: VpnService 系统授权（prepare 非 null → 弹窗；OK 后启动服务）
+            val vpnLauncher = rememberLauncherForActivityResult(
+                androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
+            ) { result ->
+                if (result.resultCode == android.app.Activity.RESULT_OK) {
+                    tunStatus = "已授权，启动 VpnService…"
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            tunStatus = try {
+                                com.dustinky.spyprobe.TunController.get()?.applyConfig() ?: "控制器未初始化"
+                            } catch (t: Throwable) { "启动失败: $t" }
+                        }
+                        tunStateTick++
                     }
-                    // v1.73: CA 安装结果 UiLog 留痕（此前只写 UI 状态文本，导出调试日志看不到失败原因）
-                    com.dustinky.spyprobe.util.UiLog.log("CaInstall result: $mitmStatus")
-                    android.widget.Toast.makeText(context, mitmStatus, android.widget.Toast.LENGTH_LONG).show()
+                } else {
+                    tunStatus = "VpnService 授权被拒绝"
                 }
             }
 
-            OutlinedButton(
-                onClick = {
-                    installVia {
-                        val pem = com.dustinky.spyprobe.MitmManager.get()?.certManager()?.exportCaCertPem()
-                        if (pem == null) "CA 生成失败" else com.dustinky.spyprobe.CaInstaller.installToSystemRoot(pem)
-                    }
-                },
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
-            ) { Text("① Root 直接装系统 CA") }
-
-            OutlinedButton(
-                onClick = {
-                    installVia {
-                        val pem = com.dustinky.spyprobe.MitmManager.get()?.certManager()?.exportCaCertPem()
-                        if (pem == null) "CA 生成失败"
-                        else {
-                            // v1.73: 先写私有临时 zip，再转存公共 Download/SpyProbe/（用户文件管理器可见）
-                            val tmp = java.io.File(com.dustinky.spyprobe.MitmManager.get()!!.certManager().caDir(), "spyprobe-mitm-ca_tmp.zip")
-                            com.dustinky.spyprobe.CaInstaller.exportMagiskModule(pem, tmp)
-                            val uri = com.dustinky.spyprobe.util.ShareLogUtil.writeModuleZip(context, tmp.readBytes())
-                            tmp.delete()
-                            if (uri == null) "导出失败（详见调试日志）"
-                            else "已导出 Magisk/KernelSU 模块到 下载/SpyProbe/（文件管理器可见）"
+            fun startTun() {
+                scope.launch {
+                    withContext(Dispatchers.IO) {
+                        val c = com.dustinky.spyprobe.TunController.get()
+                        val mode = (effective["tunMode"] as? Number)?.toInt() ?: 0
+                        when {
+                            c == null -> tunStatus = "TunController 未初始化"
+                            mode == 1 -> {
+                                val intent = android.net.VpnService.prepare(context)
+                                if (intent == null) {
+                                    tunStatus = try { c.applyConfig() } catch (t: Throwable) { "启动失败: $t" }
+                                } else {
+                                    vpnLauncher.launch(intent) // 授权弹窗
+                                }
+                            }
+                            else -> tunStatus = try { c.applyConfig() } catch (t: Throwable) { "启动失败: $t" }
                         }
                     }
-                },
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
-            ) { Text("② 导出 Magisk/KernelSU 模块（用户自己装）") }
+                    tunStateTick++
+                }
+            }
 
-            OutlinedButton(
-                onClick = {
-                    installVia {
-                        val pem = com.dustinky.spyprobe.MitmManager.get()?.certManager()?.exportCaCertPem()
-                        if (pem == null) "CA 生成失败" else com.dustinky.spyprobe.CaInstaller.installMagiskModuleRoot(pem)
-                    }
-                },
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
-            ) { Text("③ Root 帮装 Magisk/KernelSU 模块") }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                tunStatus = try {
+                                    com.dustinky.spyprobe.TunController.get()?.applyConfig() ?: "控制器未初始化"
+                                } catch (t: Throwable) { "启动失败: $t" }
+                            }
+                            tunStateTick++
+                        }
+                    },
+                    modifier = Modifier.weight(1f)
+                ) { Text("启动", fontSize = 12.sp) }
+                OutlinedButton(
+                    onClick = {
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                tunStatus = try {
+                                    com.dustinky.spyprobe.TunController.get()?.stop() ?: "控制器未初始化"
+                                } catch (t: Throwable) { "停止失败: $t" }
+                            }
+                            tunStateTick++
+                        }
+                    },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    )
+                ) { Text("停止", fontSize = 12.sp) }
+            }
 
             Text(
-                "提示：91aw 等 dart:io App 只信系统 CA；Java/OkHttp App 可配「信任用户 CA」免 root（hook 层 sslBypass 兜底）",
+                "说明：VpnService 需系统授权弹窗（一次性）；Magisk TUN 需 root，自动建 spy0 设备全量接管。" +
+                        "两者都是观察透传——只记录不改数据。TUN 连接事件在抓包日志页（TUN 卡片）查看。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 10.sp,
                 modifier = Modifier.padding(top = 6.dp)
             )
         }
+
+        // ===== v7x: MITM 代理（已终止，不再展示） =====
+        // 2026-08-14 用户拍板终止：设置页「MITM 代理」开关一开 → 手机卡死/升温（源码实锤：
+        // MitmProxy 无界线程池 + 无连接上限），叠加真机连续 7+ 次验证失败。代码保留（不删，可查），
+        // Config.mitm* 字段兼容旧配置；抓 dart:io 改走上方 TUN 方案。
 
         Spacer(Modifier.height(8.dp))
 

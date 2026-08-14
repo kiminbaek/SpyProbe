@@ -402,6 +402,13 @@ public class SpyHomeServer {
                             } catch (Throwable t) {
                                 DebugLog.get().log("Home", "mitm applyConfig err: " + t);
                             }
+                            // v8x: TUN 接管按配置实时启停（tunEnabled/tunMode 变更即时生效）
+                            try {
+                                TunController c = TunController.get();
+                                if (c != null) c.applyConfig();
+                            } catch (Throwable t) {
+                                DebugLog.get().log("Home", "tun applyConfig err: " + t);
+                            }
                         }
                         JSONObject o = new JSONObject();
                         o.put("ok", true);

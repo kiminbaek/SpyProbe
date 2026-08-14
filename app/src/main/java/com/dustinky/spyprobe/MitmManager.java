@@ -15,6 +15,10 @@ import java.util.concurrent.CopyOnWriteArraySet;
  *   - 明文融合：每连接一个 TlsHttpParser → HttpEntry → HttpStore（复用现有结构化全链路）
  *   - 目标 UID 注册：目标进程启动时上报（SpyHomeServer /api/target_uid）
  */
+
+// v8x: MITM 透明代理方案已终止（2026-08-14 用户拍板：代理开关致手机卡死/升温 + 真机连续失败）。
+//   保留代码（不删）供查；抓 dart:io/Flutter 改走 TUN 接管（TunController/PacketLoop）。
+@Deprecated
 public class MitmManager {
 
     private static volatile MitmManager instance;

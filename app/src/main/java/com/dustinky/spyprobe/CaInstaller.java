@@ -35,6 +35,10 @@ import java.util.zip.ZipOutputStream;
  *
  * 文件名 = subject_hash_old（MD5(subject DER) 前 4 字节大端）+ ".0"
  */
+
+// v8x: MITM 透明代理方案已终止（2026-08-14 用户拍板：代理开关致手机卡死/升温 + 真机连续失败）。
+//   保留代码（不删）供查；抓 dart:io/Flutter 改走 TUN 接管（TunController/PacketLoop）。
+@Deprecated
 public class CaInstaller {
 
     public static final String TAG = "SpyProbe.CaInstall";

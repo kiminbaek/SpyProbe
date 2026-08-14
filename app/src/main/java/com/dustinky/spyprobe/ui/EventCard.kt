@@ -86,6 +86,7 @@ internal fun eventColor(type: String): Color = when (type) {
     "CLASS" -> Color(0xFF7E57C2)
     "METHOD" -> Color(0xFFEC407A)
     "CERT" -> Color(0xFF9CCC65)
+    "TUN" -> Color(0xFF26A69A)
     "RULE" -> Color(0xFFF4511E)
     else -> Color(0xFF90A4AE)
 }
@@ -106,6 +107,7 @@ internal fun eventTypeLabel(type: String): String = when (type) {
     "CLASS" -> "类"
     "METHOD" -> "方法"
     "CERT" -> "证书"
+    "TUN" -> "TUN"
     "RULE" -> "规则"
     else -> type
 }
@@ -527,6 +529,9 @@ private fun payloadGroups(type: String): List<PayloadGroup> = when (type) {
     "CERT" -> listOf(
         PayloadGroup("证书", listOf("op", "alias", "summary")),
         PayloadGroup("详情", listOf("detail"))
+    )
+    "TUN" -> listOf(
+        PayloadGroup("连接", listOf("proto", "src", "dst", "srcPort", "dstPort"))
     )
     "RULE" -> listOf(
         PayloadGroup("规则模式", listOf("mode")),

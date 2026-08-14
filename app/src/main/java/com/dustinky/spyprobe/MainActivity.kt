@@ -66,10 +66,18 @@ class MainActivity : ComponentActivity() {
             com.dustinky.spyprobe.util.UiLog.log("Home server start FAIL: $t")
         }
         // v7x: MITM 代理（主进程）——CA 持久化 filesDir/mitm_ca + 按 Config 启停代理/iptables
+        // v8x: MITM 已终止（用户拍板），此 init 保留兼容旧配置（字段默认关，无副作用）
         try {
             com.dustinky.spyprobe.MitmManager.init(applicationContext.filesDir)?.applyConfig()
         } catch (t: Throwable) {
             com.dustinky.spyprobe.util.UiLog.log("MitmManager init FAIL: $t")
+        }
+        // v8x: TUN 双模式接管（Clash MIX 借鉴）——统一控制器初始化 + 按 Config 启停（默认关）
+        try {
+            com.dustinky.spyprobe.TunController.init(applicationContext)
+            com.dustinky.spyprobe.TunController.get()?.applyConfig()
+        } catch (t: Throwable) {
+            com.dustinky.spyprobe.util.UiLog.log("TunController init FAIL: $t")
         }
         enableEdgeToEdge()
         setContent {

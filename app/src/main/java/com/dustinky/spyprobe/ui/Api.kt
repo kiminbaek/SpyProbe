@@ -248,10 +248,12 @@ class SpyApi(private var port: Int = 9901) {
             }
             // v7x P0-2 + v1.74.3 P0-6: 主进程本地同步前置（MitmManager 只活在主进程，设置页必须联动；
             //   9901 目标进程离线不得阻断 MITM 启停）
+            // v8x: TUN 同款——TunController 只活主进程，配置变更本地联动（tunEnabled/tunMode 生效）
             try {
                 com.dustinky.spyprobe.Config.get().applyJson(o.toString())
                 com.dustinky.spyprobe.Config.get().saveConfig(com.dustinky.spyprobe.Config.get().homeCfgFile())
                 com.dustinky.spyprobe.MitmManager.get()?.applyConfig()
+                com.dustinky.spyprobe.TunController.get()?.applyConfig()
             } catch (t: Throwable) { }
             val resp = httpPost("/api/config", o.toString()) ?: return false
             resp.contains("\"ok\":true") || resp.contains("\"ok\": true") || resp.contains("\"sslBypass\"")

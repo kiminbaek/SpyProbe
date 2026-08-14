@@ -3,6 +3,10 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- v8x: TUN 抓包（VpnService 前台服务 + 通知） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- v1.7: 应用列表勾选需要（Android 11+ 查询其他已安装应用） -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
     <!-- v1.9: 导出 dex 到 Download 需要存储权限（Android 11+ 需用户授予"所有文件访问"；无权限自动 fallback 到 app 专属目录） -->
@@ -25,6 +29,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- v8x: TUN 抓包 VpnService（TUN 模式 1，无 root 首选） -->
+        <service
+            android:name=".SpyVpnService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="network_capture" />
+        </service>
 
         <!-- v1.30: 日志导出改为 txt 文件分享（FileProvider） -->
         <provider

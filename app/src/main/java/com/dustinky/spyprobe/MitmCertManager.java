@@ -46,6 +46,10 @@ import java.util.concurrent.ConcurrentHashMap;
  *     全部走 builder API 传显式 provider 实例
  *   - 线程安全：host 证书缓存 ConcurrentHashMap，生成加 per-host 锁
  */
+
+// v8x: MITM 透明代理方案已终止（2026-08-14 用户拍板：代理开关致手机卡死/升温 + 真机连续失败）。
+//   保留代码（不删）供查；抓 dart:io/Flutter 改走 TUN 接管（TunController/PacketLoop）。
+@Deprecated
 public class MitmCertManager {
 
     private static final String TAG = "SpyProbe.MitmCert";

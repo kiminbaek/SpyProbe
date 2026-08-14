@@ -58,9 +58,14 @@ public class Config {
     public volatile boolean webViewDebug = false;
     // v7x M5: keylogCapture / internalDecrypt 已废弃删除（v1.70 Conscrypt JNI hook 直接取明文）
     // v7x: MITM 代理（多选项：透明代理 / CONNECT 局部代理）
+    // v8x: MITM 已终止（2026-08-14 用户拍板），字段保留兼容旧配置，UI 隐藏；TUN 接管见下
     public volatile boolean mitmEnabled = false;       // MITM 总开关（默认关，用户在设置里开）
     public volatile boolean mitmTransparent = true;    // true=透明代理(iptables REDIRECT 全量)，false=CONNECT 局部代理(手动配)
     public volatile int mitmPort = 8888;               // 代理监听端口（127.0.0.1）
+    // v8x (Clash MIX 借鉴): TUN 双模式接管——系统网络栈层抓 dart:io/Flutter 流量，不依赖 CA/hook 时机
+    public volatile boolean tunEnabled = false;        // TUN 总开关（默认关）
+    public volatile int tunMode = 0;                   // 0=关 1=VpnService(无root) 2=Magisk/KernelSU(root)
+    public volatile String tunDevice = "spy0";         // Magisk 模式 TUN 设备名（固定防冲突）
     // v1.39 P0 (r0capture 借鉴): pcap 导出——native SSL 明文 + 会话 seq/ack 伪 IP/TCP 头 → 标准 pcap（Wireshark 直开）。
     //   默认关（pcap 额外内存/推送开销）；开启后目标进程按 SSL 连接组装 pcap 记录推主进程落盘。
     public volatile boolean pcapCapture = false;
@@ -556,6 +561,10 @@ public class Config {
             o.put("mitmEnabled", mitmEnabled);
             o.put("mitmTransparent", mitmTransparent);
             o.put("mitmPort", mitmPort);
+            // v8x: TUN 接管
+            o.put("tunEnabled", tunEnabled);
+            o.put("tunMode", tunMode);
+            o.put("tunDevice", tunDevice == null ? "spy0" : tunDevice);
             o.put("debug", debugEnabled);
         } catch (Throwable t) {
             debugLog("toJsonObject FAIL: " + t);
@@ -603,6 +612,10 @@ public class Config {
         mitmEnabled = o.optBoolean("mitmEnabled", mitmEnabled);
         mitmTransparent = o.optBoolean("mitmTransparent", mitmTransparent);
         mitmPort = o.optInt("mitmPort", mitmPort);
+        // v8x: TUN 接管
+        tunEnabled = o.optBoolean("tunEnabled", tunEnabled);
+        tunMode = o.optInt("tunMode", tunMode);
+        tunDevice = o.optString("tunDevice", tunDevice);
         debugEnabled = o.optBoolean("debug", debugEnabled);
     }
 
