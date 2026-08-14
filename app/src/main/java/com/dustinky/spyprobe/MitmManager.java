@@ -80,6 +80,13 @@ public class MitmManager {
             DebugLog.get().log("Mitm", "proxy started port=" + port + " transparent=" + transparent);
             com.dustinky.spyprobe.util.UiLog.log("MitmManager proxy started port=" + port + " transparent=" + transparent);
             if (transparent) applyIptables();
+            // v1.74.20 P0-19: MITM 自检——主进程自己握手验证 证书链(CA签发) + 127.0.0.1 SAN。
+            //   区分「CA/证书问题」vs「目标 App 信任锚问题」：PASS=证书链+SAN OK（问题在 App 侧）。
+            try {
+                MitmProxy.selfTest(port, cert.caCertPem());
+            } catch (Throwable t) {
+                DebugLog.get().log("Mitm", "selfTest launch FAIL: " + t);
+            }
         } catch (Throwable t) {
             DebugLog.get().log("Mitm", "start FAIL: " + t);
             com.dustinky.spyprobe.util.UiLog.log("MitmManager proxy start FAIL: " + t);

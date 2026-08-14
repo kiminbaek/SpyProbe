@@ -211,7 +211,7 @@ public class MitmProxy {
             //    v1.74.9 顺序问题：本地握手排在 targetSsl.connect（跨洋 1-2s）之后，
             //    App 发完 ClientHello 等 ServerHello 超时 → 主动关闭 → EOF。
             //    → 本地握手必须先做（App 立即拿到 ServerHello），再连真实服务器。
-            SSLContext ctx = buildServerContext(hostname);
+            SSLContext ctx = buildServerContext(hostname, connectIp);
             engine = ctx.createSSLEngine(hostname, targetPort);
             engine.setUseClientMode(false);
             SSLParameters serverParams = engine.getSSLParameters();
@@ -500,7 +500,11 @@ public class MitmProxy {
     }
 
     private SSLContext buildServerContext(String host) throws Exception {
-        KeyStore ks = certManager.hostKeyStore(host);
+        return buildServerContext(host, null);
+    }
+
+    private SSLContext buildServerContext(String host, String extraIp) throws Exception {
+        KeyStore ks = certManager.hostKeyStore(host, extraIp);
         KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
         kmf.init(ks, "spyprobe".toCharArray());
         // v1.74.7 P0-10: 显式用 Conscrypt（AndroidOpenSSL）——真机 Android 16 上默认
@@ -534,6 +538,63 @@ public class MitmProxy {
     }
 
     // ===== 工具 =====
+
+    /**
+     * v1.74.20 P0-19 自检：主进程用「信任 SpyProbe CA」的 SSLContext 连自己的 MITM server
+     *   （127.0.0.1:port，SNI=self-test.local）→ 验证 证书链（CA 签发）+ SAN（iPAddress 127.0.0.1）。
+     *   目的：区分「CA/证书本身问题」vs「目标 App（Flutter dart:io）信任锚获取问题」。
+     *   自检连接不被 iptables 劫持（主进程 uid 不在目标 uid 规则），直达 8888。
+     */
+    public static void selfTest(int port, java.io.File caPem) {
+        new Thread(() -> {
+            try {
+                Thread.sleep(300);
+                java.security.cert.CertificateFactory cf = java.security.cert.CertificateFactory.getInstance("X.509");
+                final java.security.cert.X509Certificate ca;
+                try (java.io.FileInputStream fis = new java.io.FileInputStream(caPem)) {
+                    ca = (java.security.cert.X509Certificate) cf.generateCertificate(fis);
+                }
+                javax.net.ssl.X509TrustManager tm = new javax.net.ssl.X509TrustManager() {
+                    @Override public void checkClientTrusted(java.security.cert.X509Certificate[] chain, String authType) {}
+                    @Override public void checkServerTrusted(java.security.cert.X509Certificate[] chain, String authType)
+                            throws java.security.cert.CertificateException {
+                        if (chain == null || chain.length == 0) throw new java.security.cert.CertificateException("no chain");
+                        try {
+                            chain[0].verify(ca.getPublicKey()); // 叶子必须由 SpyProbe CA 签发
+                        } catch (Exception e) {
+                            throw new java.security.cert.CertificateException("leaf not signed by SpyProbe CA: " + e);
+                        }
+                    }
+                    @Override public java.security.cert.X509Certificate[] getAcceptedIssuers() { return new java.security.cert.X509Certificate[]{ca}; }
+                };
+                SSLContext ctx = SSLContext.getInstance("TLS");
+                ctx.init(null, new javax.net.ssl.TrustManager[]{tm}, null);
+                SSLSocket s = (SSLSocket) ctx.getSocketFactory().createSocket("127.0.0.1", port);
+                s.setSoTimeout(8000);
+                javax.net.ssl.SSLParameters sp = s.getSSLParameters();
+                sp.setServerNames(java.util.Collections.singletonList(
+                        new javax.net.ssl.SNIHostName("self-test.local")));
+                s.setSSLParameters(sp);
+                s.startHandshake();
+                java.security.cert.X509Certificate server =
+                        (java.security.cert.X509Certificate) s.getSession().getPeerCertificates()[0];
+                boolean hasIp127 = false;
+                java.util.Collection<java.util.List<?>> sans = server.getSubjectAlternativeNames();
+                if (sans != null) {
+                    for (java.util.List<?> san : sans) {
+                        if (san != null && san.size() >= 2 && san.get(0) instanceof Integer
+                                && ((Integer) san.get(0)).intValue() == 7
+                                && "127.0.0.1".equals(String.valueOf(san.get(1)))) hasIp127 = true;
+                    }
+                }
+                s.close();
+                MitmLog.log("MITM selfTest PASS chain-ok san-ip127=" + hasIp127
+                        + (hasIp127 ? "" : " (MISSING 127.0.0.1 SAN!)"));
+            } catch (Throwable t) {
+                MitmLog.log("MITM selfTest FAIL: " + t);
+            }
+        }, "mitm-selftest").start();
+    }
 
     /** 读一行（\r\n 或 \n 结尾），返回去掉行尾的内容；EOF 返回 null */
     private static String readLine(InputStream in) throws IOException {

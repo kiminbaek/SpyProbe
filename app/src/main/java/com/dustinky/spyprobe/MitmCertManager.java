@@ -147,20 +147,35 @@ public class MitmCertManager {
 
     /** 为目标 host 生成（或取缓存）叶子证书 KeyStore（PKCS12，含私钥+证书链） */
     public KeyStore hostKeyStore(String host) throws Exception {
-        String key = host.toLowerCase();
+        return hostKeyStore(host, null);
+    }
+
+    /**
+     * v1.74.20 P0-19: 支持额外 IP SAN —— 透明模式下 App（尤其 Flutter dart:io）连接的是
+     *   DNS 劫持后的 127.0.0.1（orig=127.0.0.1），若客户端按连接地址校验 hostname，只含
+     *   域名 dNSName 的证书会 hostname mismatch → ServerHello 后客户端 EOF（连线中）。
+     *   证书 SAN 同时签发 域名(dNSName) + 连接IP(iPAddress)，两种校验都覆盖。
+     */
+    public KeyStore hostKeyStore(String host, String extraIp) throws Exception {
+        String key = host.toLowerCase() + "|" + (extraIp != null ? extraIp : "");
         KeyStore cached = hostStoreCache.get(key);
         if (cached != null) return cached;
         synchronized (this) {
             cached = hostStoreCache.get(key);
             if (cached != null) return cached;
-            KeyStore ks = loadOrCreateHostStore(key);
+            KeyStore ks = loadOrCreateHostStore(host.toLowerCase(), extraIp);
             hostStoreCache.put(key, ks);
             return ks;
         }
     }
 
-    private KeyStore loadOrCreateHostStore(String host) throws Exception {
+    private KeyStore loadOrCreateHostStore(String host, String extraIp) throws Exception {
         File p12 = new File(hostsDir, host + ".p12");
+        // v1.74.20: 证书 SAN 必须覆盖 host + extraIp；缺失任一 → 重建（版本升级/首连缓存旧证书）
+        if (p12.exists() && !hostStoreHasSans(p12, host, extraIp)) {
+            MitmLog.log(TAG + " host cert missing SAN (host=" + host + " extraIp=" + extraIp + ") -> regen");
+            p12.delete();
+        }
         // v1.74.16 P0-16: 旧版对 IP host 签了 dNSName SAN（RFC 6125：IP 必须用 iPAddress 类型，
         //   dNSName "54.255.198.114" 无法匹配 IP 直连的 hostname 校验）→ 客户端 ServerHello 后
         //   证书校验失败直接 EOF（「连线中」）。IP host 的旧 .p12 必然 SAN 类型错误，直接删除重建。
@@ -199,13 +214,18 @@ public class MitmCertManager {
         JcaX509v3CertificateBuilder b = new JcaX509v3CertificateBuilder(
                 issuer, randSerial(), notBefore, notAfter, subject, kp.getPublic());
         // SAN：host 是 IP 用 iPAddress（RFC 6125：IP 必须 iPAddress 类型，dNSName 无效）；
-        //       域名用 dNSName（不需要 *.host 通配）
-        GeneralNames san;
+        //       域名用 dNSName（不需要 *.host 通配）。v1.74.20: 额外加 iPAddress(extraIp)
+        //       ——DNS 劫持场景 App 连的是 127.0.0.1，若按连接 IP 校验 hostname 也能匹配。
+        java.util.List<GeneralName> sanList = new java.util.ArrayList<>();
         if (isIp(host)) {
-            san = new GeneralNames(new GeneralName(GeneralName.iPAddress, host));
+            sanList.add(new GeneralName(GeneralName.iPAddress, host));
         } else {
-            san = new GeneralNames(new GeneralName(GeneralName.dNSName, host));
+            sanList.add(new GeneralName(GeneralName.dNSName, host));
         }
+        if (extraIp != null && !extraIp.isEmpty() && !extraIp.equals(host)) {
+            sanList.add(new GeneralName(GeneralName.iPAddress, extraIp));
+        }
+        GeneralNames san = new GeneralNames(sanList.toArray(new GeneralName[0]));
         b.addExtension(Extension.subjectAlternativeName, false, san);
         b.addExtension(Extension.basicConstraints, true, new BasicConstraints(false));
         b.addExtension(Extension.keyUsage, true,
@@ -323,6 +343,38 @@ public class MitmCertManager {
             return false;
         } catch (Throwable t) {
             return false; // 读不了就不强制重建（后续 load 校验逻辑会兜底）
+        }
+    }
+
+    /**
+     * v1.74.20: 检查 p12 的 leaf 证书 SAN 是否同时覆盖 host 与 extraIp。
+     *   域名 host 需含 dNSName(host)；IP host 需含 iPAddress(host)；extraIp 需含 iPAddress(extraIp)。
+     *   true=满足可复用；false=缺 SAN 需重建（升级/首连缓存旧证书场景）。
+     */
+    private boolean hostStoreHasSans(File p12, String host, String extraIp) {
+        try {
+            KeyStore ks = KeyStore.getInstance("PKCS12");
+            try (FileInputStream fis = new FileInputStream(p12)) {
+                ks.load(fis, HOST_STORE_PASS);
+            }
+            java.security.cert.Certificate[] chain = ks.getCertificateChain("leaf");
+            if (chain == null || chain.length == 0) return false;
+            java.security.cert.X509Certificate leaf = (java.security.cert.X509Certificate) chain[0];
+            java.util.Collection<java.util.List<?>> sans = leaf.getSubjectAlternativeNames();
+            if (sans == null) return false;
+            boolean hasHost = false;
+            boolean hasExtra = (extraIp == null || extraIp.isEmpty());
+            for (java.util.List<?> san : sans) {
+                if (san == null || san.size() < 2 || !(san.get(0) instanceof Integer)) continue;
+                int type = (Integer) san.get(0); // 2=dNSName 7=iPAddress
+                String val = String.valueOf(san.get(1));
+                if (isIp(host) && type == 7 && val.equals(host)) hasHost = true;
+                if (!isIp(host) && type == 2 && val.equalsIgnoreCase(host)) hasHost = true;
+                if (extraIp != null && !extraIp.isEmpty() && type == 7 && val.equals(extraIp)) hasExtra = true;
+            }
+            return hasHost && hasExtra;
+        } catch (Throwable t) {
+            return false; // 读不了就不复用（后续 load 校验逻辑会兜底）
         }
     }
 
