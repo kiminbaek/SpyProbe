@@ -202,6 +202,7 @@ public class MethodProbe {
                 DebugLog.get().logNoMirror(TAG, "[hook] skip (already hooked): " + cls.getName() + " <init>(" + sigKey + ")");
                 continue;
             }
+            deoptForHook(c); // v1.75 B1: 构造器同样可能被 JIT 内联
             XposedInterface.HookHandle h = module.hook(c).intercept(MethodProbe::onInvoke);
             Config.get().addHandle(cls.getName(), "<init>", sigKey, h);
             hooked++;
@@ -247,6 +248,7 @@ public class MethodProbe {
                 DebugLog.get().logNoMirror(TAG, "[hook] skip (already hooked): " + cls.getName() + "." + m.getName() + "(" + sigKey + ")");
                 continue;
             }
+            deoptForHook(m); // v1.75 B1: 治 ART 内联/JIT 偶发失效
             XposedInterface.HookHandle h = module.hook(m).intercept(MethodProbe::onInvoke);
             Config.get().addHandle(cls.getName(), m.getName(), sigKey, h);
             hooked++;
@@ -269,6 +271,20 @@ public class MethodProbe {
             DebugLog.get().logNoMirror(TAG, "[hook] " + cls.getName() + "." + methodName + " x" + hooked);
         }
         return out.toString();
+    }
+
+    /**
+     * v1.75 打磨 B1（LSPosed 深研借鉴 1）：hook 前 deopt 强制解释执行。
+     * 根治 ART 方法内联/JIT 导致的 hook 偶发不生效（LSPlant Deoptimize 同原理：
+     *   ClassLinker::SetEntryPointsToInterpreter 强制解释执行）。libxposed API 101 原生
+     *   deoptimize(Executable)，失败静默降级（不影响 hook——deopt 只是增强，非前置条件）。
+     */
+    private void deoptForHook(java.lang.reflect.Executable m) {
+        try {
+            module.deoptimize(m);
+        } catch (Throwable t) {
+            // 框架不支持/方法不可 deopt → 忽略，hook 照常
+        }
     }
 
     /** v1.19 探测 b: 全自动 hook 类全部方法（类加载时由 ClassLoadProbe 触发）。
@@ -305,6 +321,7 @@ public class MethodProbe {
                 String sigKey = joinParams(m.getParameterTypes());
                 if (Config.get().hasHandle(cls.getName(), mn, sigKey)) { skipped++; continue; }
                 try {
+                    deoptForHook(m); // v1.75 B1
                     XposedInterface.HookHandle h = module.hook(m).intercept(MethodProbe::onInvoke);
                     Config.get().addHandle(cls.getName(), mn, sigKey, h);
                     hooked++;
@@ -316,6 +333,7 @@ public class MethodProbe {
                 String sigKey = joinParams(c.getParameterTypes());
                 if (Config.get().hasHandle(cls.getName(), "<init>", sigKey)) { skipped++; continue; }
                 try {
+                    deoptForHook(c); // v1.75 B1
                     XposedInterface.HookHandle h = module.hook(c).intercept(MethodProbe::onInvoke);
                     Config.get().addHandle(cls.getName(), "<init>", sigKey, h);
                     hooked++;

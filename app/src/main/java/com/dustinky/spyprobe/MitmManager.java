@@ -15,6 +15,7 @@ import java.util.concurrent.CopyOnWriteArraySet;
  *   - 明文融合：每连接一个 TlsHttpParser → HttpEntry → HttpStore（复用现有结构化全链路）
  *   - 目标 UID 注册：目标进程启动时上报（SpyHomeServer /api/target_uid）
  */
+@Deprecated
 public class MitmManager {
 
     private static volatile MitmManager instance;

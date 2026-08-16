@@ -46,6 +46,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *     全部走 builder API 传显式 provider 实例
  *   - 线程安全：host 证书缓存 ConcurrentHashMap，生成加 per-host 锁
  */
+@Deprecated
 public class MitmCertManager {
 
     private static final String TAG = "SpyProbe.MitmCert";

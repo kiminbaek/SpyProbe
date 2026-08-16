@@ -229,6 +229,8 @@ static bool install_conscrypt_hook() {
 //   BoringSSL）明文全漏。后台线程每 1s 检查 /proc/self/maps，
 //   libconscrypt_jni.so 加载后立即 install_conscrypt_hook() → 业务明文 → REQ#。
 static void *cs_wait_thread(void *) {
+    // v1.75 打磨 B2: 180 次轮询窗口期满时留痕——此前静默退出，无任何日志，
+    //   排障时无法区分"App 不用 Conscrypt"与"窗口不够长"。窗口结束补一行日志。
     for (int i = 0; i < 180; i++) { // 最多 180s（3 分钟），每 1s 检查
         if (g_conscrypt_hooked.load()) break;
         usleep(1000 * 1000);
@@ -246,6 +248,9 @@ static void *cs_wait_thread(void *) {
             cs_native_log("CS Conscrypt JNI hook OK (delayed after libconscrypt_jni.so loaded)");
             break;
         }
+    }
+    if (!g_conscrypt_hooked.load()) {
+        cs_native_log("CS Conscrypt JNI hook retry window expired (180s, libconscrypt_jni.so never loaded) — target may not use Conscrypt");
     }
     return nullptr;
 }

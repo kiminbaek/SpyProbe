@@ -227,6 +227,39 @@ public class DexKitProbe {
         return findFirstClass("OkHttp");
     }
 
+    /**
+     * v1.75 打磨 A3: 按方法特征找 OkHttpClient（连类名都混淆的极端场景兜底）。
+     * 原理：okhttp 官方 proguard keep public API → OkHttpClient.newCall(okhttp3.Request) 方法签名稳定。
+     * 不依赖类名含 "OkHttp" 特征，直接枚举所有 newCall 方法，参数含 okhttp3.Request 的声明类即 OkHttpClient。
+     * 返回类名字符串；未找到返回 null。依赖 dexKit 已初始化。
+     */
+    public String findOkHttpClientByMethod() {
+        if (bridge == null) return null;
+        try {
+            List<MethodData> methods = bridge.findMethod(FindMethod.create()
+                    .matcher(MethodMatcher.create()
+                            .name("newCall", StringMatchType.Equals, true)));
+            if (methods == null || methods.isEmpty()) return null;
+            for (MethodData md : methods) {
+                try {
+                    List<String> ps = md.getParamTypeNames();
+                    if (ps == null || ps.size() != 1) continue;
+                    if (!"okhttp3.Request".equals(ps.get(0))) continue;
+                    String name = md.getDeclaredClassName();
+                    if (name == null || name.isEmpty()) continue;
+                    // 双重验证：类可加载且确有 newCall(okhttp3.Request)
+                    Class<?> cls = Class.forName(name, false, appCl);
+                    Class<?> req = Class.forName("okhttp3.Request", false, appCl);
+                    cls.getMethod("newCall", req);
+                    return name;
+                } catch (Throwable t) { }
+            }
+            return null;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     private String findFirstClass(String needle) {
         if (bridge == null) return null;
         try {

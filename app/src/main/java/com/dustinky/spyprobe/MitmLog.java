@@ -6,6 +6,7 @@ package com.dustinky.spyprobe;
  *  - NAS 冒烟：setSink → stdout
  *  - 未 setSink 时静默（MITM 模块绝不因日志崩）
  */
+@Deprecated
 public class MitmLog {
 
     public interface Sink {

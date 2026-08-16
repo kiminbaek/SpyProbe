@@ -861,11 +861,17 @@ public class NetProbe {
             }
         }
         if (!hooked) {
-            // 备选：hook okhttp3.RealCall.execute（同步调用）
-            try {
-                Class<?> call = Class.forName("okhttp3.RealCall", false, appCl);
-                Method exec = call.getDeclaredMethod("execute");
-                module.hook(exec).intercept(chainParam -> {
+            // 备选：hook RealCall.execute（同步调用）—— okhttp3 在 okhttp3.RealCall，
+            //   okhttp4 移到 okhttp3.internal.connection.RealCall（v1.75 打磨 A3）
+            String[] realCallCls = {
+                    "okhttp3.RealCall",
+                    "okhttp3.internal.connection.RealCall"
+            };
+            for (String rcn : realCallCls) {
+                try {
+                    Class<?> call = Class.forName(rcn, false, appCl);
+                    Method exec = call.getDeclaredMethod("execute");
+                    module.hook(exec).intercept(chainParam -> {
                     Object r = chainParam.proceed();
                     if (Config.get().okhttpCapture) {
                         try {
@@ -893,9 +899,11 @@ public class NetProbe {
                     }
                     return r;
                 });
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked okhttp3.RealCall.execute (fallback)");
-            } catch (Throwable t) {
-                DebugLog.get().logNoMirror("Net", "[" + phase + "] okhttp hook all fail: " + t);
+                    DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked " + rcn + ".execute (fallback, okhttp3/4)");
+                    break; // 只 hook 命中的第一个（v3 优先于 v4 等价类）
+                } catch (Throwable t) {
+                    DebugLog.get().logNoMirror("Net", "[" + phase + "] RealCall " + rcn + " hook fail: " + t);
+                }
             }
         }
         // v1.40 P0/P1: OkHttpClient.newCall hook ——
@@ -971,6 +979,16 @@ public class NetProbe {
         try {
             if (dexKit != null && dexKit.isReady()) {
                 String r = dexKit.findOkHttpAnyClass();
+                if (r != null && !r.isEmpty()) {
+                    return Class.forName(r, false, appCl);
+                }
+            }
+        } catch (Throwable t) { }
+        // 4. v1.75 打磨 A3: 方法特征找（连类名都混淆的极端场景）——
+        //    okhttp proguard keep public API → newCall(okhttp3.Request) 签名稳定，不依赖类名
+        try {
+            if (dexKit != null && dexKit.isReady()) {
+                String r = dexKit.findOkHttpClientByMethod();
                 if (r != null && !r.isEmpty()) {
                     return Class.forName(r, false, appCl);
                 }
@@ -1140,6 +1158,8 @@ public class NetProbe {
                         try { msg = c.getResponseMessage(); } catch (Throwable ignored) { }
                         he.complete(status, msg, rspHdrs, "text", "", 0, 0);
                         HttpStore.get().add(he);
+                        // v1.75 打磨 A1: 登记 HUC 实例 -> HttpEntry（getInputStream tee 回填 body 用）
+                        HUC_ENTRIES.put(System.identityHashCode(c), he);
                     } catch (Throwable t) { }
                 }
                 return r;
@@ -1148,6 +1168,70 @@ public class NetProbe {
         } catch (Throwable t) {
             DebugLog.get().logNoMirror("Net", "[" + phase + "] HUC hook fail: " + t);
         }
+        // v1.75 打磨 A1: 响应体记录 —— hook HttpURLConnection.getInputStream() 返回 tee 流，
+        //   App 读数据时顺带抄写，EOF/close 回填 HttpEntry.respBody（不消费原流、不破坏 App 读取）。
+        try {
+            final Method gin = HttpURLConnection.class.getMethod("getInputStream");
+            module.hook(gin).intercept(chainParam -> {
+                Object in = chainParam.proceed();
+                if (!Config.get().urlCapture || !(in instanceof InputStream)) return in;
+                try {
+                    HttpURLConnection c = (HttpURLConnection) chainParam.getThisObject();
+                    final HttpEntry he = HUC_ENTRIES.remove(System.identityHashCode(c));
+                    return teeInputStream((InputStream) in, c, he);
+                } catch (Throwable t) {
+                    return in;
+                }
+            });
+            DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked HttpURLConnection.getInputStream (A1 body tee)");
+        } catch (Throwable t) {
+            DebugLog.get().logNoMirror("Net", "[" + phase + "] HUC getInputStream hook fail: " + t);
+        }
+    }
+
+    // ================= v1.75 A1: HttpURLConnection 响应体 tee =================
+    private static final java.util.Map<Integer, HttpEntry> HUC_ENTRIES = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final int MAX_RESP_BODY = 1 << 20; // 1MB，与请求体同限
+
+    /** 包装 getInputStream 返回流：App 读时抄写，EOF/close 回填；超过 MAX_RESP_BODY 丢弃继续透传 */
+    private static java.io.InputStream teeInputStream(final InputStream in, final HttpURLConnection c, final HttpEntry he) {
+        return new java.io.FilterInputStream(in) {
+            private final java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+            private boolean finished = false;
+            @Override public int read() throws java.io.IOException {
+                int b = super.read();
+                if (b >= 0 && buf.size() < MAX_RESP_BODY) buf.write(b);
+                if (b < 0) finish();
+                return b;
+            }
+            @Override public int read(byte[] b, int off, int len) throws java.io.IOException {
+                int n = super.read(b, off, len);
+                if (n > 0 && buf.size() < MAX_RESP_BODY) {
+                    int room = MAX_RESP_BODY - buf.size();
+                    if (room > 0) buf.write(b, off, Math.min(n, room));
+                }
+                if (n < 0) finish();
+                return n;
+            }
+            @Override public void close() throws java.io.IOException {
+                finish();
+                super.close();
+            }
+            private void finish() {
+                if (finished) return;
+                finished = true;
+                try {
+                    byte[] bs = buf.toByteArray();
+                    if (bs.length == 0 || he == null) return;
+                    String body = new String(bs, java.nio.charset.StandardCharsets.UTF_8);
+                    he.respBody = body;
+                    he.respBodyBytes = bs.length;
+                    String line = "[HUC-BODY] " + c.getRequestMethod() + " " + c.getURL()
+                            + " -> " + bs.length + "B";
+                    LogStore.get().log(TAG, line);
+                } catch (Throwable t) { }
+            }
+        };
     }
 
     // ================= TLS 明文抓包（v1.9，借鉴 AdClose）=================

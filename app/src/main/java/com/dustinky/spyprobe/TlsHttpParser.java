@@ -48,7 +48,15 @@ public class TlsHttpParser {
     /** v1.62 UNKNOWN 判定阈值：累积这么多字节仍无 HTTP 头 → 非 HTTP 协议 */
     private static final long UNKNOWN_BYTES_THRESHOLD = 4 * 1024;
 
-    private enum State { WAIT_REQ_LINE, WAIT_REQ_BODY, WAIT_RESP_LINE, WAIT_RESP_BODY }
+    // v1.75 打磨 A2: 新增 WAIT_SSE —— text/event-stream 长连接进入 SSE 流式帧显示模式
+    private enum State { WAIT_REQ_LINE, WAIT_REQ_BODY, WAIT_RESP_LINE, WAIT_RESP_BODY, WAIT_SSE }
+
+    // v1.75 打磨 A2: SSE 流式帧显示（text/event-stream 长连接）状态
+    private String sseAcc = "";          // SSE 未完成事件缓冲（空行分隔，完成即消费）
+
+    private boolean sseMode = false;     // 当前连接已识别为 SSE 长连接
+    // v1.75 打磨 A2: WebSocket 裸帧解析（unknown 判定后 NativeProbe 喂 feedWs）
+    private final java.io.ByteArrayOutputStream wsBuf = new java.io.ByteArrayOutputStream(1024);
 
     private final long connId; // ssl 指针（NativeProbe 回调的 id）
     // v1.59: 连接四元组（native socketInfo "srcIP:srcPort->dstIP:dstPort" 拆分，可能为空）
@@ -177,6 +185,7 @@ public class TlsHttpParser {
             } else {
                 if (state == State.WAIT_RESP_LINE) feedResponse(data, len);
                 else if (state == State.WAIT_RESP_BODY) feedResponseBody(data, len);
+                else if (state == State.WAIT_SSE) feedSseFrame(data, len); // v1.75 A2
             }
         } catch (Throwable ignored) {
             // native 回调绝不能抛异常
@@ -387,6 +396,22 @@ public class TlsHttpParser {
             lastRid = e.id;
             LogStore.get().log(NativeProbe.TAG, "[REQ#" + e.id + "] <<< " + status + " " + statusMsg);
 
+            // v1.75 打磨 A2: SSE 长连接识别（text/event-stream）——
+            //   不走普通响应收尾（无 Content-Length/close-delimited 语义），进入 WAIT_SSE
+            //   流式帧模式：后续下行数据按 SSE 事件（\n\n 分隔）逐条显示 [SSE] 行。
+            String ct = respHdrs.get("Content-Type");
+            boolean isSse = ct != null && ct.toLowerCase().contains("text/event-stream");
+            if (isSse) {
+                e.setResponseHead(status, statusMsg, respHdrs, "event-stream", body);
+                e.respBodyBytes = bodyInHead;
+                sseMode = true;
+                sseAcc = body; // 头同段已到达的 event 数据进缓冲
+                respBuf.reset();
+                state = State.WAIT_SSE;
+                flushSseEvents(); // 立即消费已到达的完整事件
+                return; // 注意：跳过后面的 chunked/content-length 分支
+            }
+
             // v1.61: 响应体长度策略（Content-Length / chunked / 未知）
             String te = respHdrs.get("Transfer-Encoding");
             String cl = respHdrs.get("Content-Length");
@@ -489,6 +514,140 @@ public class TlsHttpParser {
             prevTail = tail;
         }
         return false;
+    }
+
+    // ================= v1.75 打磨 A2: SSE 流式帧显示 =================
+    /** WAIT_SSE 态：累积下行数据，按 \n\n 分隔消费事件，逐条打 [SSE] 行 */
+    private void feedSseFrame(byte[] data, int len) {
+        try {
+            if (sseMode && current != null) {
+                current.respBodyBytes += len;
+                String chunk = new String(data, 0, Math.min(len, bodyMax()), StandardCharsets.UTF_8);
+                current.appendRespBody(chunk);
+                if (sseAcc.length() < 512 * 1024) sseAcc += chunk; // 防超长连接撑爆
+            }
+            flushSseEvents();
+        } catch (Throwable ignored) { }
+    }
+
+    /** 消费 SSE 缓冲中的完整事件（\n\n 分隔），打日志行；残段留缓冲 */
+    private void flushSseEvents() {
+        // 归一换行：SSE 边界可能是 \r\n\r\n
+        String norm = sseAcc.replace("\r\n", "\n");
+        int idx;
+        while ((idx = norm.indexOf("\n\n")) >= 0) {
+            String event = norm.substring(0, idx);
+            norm = norm.substring(idx + 2);
+            emitSseEvent(event);
+        }
+        sseAcc = norm; // 剩余残段（可能是半条 event，等下一段）
+        if (sseAcc.length() > 1024 * 1024) sseAcc = ""; // 极端兜底
+    }
+
+    /** 打一条 SSE 事件（压缩换行：event 内多行 data: 合并显示） */
+    private void emitSseEvent(String event) {
+        try {
+            if (event == null || event.isEmpty()) return;
+            // 只显示 data: 与 event: 字段（id:/retry: 等噪声少见，合并为摘要）
+            StringBuilder sb = new StringBuilder();
+            String[] lines = event.split("\n");
+            for (String ln : lines) {
+                String t = ln.trim();
+                if (t.startsWith("data:")) {
+                    if (sb.length() > 0) sb.append(' ');
+                    sb.append(t.substring(5).trim());
+                } else if (t.startsWith("event:")) {
+                    // 事件名前缀
+                    if (sb.length() == 0) sb.append('[').append(t.substring(6).trim()).append("] ");
+                }
+            }
+            String line = sb.toString();
+            if (line.length() > 2000) line = line.substring(0, 2000) + "...";
+            long rid = (current != null) ? current.id : lastRid;
+            LogStore.get().log(NativeProbe.TAG, "[SSE #" + rid + "] <<< " + line);
+        } catch (Throwable ignored) { }
+    }
+
+    // ================= v1.75 打磨 A2: WebSocket 裸帧解析 =================
+    /**
+     * v1.75 A2: unknown 连接的数据喂这里（NativeProbe 判定 isUnknown 后调用）。
+     * RFC 6455 帧解析：FIN/opcode + MASK/len（126/127 扩展）+ 掩码 + payload。
+     * text 帧显示内容（[WS] 行），binary/ping/pong 打摘要。不 throw（native 回调安全）。
+     */
+    public synchronized void feedWs(boolean isWrite, byte[] data, int len) {
+        try {
+            if (data == null || len <= 0) return;
+            wsBuf.write(data, 0, len);
+            byte[] buf = wsBuf.toByteArray();
+            int pos = 0;
+            while (pos + 2 <= buf.length) {
+                byte b0 = buf[pos];
+                byte b1 = buf[pos + 1];
+                int opcode = b0 & 0x0F;
+                boolean fin = (b0 & 0x80) != 0;
+                boolean masked = (b1 & 0x80) != 0;
+                long payloadLen = b1 & 0x7F;
+                int hdr = 2;
+                if (payloadLen == 126) {
+                    if (pos + 4 > buf.length) break;
+                    payloadLen = ((buf[pos + 2] & 0xFF) << 8) | (buf[pos + 3] & 0xFF);
+                    hdr = 4;
+                } else if (payloadLen == 127) {
+                    if (pos + 10 > buf.length) break;
+                    long v = 0;
+                    for (int i = 0; i < 8; i++) v = (v << 8) | (buf[pos + 2 + i] & 0xFF);
+                    payloadLen = v;
+                    hdr = 10;
+                }
+                int maskLen = masked ? 4 : 0;
+                long total = (long) hdr + maskLen + payloadLen;
+                if (total > 512 * 1024) { wsBuf.reset(); return; } // 防异常帧撑爆
+                if (pos + total > buf.length) break;
+                // 取 payload（解掩码）
+                byte[] payload = new byte[(int) payloadLen];
+                int payStart = pos + hdr + maskLen;
+                if (masked) {
+                    for (int i = 0; i < payload.length; i++) {
+                        payload[i] = (byte) (buf[payStart + i] ^ buf[pos + hdr + (i & 3)]);
+                    }
+                } else {
+                    System.arraycopy(buf, payStart, payload, 0, payload.length);
+                }
+                // 打日志
+                String dir = isWrite ? ">>>" : "<<<";
+                String kind;
+                String body = "";
+                if (opcode == 0x1) { // text
+                    kind = "text";
+                    body = new String(payload, StandardCharsets.UTF_8);
+                    if (body.length() > 2000) body = body.substring(0, 2000) + "...";
+                } else if (opcode == 0x2) {
+                    kind = "binary " + payload.length + "B";
+                } else if (opcode == 0x8) {
+                    kind = "close";
+                } else if (opcode == 0x9) {
+                    kind = "ping " + payload.length + "B";
+                } else if (opcode == 0xA) {
+                    kind = "pong " + payload.length + "B";
+                } else {
+                    kind = "opcode=0x" + Integer.toHexString(opcode) + " " + payload.length + "B";
+                }
+                // 只对 text 打印内容，其他打框架摘要（避免二进制噪声刷屏）
+                if (opcode == 0x1) {
+                    LogStore.get().log(NativeProbe.TAG, "[WS " + dir + " " + kind + (fin ? " fin" : "") + "] " + body);
+                } else {
+                    LogStore.get().log(NativeProbe.TAG, "[WS " + dir + " " + kind + (fin ? " fin" : "") + "]");
+                }
+                pos += total;
+            }
+            // 保留残留字节（pos 未消费部分）到下一段
+            if (pos > 0) {
+                byte[] rest = new byte[buf.length - pos];
+                System.arraycopy(buf, pos, rest, 0, rest.length);
+                wsBuf.reset();
+                wsBuf.write(rest, 0, rest.length);
+            }
+        } catch (Throwable ignored) { }
     }
 
     /** v1.61: 收尾复位（current 已 complete 或丢弃） */

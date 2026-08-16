@@ -110,8 +110,16 @@ public class NativeProbe {
                 p.setTlsMeta(meta);
             }
         }
-        // v1.63 P2-1: unknown 判定后不再喂解析器（注释承诺的行为——此前一直漏实现，浪费 CPU）
-        if (p.isUnknown()) return;
+        // v1.63 P2-1: unknown 判定后不再喂 HTTP 解析器（浪费 CPU）
+        // v1.75 打磨 A2: 改喂 WebSocket 裸帧解析器（unknown 大概率是 ws 长连接残余——
+        //   升级握手后非 HTTP 帧；text 帧打 [WS] 行，TCP 明文 80 端口场景同样覆盖）
+        if (p.isUnknown()) {
+            if (!p.everParsed()) {
+                // 从未解析出 HTTP 的 unknown 连接才试 ws 帧（已解析过的保持纯标签，防误判）
+                p.feedWs(isWrite, data, data.length);
+            }
+            return;
+        }
         p.feed(isWrite, data, data.length);
     }
 

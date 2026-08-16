@@ -39,6 +39,7 @@ import javax.net.ssl.SSLSocketFactory;
  *   - ALPN 只提供 http/1.1 → 客户端降级 HTTP/1.1 明文 → TlsHttpParser 直接可解析
  *   - 纯 Java + 不依赖 Android API（NAS 可编译冒烟）；日志走 LogSink
  */
+@Deprecated
 public class MitmProxy {
 
     public static final String TAG = "SpyProbe.MitmProxy";

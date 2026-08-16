@@ -7,6 +7,7 @@ package com.dustinky.spyprobe;
  * 真实目标地址只能通过 getsockopt(fd, SOL_IP, SO_ORIGINAL_DST) 拿。
  * 返回 "ip:port"（IPv4）；非 REDIRECT 连接返回 null（调用方 fallback SNI DNS）。
  */
+@Deprecated
 public class MitmSock {
 
     static {

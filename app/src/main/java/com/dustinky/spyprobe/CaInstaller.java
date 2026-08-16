@@ -35,6 +35,7 @@ import java.util.zip.ZipOutputStream;
  *
  * 文件名 = subject_hash_old（MD5(subject DER) 前 4 字节大端）+ ".0"
  */
+@Deprecated
 public class CaInstaller {
 
     public static final String TAG = "SpyProbe.CaInstall";

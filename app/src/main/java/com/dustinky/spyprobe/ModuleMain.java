@@ -34,6 +34,14 @@ public class ModuleMain extends XposedModule {
 
     @Override
     public void onPackageReady(PackageReadyParam param) {
+        // v1.75 打磨 B2（LSPosed 深研时序对照）：libxposed 的 onPackageReady 回调时机
+        //   ≈ LSPosed 自举 hook 链中 LoadedApk.createOrUpdateClassLoaderLocked 的 afterHook
+        //   （模块回调触发点）——即目标进程类加载器已创建完成、App 类可加载的同一时点。
+        //   对照意义：SpyProbe 无需自举 6 组 hook（LoadedApk.<init>/ActivityThread.attach
+        //   等），onPackageReady 已是最早可用注入点；此处同步安装 early 网络 hook 的
+        //   设计 = LSPosed 在 afterHookedMethod 中立即构造 LoadPackageParam 并 callAll 的
+        //   等价物。目标库（libconscrypt_jni.so 等）晚于此时加载的问题由 NativeProbe/
+        //   conscrypt_hook.cpp 延迟重试线程兜底（180s 轮询），此处不阻塞主线程。
         log(Log.INFO, TAG, "onPackageReady: " + param.getPackageName());
         DebugLog.get().logNoMirror("ModuleMain", "onPackageReady pkg=" + param.getPackageName()
                 + " cl=" + (param.getClassLoader() != null ? "ok" : "null"));
