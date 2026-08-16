@@ -168,6 +168,13 @@ public class NativeProbe {
                 } catch (Throwable t) {
                     DebugLog.get().logNoMirror("Native", "conscrypt hook init fail: " + t);
                 }
+                // v2.0.0 P0: Flutter keylog 兜底（独立于 Conscrypt；非 Conscrypt 目标从 keylog secret 解密 TLS）
+                try {
+                    boolean klOk = flutterKeylogInit();
+                    DebugLog.get().logNoMirror("Native", "flutter keylog locator init: " + (klOk ? "OK" : "FAILED/not-yet"));
+                } catch (Throwable t) {
+                    DebugLog.get().logNoMirror("Native", "flutter keylog locator init fail: " + t);
+                }
             } else {
                 DebugLog.get().logNoMirror("Native", "native hook init FAILED (shadowhook_init ret!=0) -> hooks disabled, active=false");
                 // v1.43: 删除 v1.31.2 的 shadowhook_tag root 抓取——v1.34 已把 shadowhook 换成 xhook，
@@ -185,6 +192,8 @@ public class NativeProbe {
     private static native boolean initNativeHook(boolean enableNativeHook);
     // v1.67: libflutter.so 静态 BoringSSL keylog 注入（shadowhook inline hook ssl_log_secret）
     private static native boolean conscryptHookInit();
+    // v2.0.0 P0: libflutter.so 静态 BoringSSL keylog 通用定位器（兜底；TLS1.2/1.3 secret 注入）
+    private static native boolean flutterKeylogInit();
     // v1.25 P2-10: 删除 feedH2Data/freeH2Conn 死代码（Java 声明 + C++ 实现从未被调用，
     //   native 层 HTTP/2 数据回调走 onH2DataChunk/onH2Request，Java→native 方向无调用者）
 

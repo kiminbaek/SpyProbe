@@ -32,6 +32,7 @@ add_library(
         SHARED
         native_hook.cpp
         conscrypt_hook.cpp
+        flutter_keylog.cpp
         http2_parser.cpp
         ${NGHTTP2_SOURCES}
         ${XHOOK_SOURCES}
