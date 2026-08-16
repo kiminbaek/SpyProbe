@@ -258,18 +258,7 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
             }
         }
 
-        // ===== v7x: 引擎 banner（Hook + MITM 双引擎状态）=====
-        var mitmRunning by remember { mutableStateOf(false) }
-        var mitmDetail by remember { mutableStateOf("") }
-        LaunchedEffect(Unit) {
-            try {
-                val m = com.dustinky.spyprobe.MitmManager.get()
-                if (m != null) {
-                    mitmRunning = m.proxy().isRunning()
-                    mitmDetail = m.status()
-                }
-            } catch (t: Throwable) { mitmDetail = "" }
-        }
+        // ===== 引擎 banner（v2.0.0: hook 单引擎，MITM 已摘除）=====
         Card(
             colors = CardDefaults.cardColors(
                 containerColor = MaterialTheme.colorScheme.surfaceContainer
@@ -297,23 +286,7 @@ fun CaptureScreen(vm: SpyViewModel, onOpenLogs: () -> Unit, modifier: Modifier =
                         color = if (connected) Color(0xFF006B3F) else Color(0xFF888888),
                         fontSize = 11.sp, fontWeight = FontWeight.Medium)
                 }
-                Spacer(Modifier.width(6.dp))
-                // MITM 代理引擎（主进程，独立于连接状态）
-                Box(
-                    modifier = Modifier
-                        .background(if (mitmRunning) Color(0xFF2196F3).copy(alpha = 0.16f) else Color(0x33000000), RoundedCornerShape(50))
-                        .padding(horizontal = 8.dp, vertical = 3.dp)
-                ) {
-                    Text(if (mitmRunning) "🌐 代理运行中" else "🌐 代理未启动",
-                        color = if (mitmRunning) Color(0xFF0D47A1) else Color(0xFF888888),
-                        fontSize = 11.sp, fontWeight = FontWeight.Medium)
-                }
                 Spacer(Modifier.weight(1f))
-                if (mitmRunning) {
-                    Text(mitmDetail, style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
             }
         }
 

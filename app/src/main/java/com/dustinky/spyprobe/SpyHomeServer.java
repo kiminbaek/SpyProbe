@@ -238,13 +238,12 @@ public class SpyHomeServer {
                     return o.toString();
                 }
                 case "/api/target_uid": {
-                    // v7x: 目标进程启动上报 uid → MitmManager 维护 iptables 过滤名单
+                    // v2.0.0 hook-revival: MITM 摘除（v1.74 卡死事故终止），uid 上报仅留痕
                     try {
                         JSONObject root = new JSONObject(body == null ? "{}" : body);
                         int uid = root.optInt("uid", 0);
                         if (uid > 0) {
-                            MitmManager m = MitmManager.get();
-                            if (m != null) m.registerTargetUid(uid);
+                            DebugLog.get().log("Home", "target uid: " + uid + " (MITM removed)");
                         }
                     } catch (Throwable t) {
                         DebugLog.get().log("Home", "target_uid err: " + t);
@@ -395,13 +394,7 @@ public class SpyHomeServer {
                         if (body != null && !body.isEmpty()) {
                             Config.get().applyJson(body);
                             Config.get().saveConfig(Config.get().homeCfgFile());
-                            // v7x: MITM 代理按配置实时启停（mitmEnabled/port/transparent 变更即时生效）
-                            try {
-                                MitmManager m = MitmManager.get();
-                                if (m != null) m.applyConfig();
-                            } catch (Throwable t) {
-                                DebugLog.get().log("Home", "mitm applyConfig err: " + t);
-                            }
+                            // v2.0.0 hook-revival: MITM 已摘除，配置仅持久化
                         }
                         JSONObject o = new JSONObject();
                         o.put("ok", true);

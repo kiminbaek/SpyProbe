@@ -120,13 +120,9 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                 if (cfgLevel == 0) {
                     // 全局：保存 + 推送到当前连接的 App（如果有）
                     vm.saveGlobalConfig(displayCfg)
-                    // v1.74.4 P0-7: MITM 只活主进程，开关不依赖 targetPkg——
-                    //   清除数据后 targetPkg="" 导致 pushConfig 被跳过、MitmManager.applyConfig()
-                    //   永不触发（running=false 恒态）。MITM key 无论是否有目标都做本地同步：
-                    //   applyJson + saveConfig(files) + MitmManager.applyConfig()（Api.sendConfig 前置）。
-                    if (key.startsWith("mitm") || targetPkg.isNotEmpty()) {
-                        if (targetPkg.isNotEmpty()) vm.pushConfig(targetPkg)
-                        else vm.sendConfig(displayCfg)
+                    // v2.0.0 hook-revival: MITM 已摘除，仅有目标时推送配置
+                    if (targetPkg.isNotEmpty()) {
+                        vm.pushConfig(targetPkg)
                     }
                 } else {
                     // 当前 App 覆盖：保存覆盖项 + 推送
@@ -492,122 +488,6 @@ fun SettingsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
 
         Spacer(Modifier.height(8.dp))
 
-        // ===== v7x: MITM 代理 =====
-        // Hook + MITM 双引擎融合：代理跑主进程，数据全进自己家，UI 一次想透。
-        // mitmEnabled 总开关 → SpyHomeServer /api/config POST 联动 MitmManager.applyConfig()。
-        SettingsGroup(
-            title = "MITM 代理",
-            subtitle = "透明代理 + 动态证书，抓 dart:io/Flutter 流量",
-            expanded = expanded.contains("mitm"),
-            onToggle = { toggle("mitm") }
-        ) {
-            BoolSetting(effective, "mitmEnabled", "启用 MITM 代理", false,
-                inherited = inh("mitmEnabled"),
-                onSet = { setCfg("mitmEnabled", it) })
-            Divider()
-            BoolSetting(effective, "mitmTransparent", "透明模式 (iptables)", true,
-                inherited = inh("mitmTransparent"),
-                onSet = { setCfg("mitmTransparent", it) })
-            Divider()
-            IntSetting(effective, "mitmPort", "代理端口", 8888, 1024..65535,
-                inherited = inh("mitmPort"),
-                onSet = { setCfg("mitmPort", it) })
-
-            // CA 状态 + 安装方式（4 种多选项，不绑手机）
-            var mitmStatus by remember { mutableStateOf("") }
-            var caInstalled by remember { mutableStateOf(false) }
-            // v1.74.2 P0-5: LaunchedEffect 依赖 mitmEnabled/mitmTransparent——开关变化后重读状态，
-            //   修复"开代理后状态仍显示未启动、必须杀进程重开才正确"的显示失真（原 LaunchedEffect(Unit) 只在进设置页读一次）
-            LaunchedEffect(effective["mitmEnabled"], effective["mitmTransparent"]) {
-                mitmStatus = try {
-                    val m = com.dustinky.spyprobe.MitmManager.get()
-                    m?.status() ?: "(未初始化)"
-                } catch (t: Throwable) { "状态获取失败: $t" }
-                caInstalled = try {
-                    val pem = com.dustinky.spyprobe.MitmManager.get()?.certManager()?.exportCaCertPem()
-                    pem != null && com.dustinky.spyprobe.CaInstaller.isSystemInstalled(pem)
-                } catch (t: Throwable) { false }
-            }
-            Text(
-                if (caInstalled) "✅ CA 已装入系统信任库" else "⚠️ CA 未装系统（dart:io 只信系统 CA）",
-                style = MaterialTheme.typography.bodySmall,
-                fontSize = 12.sp,
-                color = if (caInstalled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(top = 6.dp)
-            )
-            Text(
-                "状态：$mitmStatus",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 10.sp
-            )
-
-            fun installVia(action: () -> String) {
-                mitmStatus = "执行中…"
-                scope.launch {
-                    mitmStatus = withContext(Dispatchers.IO) {
-                        try { action() } catch (t: Throwable) { "失败: $t" }
-                    }
-                    // v1.73: CA 安装结果 UiLog 留痕（此前只写 UI 状态文本，导出调试日志看不到失败原因）
-                    com.dustinky.spyprobe.util.UiLog.log("CaInstall result: $mitmStatus")
-                    android.widget.Toast.makeText(context, mitmStatus, android.widget.Toast.LENGTH_LONG).show()
-                }
-            }
-
-            OutlinedButton(
-                onClick = {
-                    installVia {
-                        val pem = com.dustinky.spyprobe.MitmManager.get()?.certManager()?.exportCaCertPem()
-                        if (pem == null) "CA 生成失败" else com.dustinky.spyprobe.CaInstaller.installToSystemRoot(pem)
-                    }
-                },
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
-            ) { Text("① Root 直接装系统 CA") }
-
-            OutlinedButton(
-                onClick = {
-                    installVia {
-                        val pem = com.dustinky.spyprobe.MitmManager.get()?.certManager()?.exportCaCertPem()
-                        if (pem == null) "CA 生成失败"
-                        else {
-                            // v1.73: 先写私有临时 zip，再转存公共 Download/SpyProbe/（用户文件管理器可见）
-                            val tmp = java.io.File(com.dustinky.spyprobe.MitmManager.get()!!.certManager().caDir(), "spyprobe-mitm-ca_tmp.zip")
-                            com.dustinky.spyprobe.CaInstaller.exportMagiskModule(pem, tmp)
-                            val uri = com.dustinky.spyprobe.util.ShareLogUtil.writeModuleZip(context, tmp.readBytes())
-                            tmp.delete()
-                            if (uri == null) "导出失败（详见调试日志）"
-                            else "已导出 Magisk/KernelSU 模块到 下载/SpyProbe/（文件管理器可见）"
-                        }
-                    }
-                },
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
-            ) { Text("② 导出 Magisk/KernelSU 模块（用户自己装）") }
-
-            OutlinedButton(
-                onClick = {
-                    installVia {
-                        val pem = com.dustinky.spyprobe.MitmManager.get()?.certManager()?.exportCaCertPem()
-                        if (pem == null) "CA 生成失败" else com.dustinky.spyprobe.CaInstaller.installMagiskModuleRoot(pem)
-                    }
-                },
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
-            ) { Text("③ Root 帮装 Magisk/KernelSU 模块") }
-
-            Text(
-                "提示：91aw 等 dart:io App 只信系统 CA；Java/OkHttp App 可配「信任用户 CA」免 root（hook 层 sslBypass 兜底）",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 10.sp,
-                modifier = Modifier.padding(top = 6.dp)
-            )
-        }
-
-        Spacer(Modifier.height(8.dp))
-
-        // ===== 反检测 =====
-        // v1.25 P0-1: 删除 8 个假开关（antiDetect/antiEmulator/antiFrida/antiDebug/fakeDevice/fakeLocation/
-        //   pinBypass/rootCloak——后端无对应字段，下发无效且误导用户）；保留真实字段 antiRoot/antiXposed
-        // v1.44: 新增 antiApplist（HMA 借鉴）——隐藏应用列表（PackageManager 过滤 spyprobe/LSPosed/Magisk）
         SettingsGroup(
             title = "反检测",
             subtitle = "隐藏 root / Xposed / 应用列表",
