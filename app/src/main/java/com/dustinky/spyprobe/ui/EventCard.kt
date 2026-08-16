@@ -87,6 +87,7 @@ internal fun eventColor(type: String): Color = when (type) {
     "METHOD" -> Color(0xFFEC407A)
     "CERT" -> Color(0xFF9CCC65)
     "RULE" -> Color(0xFFF4511E)
+    "KL" -> Color(0xFFFFC107)
     else -> Color(0xFF90A4AE)
 }
 
@@ -107,6 +108,7 @@ internal fun eventTypeLabel(type: String): String = when (type) {
     "METHOD" -> "方法"
     "CERT" -> "证书"
     "RULE" -> "规则"
+    "KL" -> "Keylog"
     else -> type
 }
 
@@ -195,7 +197,7 @@ internal fun EventCard(entry: com.dustinky.spyprobe.SpyEvent, onClick: () -> Uni
 private fun payloadSummary(p: JSONObject): String {
     val keys = listOf("sql", "args", "content", "host", "data", "key", "err",
         "url", "msg", "tag", "level", "kind", "detail", "name", "getter", "value",
-        "caller", "invoke", "op", "alias", "summary")
+        "caller", "invoke", "op", "alias", "summary", "fn", "count")
     for (k in keys) {
         val v = p.optString(k, "")
         if (v.isNotEmpty() && v != "null") {

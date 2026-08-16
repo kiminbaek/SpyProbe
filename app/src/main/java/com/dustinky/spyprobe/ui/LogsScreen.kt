@@ -729,14 +729,9 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                                 evtFileLoading.remove(eid)
                                             }
                                         }
-                                        Text(
-                                            line,
-                                            style = codeStyle,
-                                            color = lineColor(line), // v1.50 P2-18: 失败行红色高亮
-                                            softWrap = true,
-                                            modifier = Modifier
-                                                .padding(vertical = 1.dp)
-                                                .clickable {
+                                        StructLogRow(
+                                            line = line,
+                                            onClick = {
                                                     // v1.72: REQ# 内存 → httpFileHits 缓存 → 都 miss 异步文件回溯（同 EVT#）
                                                     val rid2 = parseReqId(line)
                                                     val he2 = rid2?.let {
@@ -1402,7 +1397,7 @@ private fun LogDetailDialog(line: String, onDismiss: () -> Unit) {
 // v1.50 P2-11: formatJson 统一到 CaptureScreen.kt（internal），本文件直接引用
 
 /** hex dump：优先还原日志行里的 "[N B hex] xxxx" 段；否则对整行 UTF-8 字节 dump（最多 256B） */
-private fun hexDump(line: String): String {
+internal fun hexDump(line: String): String {
     val bytes = try {
         val m = Regex("\\[(\\d+)B hex\\]\\s+([0-9a-fA-F ]+)").find(line)
         if (m != null) hexToBytes(m.groupValues[2])

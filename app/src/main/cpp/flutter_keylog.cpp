@@ -549,9 +549,18 @@ static dart_native_fn_t g_orig_secure_socket_init = nullptr;
 static dart_native_fn_t g_orig_secure_socket_connect = nullptr;
 static std::atomic<bool> g_dart_io_hooked{false};
 
+// v2.1.0 P2: invoked 调试行结构化升级——每函数累计计数 + 节流。
+//   此前 Filter_Process/Processed 每个 TLS 块都无条件打一条 → 日志页整屏纯文本刷屏。
+//   现按 T13 CALL 同款节流（前 5 次 + 每 100 次打一条），行内带 #N 真实累计调用次数，
+//   Java 侧 NativeProbe.klAggregate 解析 #N 聚合为 SpyEvent(KL) 事件卡（标题含真实次数）。
+static std::map<std::string, std::atomic<uint64_t>> g_kl_invoked_count;
+
 static void kl_log_invoked(const char *name, void *args) {
+    uint64_t n = g_kl_invoked_count[std::string(name)].fetch_add(1) + 1;
+    if (n > 5 && (n % 100) != 0) return;   // 节流：>5 后每 100 次留痕一条
     char buf[192];
-    snprintf(buf, sizeof(buf), "KL dart:io %s invoked (args=%p)", name, args);
+    snprintf(buf, sizeof(buf), "KL dart:io %s #%llu invoked (args=%p)",
+             name, (unsigned long long)n, args);
     kl_native_log(buf);
 }
 

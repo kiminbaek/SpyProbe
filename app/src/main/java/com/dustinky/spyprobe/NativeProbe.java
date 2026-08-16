@@ -217,14 +217,89 @@ public class NativeProbe {
             String full = "[native] " + msg;
             DebugLog.get().logNoMirror("Native", full);
             // v1.69: KL 前缀 = keylog/dart:io hook 调试日志 → 进抓包日志页（导出可见）
+            // v2.1.0 P1: dart:io invoked 高频刷屏 → 1s 窗口聚合为 SpyEvent(KL) 事件卡，不再逐条裸写
             if (msg.startsWith("KL ")) {
                 try {
-                    LogStore.get().log("Native", full);
+                    klAggregate(msg);
                 } catch (Throwable ignored) {
                 }
             }
         }
     }
+
+
+    // ================= v2.1.0 P1: KL dart:io invoked 刷屏聚合 =================
+    // 背景：v1.69 的 KL dart:io Filter_Process/Processed/SecureSocket_* invoked 每条都裸写 LogStore，
+    //   Flutter TLS 加解密每个块都触发 → 实时日志页整屏纯文本刷屏（用户截图实锤）。
+    // 方案：同函数 1s 窗口合并为一条 SpyEvent(type=KL)（标题 "KL dart:io Filter_Process × 47"），
+    //   日志行带 [EVT#id] → UI 命中 HomeEventStore 渲染事件卡 + 详情页（结构化字段），根治刷屏。
+    private static final long KL_WINDOW_MS = 1000;      // 聚合窗口 1s
+    private static final long KL_FLUSH_COUNT = 2000;    // 单窗口上限（防极端高频窗口内爆量）
+
+    private static final java.util.concurrent.ConcurrentHashMap<String, KlAgg> klAggs =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static final class KlAgg {
+        volatile long firstTs;
+        volatile long lastTs;
+        volatile long count;
+        volatile long maxRun;   // v2.1.0 P2: native #N 真实累计次数（节流后样本数≠真实数，标题用累计值）
+        volatile String sample;
+        final Object lock = new Object();
+    }
+
+    /** KL 行统一入口：dart:io invoked → 聚合；其他 KL 调试行（T13 CALL / hook OK / keylog 行）原样进 LogStore */
+    private static void klAggregate(String msg) {
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("KL dart:io (\\w+) #(\\d+) invoked( .*)?$").matcher(msg);
+        java.util.regex.Matcher mOld = java.util.regex.Pattern
+                .compile("KL dart:io (\\w+) invoked( .*)?$").matcher(msg);
+        if (!m.matches() && !mOld.matches()) {
+            // 非 invoked 类 KL 行（T13 CALL、hook OK/FAIL、client/server traffic secret）低频，原样记录
+            try { LogStore.get().log("Native", "[native] " + msg); } catch (Throwable ignored) { }
+            return;
+        }
+        String fn = m.matches() ? m.group(1) : mOld.group(1);
+        // v2.1.0 P2: native 累计调用次数（节流后行内 #N）——聚合标题用它，比窗口内样本数更真实
+        final long runCount = m.matches() ? Long.parseLong(m.group(2)) : 0L;
+        KlAgg agg = klAggs.computeIfAbsent(fn, k -> new KlAgg());
+        long now = System.currentTimeMillis();
+        synchronized (agg.lock) {
+            if (agg.count == 0) agg.firstTs = now;
+            agg.count++;
+            agg.lastTs = now;
+            agg.sample = msg;
+            if (runCount > agg.maxRun) agg.maxRun = runCount;
+        }
+        flushKlIfDue(fn, agg);
+    }
+
+    private static void flushKlIfDue(String fn, KlAgg agg) {
+        boolean due;
+        synchronized (agg.lock) {
+            due = agg.count > 0 && (now() - agg.firstTs >= KL_WINDOW_MS || agg.count >= KL_FLUSH_COUNT);
+        }
+        if (!due) return;
+        long count; String sample; long lastTs; long maxRun;
+        synchronized (agg.lock) {
+            count = agg.count; sample = agg.sample; lastTs = agg.lastTs; maxRun = agg.maxRun;
+            agg.count = 0; agg.sample = null; agg.firstTs = 0; agg.maxRun = 0;
+        }
+        try {
+            long eid = EventStore.get().nextId();
+            org.json.JSONObject payload = new org.json.JSONObject();
+            payload.put("fn", fn);
+            payload.put("count", count);
+            payload.put("lastTs", lastTs);
+            long shown = maxRun > 0 ? maxRun : count;   // P2: 优先 native 真实累计次数
+            String title = "KL dart:io " + fn + " × " + shown;
+            String logLine = "[EVT#" + eid + "] KL dart:io " + fn + " × " + shown;
+            EventStore.get().add(new SpyEvent("KL", eid, lastTs, title, payload, logLine, ""));
+            LogStore.get().log("Native", "[native] " + logLine);
+        } catch (Throwable ignored) { }
+    }
+
+    private static long now() { return System.currentTimeMillis(); }
 
     /** libc / SSL 数据：id=socket fd 或 ssl 指针；isWrite=true 上行；isSsl=true TLS 解密明文 */
     @SuppressWarnings("unused")
