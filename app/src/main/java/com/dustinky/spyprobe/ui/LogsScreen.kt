@@ -778,10 +778,11 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                 }
             }
 
-            // v1.39 P3: 实时日志详情对话框（文本 / JSON / Hex 三视图 + 复制）
+            // v1.39 P3: 实时日志详情对话框 → v2.1.1 升级为全屏详情分析页 LogDetailPage
+            //   （旧实现只是 AlertDialog 弹窗，用户反馈抓包结果要能点开有详情分析页）
             val dialogLine = detailDialog
             if (dialogLine != null) {
-                LogDetailDialog(line = dialogLine, onDismiss = { detailDialog = null })
+                LogDetailPage(line = dialogLine, onBack = { detailDialog = null })
             }
 
             // v1.51: 结构化 HTTP 请求详情页——从 Dialog 弹窗改为全屏页（小黄鸟式）
@@ -1325,74 +1326,6 @@ private fun StatChip(label: String, count: Int, color: Color) {
     }
 }
 
-// ===== v1.39 P3: 日志详情对话框（Reqable 风格：文本 / JSON / Hex 三视图 + 复制）=====
-@Composable
-private fun LogDetailDialog(line: String, onDismiss: () -> Unit) {
-    var tab by remember { mutableStateOf(0) }
-    val context = LocalContext.current
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("日志详情", fontSize = 16.sp) },
-        text = {
-            Column {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf("文本", "JSON", "Hex").forEachIndexed { i, label ->
-                        FilterChip(
-                            selected = tab == i,
-                            onClick = { tab = i },
-                            label = { Text(label, fontSize = 11.sp) }
-                        )
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 380.dp)
-                        .verticalScroll(rememberScrollState())
-                        .background(MaterialTheme.colorScheme.surfaceContainer, RoundedCornerShape(8.dp))
-                        .padding(10.dp)
-                ) {
-                    when (tab) {
-                        0 -> Text(line, style = codeStyle, softWrap = true)
-                        1 -> {
-                            val json = formatJson(line)
-                            if (json != null) {
-                                Text(json, style = codeStyle, softWrap = true)
-                            } else {
-                                Text("（该行不是 JSON 内容）", style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                        else -> Text(hexDump(line), style = codeStyle, softWrap = true,
-                            fontFamily = FontFamily.Monospace)
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                // 复制当前视图内容
-                val text = when (tab) {
-                    0 -> line
-                    1 -> formatJson(line) ?: line
-                    else -> hexDump(line)
-                }
-                try {
-                    val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                            as android.content.ClipboardManager
-                    cm.setPrimaryClip(android.content.ClipData.newPlainText("spyprobe", text))
-                    android.widget.Toast.makeText(context, "已复制", android.widget.Toast.LENGTH_SHORT).show()
-                } catch (t: Throwable) {
-                    android.widget.Toast.makeText(context, "复制失败: $t", android.widget.Toast.LENGTH_SHORT).show()
-                }
-            }) { Text("复制") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("关闭") }
-        }
-    )
-}
 
 // v1.50 P2-11: formatJson 统一到 CaptureScreen.kt（internal），本文件直接引用
 

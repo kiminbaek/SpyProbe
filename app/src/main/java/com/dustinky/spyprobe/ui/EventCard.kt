@@ -425,6 +425,35 @@ private fun EventOverview(entry: com.dustinky.spyprobe.SpyEvent) {
             }
         }
 
+        // v2.1.1: KL 类型专项分析说明
+        if (entry.type == "KL") {
+            val klFn = if (p != null) p.optString("fn", "") else ""
+            SectionCard(title = "函数语义") {
+                Text(
+                    when (klFn) {
+                        "Filter_Process" -> "TLS 加密前明文处理（SecureFilter.process）\n——Flutter 发请求时原始明文在此点位经过，是抓明文的关键 hook 点"
+                        "Filter_Processed" -> "TLS 解密后明文处理（SecureFilter.processed）\n——响应明文解出后经此回调，可看到服务端返回的真实数据"
+                        "SecureSocket_Init" -> "SSL_CTX 创建（新建安全连接上下文）\n——每次 HTTPS 连接建立时初始化，说明有新的 TLS 会话"
+                        "SecureSocket_Connect" -> "TLS 握手连接（发起安全连接）\n——连接建立完成，后续数据将走加密通道"
+                        else -> "dart:io 加密通道调用\n——该函数被 flutter 加密管道调用，计数为该函数此次会话累计触发次数"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+            // count 大数友好显示
+            if (p != null) {
+                val c = p.optLong("count", 0)
+                if (c > 10000) {
+                    SectionCard(title = "频率提示") {
+                        Text("该函数已触发 $c 次（本次窗口聚合样本），说明加密管道高频调用——\n关注 init/connect 的时机变化比单次计数更有意义。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+
         // 原始日志（始终可见，小字）
         if (entry.logLine.isNotBlank()) {
             SectionCard(title = "原始日志") {
@@ -529,6 +558,9 @@ private fun payloadGroups(type: String): List<PayloadGroup> = when (type) {
     "CERT" -> listOf(
         PayloadGroup("证书", listOf("op", "alias", "summary")),
         PayloadGroup("详情", listOf("detail"))
+    )
+    "KL" -> listOf(
+        PayloadGroup("Keylog 分析", listOf("fn", "count"))
     )
     "RULE" -> listOf(
         PayloadGroup("规则模式", listOf("mode")),
