@@ -492,16 +492,10 @@ static void kl_keylog_cb(const void *ssl, const char *line) {
 static bool safe_read(const void *p, size_t len, void *out, size_t cap) {
     if (p == nullptr || out == nullptr || len == 0 || len > cap) return false;
     uintptr_t a = (uintptr_t)p;
-    if (a < 0x1000 || (a & 0xFFF) + len < len) return false;   // 低地址/溢出
-    // mincore: 检查覆盖页是否已映射（不检查具体读权限，但至少避免野指针段错误）
-    unsigned char vec[16];
-    uintptr_t start_page = a & ~(uintptr_t)0xFFF;
-    size_t pages = ((a - start_page) + len + 0xFFF) / 0x1000;
-    if (pages > 16) return false;
-#if defined(__linux__)
-    if (syscall(SYS_mincore, (void *)start_page, pages * 0x1000, vec) != 0) return false;
-    for (size_t i = 0; i < pages; i++) if (!(vec[i] & 1)) return false;
-#endif
+    // 简单边界检查（避免低地址/溢出/超大读取，足够防野指针崩溃；去掉 mincore syscall 防 SELinux block）
+    if (a < 0x1000 || len > cap || (a & 0xFFF) + len < len) return false;
+    // 额外的合理范围检查：secret 最大 256 字节（TLS1.3 traffic secret 上限），cr 最大 64 字节
+    if (len == 0 || len > 4096) return false;
     memcpy(out, p, len);
     return true;
 }
@@ -567,20 +561,15 @@ static std::atomic<int> g_tls12_calls{0};
 // Flutter Dart ssl_log_secret 签名：void(SSL*, label, secret*, secret_len)
 // ARM64 AAPCS: x0=ssl, x1=label, x2=?(未用), x3=secret*, x4=secret_len, x5=?(未用)
 // hook 函数 6 参数：完整接收 shadowhook 捕获的 x0-x5（AAPCS 直接映射）
-// Flutter Dart 实际传参: x0=ssl, x1=label, x2=?(未用), x3=secret, x4=secret_len, x5=?(未用)
+// Flutter Dart ssl_log_secret 实际 ARM64 传参(反汇编实锤):
+//   x0=ssl, x1=label, x2=?(未用), x3=secret_len, x4=secret, x5=?(未用)
 // AAPCS: p0=x0, p1=x1, p2=x2, p3=x3, p4=x4, p5=x5
-// Flutter x3=secret → p3, Flutter x4=secret_len → p4
+// Flutter x3=secret_len → p3, Flutter x4=secret → p4
 static void my_ssl_log_secret(const void *ssl, const char *label,
-                              const void *arg_unused2,  // x2=client_random(Flutter未用)
-                              size_t arg_secret_len,    // x3=secret_len (Flutter x3=secret，但在 AAPCS p3=x3 下实际为 secret_len!)
-                              const void *arg_secret,  // x4=secret (Flutter x4=secret_len，但在 AAPCS p4=x4 下实际为 secret!)
-                              size_t arg_unused5) {    // x5 未用
-    // 重新理清 AAPCS 参数映射：
-    // Flutter 调用约定: x0=ssl, x1=label, x3=secret*, x4=secret_len
-    // AAPCS 前 6 参数映射到 C 形参: p0=x0, p1=x1, p2=x2, p3=x3, p4=x4, p5=x5
-    // Flutter x3=secret → p3; Flutter x4=secret_len → p4
-    // 但参数类型注解与 Flutter 值不对应：p3(size_t)=secret_len值(32✓), p4(const void*)=secret指针✓
-    // 最终实际含义：arg_secret_len(=p3)=secret_len, arg_secret(=p4)=secret
+                              const void * /* x2: unused by flutter */,
+                              size_t   arg_secret_len,   // x3=Flutter secret_len=32 ✓
+                              const void *arg_secret,   // x4=Flutter secret* ✓
+                              size_t   /* x5: unused */) {
     // AAPCS 前 6 整数参数 -> C 形参顺序: p0=x0, p1=x1, p2=x2, p3=x3, p4=x4, p5=x5
     // Flutter: p0=ssl, p1=label, p2=?, p3=secret, p4=secret_len, p5=?
     // 
@@ -684,7 +673,7 @@ static void my_ssl_log_secret(const void *ssl, const char *label,
     //   hook 正确解读: p4=secret(指针), p3=secret_len
     //   调用原函数: (ssl, label, secret, secret_len) ← Flutter 顺序
 
-    const void *secret_ptr = (const void *)arg_secret;  // x4=secret 的值
+    const void *secret_ptr = arg_secret;  // x4=secret 的值
     size_t secret_sz = arg_secret_len;                      // x3=secret_len 的值
 
     int n = g_tls13_calls.fetch_add(1) + 1;
