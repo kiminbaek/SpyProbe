@@ -236,6 +236,23 @@ public class NativeProbe {
     private static final long KL_WINDOW_MS = 1000;      // 聚合窗口 1s
     private static final long KL_FLUSH_COUNT = 2000;    // 单窗口上限（防极端高频窗口内爆量）
 
+    // ================= v2.2.1: 恢复 native→Java keylog 回调节点 =================
+    // 背景：v1.71 废弃 keylog 路线时删除了 KeyLogStore 与 nativeKeylog 方法，
+    //   但 flutter_keylog.cpp:838 仍按旧名 GetStaticMethodID("nativeKeylog") 查
+    //   -> NoSuchMethodError -> CLIENT_RANDOM/TRAFFIC_SECRET 行一条都进不来（keylog 0 行）。
+    // 方案：补回同签名静态方法，转发 nativeLog -> klAggregate：
+    //   - CLIENT_HANDSHAKE_TRAFFIC_SECRET / CLIENT_RANDOM 等非 invoked 类 KL 行
+    //     -> klAggregate 命中"非 invoked 类低频 -> 原样进 LogStore"分支，抓包日志页可见
+    //   - 不再需要 KeyLogStore（v2.1.x 已删，内部解密能力由 conscrypt JNI 直接 hook 承担）
+    @SuppressWarnings("unused")
+    private static void nativeKeylog(String line) {
+        if (line != null && !line.isEmpty()) {
+            // keylog 行为 Wireshark 格式（CLIENT_RANDOM <cr_hex> <secret_hex>），
+            // nativeLog 只放行 "KL " 前缀行 → 补齐前缀，否则进不了 LogStore
+            nativeLog("KL " + line);
+        }
+    }
+
     private static final java.util.concurrent.ConcurrentHashMap<String, KlAgg> klAggs =
             new java.util.concurrent.ConcurrentHashMap<>();
 
