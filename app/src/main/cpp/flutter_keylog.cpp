@@ -492,10 +492,16 @@ static void kl_keylog_cb(const void *ssl, const char *line) {
 static bool safe_read(const void *p, size_t len, void *out, size_t cap) {
     if (p == nullptr || out == nullptr || len == 0 || len > cap) return false;
     uintptr_t a = (uintptr_t)p;
-    // 简单边界检查（避免低地址/溢出/超大读取，足够防野指针崩溃；去掉 mincore syscall 防 SELinux block）
-    if (a < 0x1000 || len > cap || (a & 0xFFF) + len < len) return false;
-    // 额外的合理范围检查：secret 最大 256 字节（TLS1.3 traffic secret 上限），cr 最大 64 字节
-    if (len == 0 || len > 4096) return false;
+    if (a < 0x1000 || (a & 0xFFF) + len < len) return false;   // 低地址/溢出
+    // mincore: 检查覆盖页是否已映射（不检查具体读权限，但至少避免野指针段错误）
+    unsigned char vec[16];
+    uintptr_t start_page = a & ~(uintptr_t)0xFFF;
+    size_t pages = ((a - start_page) + len + 0xFFF) / 0x1000;
+    if (pages > 16) return false;
+#if defined(__linux__)
+    if (syscall(SYS_mincore, (void *)start_page, pages * 0x1000, vec) != 0) return false;
+    for (size_t i = 0; i < pages; i++) if (!(vec[i] & 1)) return false;
+#endif
     memcpy(out, p, len);
     return true;
 }
@@ -543,151 +549,35 @@ static void kl_emit_line(const void *ssl, const char *label,
 }
 
 // ============ TLS1.3 ssl_log_secret hook ============
-// Flutter Dart ssl_log_secret 实际传参（ARM64 AAPCS x0-x5）：
-//   x0=ssl, x1=label, x2=?(未用), x3=secret, x4=secret_len, x5=?(未用)
-// shadowhook 按 AAPCS 把 x0-x5 完整传给 hook（编译器取 x0-x5 寄存器）
-// hook 声明 6 参数：ssl=x0, label=x1, cr=x2(未用), secret=x3, secret_len=x4, extra=x5(未用)
-// 内部实际使用 x3=secret, x4=secret_len（Flutter 传参的真正位置）
-//
-// 调用原函数：Flutter BoringSSL 原函数也用相同签名，
-//   原函数期望 x3=secret, x4=secret_len，故传参顺序与 hook 完全一致。
+// BoringSSL 签名：void ssl_log_secret(const SSL *ssl, const char *label,
+//   const uint8_t *client_random, size_t client_random_len,
+//   const uint8_t *secret, size_t secret_len)
 typedef void (*orig_ssl_log_secret_t)(const void *ssl, const char *label,
+                                      const uint8_t *client_random, size_t client_random_len,
                                       const uint8_t *secret, size_t secret_len);
-
 static orig_ssl_log_secret_t g_orig_ssl_log_secret = nullptr;
+
 static std::atomic<int> g_tls13_calls{0};
 static std::atomic<int> g_tls12_calls{0};
 
-// Flutter Dart ssl_log_secret 签名：void(SSL*, label, secret*, secret_len)
-// ARM64 AAPCS: x0=ssl, x1=label, x2=?(未用), x3=secret*, x4=secret_len, x5=?(未用)
-// hook 函数 6 参数：完整接收 shadowhook 捕获的 x0-x5（AAPCS 直接映射）
-// Flutter Dart ssl_log_secret 实际 ARM64 传参(反汇编实锤):
-//   x0=ssl, x1=label, x2=?(未用), x3=secret_len, x4=secret, x5=?(未用)
-// AAPCS: p0=x0, p1=x1, p2=x2, p3=x3, p4=x4, p5=x5
-// Flutter x3=secret_len → p3, Flutter x4=secret → p4
 static void my_ssl_log_secret(const void *ssl, const char *label,
-                              const void * /* x2: unused by flutter */,
-                              size_t   arg_secret_len,   // x3=Flutter secret_len=32 ✓
-                              const void *arg_secret,   // x4=Flutter secret* ✓
-                              size_t   /* x5: unused */) {
-    // AAPCS 前 6 整数参数 -> C 形参顺序: p0=x0, p1=x1, p2=x2, p3=x3, p4=x4, p5=x5
-    // Flutter: p0=ssl, p1=label, p2=?, p3=secret, p4=secret_len, p5=?
-    // 
-    // 但 hook 里的实际值取决于 shadowhook 如何传递上下文。
-    // 最可靠方案：hook 不依赖 AAPCS 映射，而是从 shadowhook 提供的上下文读取 x0-x5。
-    // shadowhook_hook_func_addr 的 orig 指针指向原始函数入口，调用时 x0-x5 就是原始调用时的值。
-    //
-    // 实际上 shadowhook.inline hook 的 trampoline 在跳转到 hook 函数前，
-    // 会把原始寄存器上下文保存/设置好，使 hook 函数收到的 x0-x5 = 原始调用时的值。
-    // 所以这里 6 参数 hook 的 p0=x0=ssl, p1=x1=label, p2=x2=?, p3=x3=secret, p4=x4=secret_len, p5=x5=?
-    // 结论：Flutter x3=secret 在 hook p3 里，Flutter x4=secret_len 在 hook p4 里。
-    // 根本问题：hook 形参名和 C 类型映射让代码难以理解。
-
-    // 重新理解：
-    // Flutter 编译出的调用指令: MOV x3, secret_ptr; MOV x4, secret_len; BL ssl_log_secret
-    // shadowhook intercepts 并跳转到 hook 函数
-    // C 编译器: x0->p0, x1->p1, x2->p2, x3->p3, x4->p4, x5->p5 (AAPCS, 6 int params)
-    // 所以 hook 声明的参数实际对应:
-    //   p0 = x0 = ssl
-    //   p1 = x1 = label
-    //   p2 = x2 = ? (Flutter doesn't use, likely 0 or junk)
-    //   p3 = x3 = secret (Flutter's secret!)
-    //   p4 = x4 = secret_len (Flutter's secret_len!)
-    //   p5 = x5 = ? (Flutter doesn't use)
-    //
-    // Flutter Dart ssl_log_secret 签名: (SSL*, label, secret*, secret_len)
-    // Flutter puts: x0=ssl, x1=label, x3=secret*, x4=secret_len
-    // 所以 p3=secret*, p4=secret_len —— hook 里的 p4(x4)=secret_len 是对的！
-    // 
-    // 但等等 Flutter 的 secret 在 x3，hook 的 p3 对应 x3 —— 所以 p3=secret 是对的！
-    // Flutter 的 secret_len 在 x4，hook 的 p4 对应 x4 —— 所以 p4=secret_len 是对的！
-    // hook 的 p5 对应 x5，Flutter x5=? —— p5 是什么无关紧要。
-
-    // 让我重新从日志确认：
-    // log: secptr=0x1d5(=469), seclen=12970367400517379242
-    // 我的 hook 旧签名: (ssl, label, cr, cr_len, secret, secret_len)
-    // p4=secret=x3=Flutter x3=secret -> p4=secret 应该是指针，但日志显示 p4=0x1d5=469=整数
-    // p5=secret_len=x5=Flutter x5=? -> p5=secret_len 日志显示 12970367400517379242=整数
-    // 
-    // 所以 secptr=469 是 p4=secret 的值（是 secret_len 的值！）
-    // seclen=12970367400517379242 是 p5=secret_len 的值（是 x5 的垃圾值！）
-    //
-    // 结论：Flutter x3=secret(=0xb400006e4a25248a), x4=secret_len(=32)
-    // AAPCS 映射：p3=x3=secret, p4=x4=secret_len, p5=x5=?
-    // 我的 hook p3=secret (✓), p4=secret_len (✓), p5=? (垃圾)
-    //
-    // Flutter Dart ssl_log_secret(SSL*, label, secret*, secret_len)
-    // x0=ssl, x1=label, x3=secret*, x4=secret_len
-    // AAPCS 映射 hook 参数: p3=x3=secret*, p4=x4=secret_len
-    // 所以 hook 里直接用 p4(x4)=secret_len 的值 32！p3(x3)=secret* 的值 0xb400...
-    //
-    // 调用原函数：原函数期望 x3=secret*, x4=secret_len（与 Flutter 一致！）
-    // Flutter 调用: x3=secret, x4=secret_len → BL 原函数
-    // 我的 hook 调用: 在 x3 放 secret, x4 放 secret_len → BL 原函数 → 一致！
-    //
-    // 唯一问题：hook 里的 p3 形参名是 size_t (secret_len)，p4 是 void* (secret)
-    // p3=x3=Flutter x3=secret → 但 p3 的 C 类型是 size_t → 解析为长度 0xb400... (巨大)
-    // p4=x4=Flutter x4=secret_len → p4 的 C 类型是 void* → 解析为指针 0x20=32
-    // 日志验证: p3=secret_len=0xb400... (乱码), p4=secret=0x20=32 (正确长度) ✓
-    //
-    // 所以 hook 正确用法：
-    //   ssl = p0
-    //   label = p1  
-    //   secret = (const uint8_t*)p4  // p4=x4=Flutter x4=secret_len? 不对！
-    //   secret_len = (size_t)p3       // p3=x3=Flutter x3=secret? 不对！
-    //
-    // 重新看：Flutter x3=secret(指针), x4=secret_len(32)
-    // AAPCS: p3=x3=secret, p4=x4=secret_len
-    // hook p3=size_t -> p3 = 0xb400... (secret 的指针值被当作 size_t)
-    // hook p4=void*  -> p4 = 0x20=32 (secret_len 的值被当作指针)
-    //
-    // 所以正确的理解：
-    //   secret = (const uint8_t*)p3  // x3 的值 = 0xb400... = 正确的 secret 指针
-    //   secret_len = p4  // x4 的值 = 32 = 正确的 secret_len
-    //   但 C 声明时搞反了！
-    //
-    // 真正需要的 hook 签名：
-    //   my_ssl_log_secret(ssl, label, p2, p3=secret_len? 不对，应该是 secret*)
-    // Flutter 传参: x0=ssl, x1=label, x2=?, x3=secret*, x4=secret_len
-    // AAPCS hook: p0=x0=ssl, p1=x1=label, p2=x2=?, p3=x3=secret*, p4=x4=secret_len, p5=x5=?
-    // 所以 hook 里: p3=secret* (正确), p4=secret_len (正确)
-    // 但 hook 函数声明的参数类型：第三个是 void* p2, 第四个是 size_t p3, 第五个是 void* p4, 第六个是 size_t p5
-    // Flutter x3=secret* 映射到 hook p3(size_t) —— 类型不匹配但值一样
-    // Flutter x4=secret_len 映射到 hook p4(void*) —— 类型不匹配但值一样
-    // 
-    // 日志验证: p3=secret_len? 0xb400... (应该是 secret* 但被当作 size_t) ← 不对
-    //          p4=secret? 0x20=32 (应该是 secret_len 但被当作 void*) ← 不对
-    //
-    // 所以 hook 收到的 p3 是 secret_len 的值，p4 是 secret 的值 —— 完全反了！
-    // 这意味着 Flutter x3=secret_len, x4=secret！Flutter 的传参顺序和我想的不一样。
-    //
-    // Flutter: x3=secret_len, x4=secret (与标准 BoringSSL 一致！)
-    // AAPCS: p3=x3=secret_len, p4=x4=secret
-    // hook: p3=secret_len(32✓), p4=secret(指针0xb400...✓) ← 日志验证
-    // 调用原函数: 原函数期望 x3=secret_len, x4=secret ← 与 Flutter 一致！
-    // Flutter x3=secret_len, x4=secret → BL 原函数 → x3=secret_len, x4=secret ← 正确
-    //
-    // 最终结论：Flutter Dart ssl_log_secret(SSL*, label, secret*, secret_len)
-    //   ARM64 传参: x0=ssl, x1=label, x3=secret*, x4=secret_len
-    //   AAPCS hook: p3=x3=secret_len=32, p4=x4=secret=0xb400...
-    //   hook 正确解读: p4=secret(指针), p3=secret_len
-    //   调用原函数: (ssl, label, secret, secret_len) ← Flutter 顺序
-
-    const void *secret_ptr = arg_secret;  // x4=secret 的值
-    size_t secret_sz = arg_secret_len;                      // x3=secret_len 的值
-
+                              const uint8_t *client_random, size_t client_random_len,
+                              const uint8_t *secret, size_t secret_len) {
+    // v2.2.2 通用化：所有指针经 safe_read 校验 + 规范化 label 后才使用，
+    // 参数乱码/不可读指针不再直接解引用（v2.2.0 断网根因之一）
     int n = g_tls13_calls.fetch_add(1) + 1;
     char lbl_buf[96];
     const char *lbl = safe_label(label, lbl_buf, sizeof(lbl_buf));
     if (n <= 5 || (n % 50) == 0) {
         char b[224];
-        snprintf(b, sizeof(b), "KL T13 CALL #%d ssl=%p label=%s secptr=%p seclen=%zu",
-                 n, ssl, lbl, secret_ptr, secret_sz);
+        snprintf(b, sizeof(b), "KL T13 CALL #%d ssl=%p label=%s crptr=%p crlen=%zu secptr=%p seclen=%zu",
+                 n, ssl, lbl, client_random, client_random_len, secret, secret_len);
         kl_native_log(b);
     }
+    // 诊断：secret 前 8 字节 hex（确认参数有效性）
     if (n <= 3) {
         uint8_t tmp[8];
-        if (safe_read(secret_ptr, 8, tmp, sizeof(tmp))) {
+        if (safe_read(secret, 8, tmp, sizeof(tmp))) {
             char b[80];
             snprintf(b, sizeof(b), "KL T13 secret[0:8]=%02x%02x%02x%02x%02x%02x%02x%02x",
                      tmp[0], tmp[1], tmp[2], tmp[3], tmp[4], tmp[5], tmp[6], tmp[7]);
@@ -695,16 +585,27 @@ static void my_ssl_log_secret(const void *ssl, const char *label,
         } else {
             kl_native_log("KL T13 secret unreadable");
         }
+        uint8_t cr[8];
+        if (safe_read(client_random, 8, cr, sizeof(cr))) {
+            char b[80];
+            snprintf(b, sizeof(b), "KL T13 cr[0:8]=%02x%02x%02x%02x%02x%02x%02x%02x",
+                     cr[0], cr[1], cr[2], cr[3], cr[4], cr[5], cr[6], cr[7]);
+            kl_native_log(b);
+        } else {
+            kl_native_log("KL T13 cr unreadable");
+        }
     }
-    if (secret_sz <= 256 && secret_sz > 0) {
-        uint8_t sec[256];
-        if (safe_read(secret_ptr, secret_sz, sec, sizeof(sec))) {
-            uint8_t cr[32];
-            kl_emit_line(ssl, lbl, cr, 0, sec, secret_sz);
+    // 仅当 label/cr/secret 均可读且长度合理才 emit（防乱码进日志页）
+    if (client_random_len <= 64 && secret_len <= 256) {
+        uint8_t cr[64], sec[256];
+        if (safe_read(client_random, client_random_len, cr, sizeof(cr)) &&
+            safe_read(secret, secret_len, sec, sizeof(sec)) &&
+            cr != nullptr && sec != nullptr) {
+            kl_emit_line(ssl, lbl, cr, client_random_len, sec, secret_len);
         }
     }
     if (g_orig_ssl_log_secret != nullptr) {
-        g_orig_ssl_log_secret(ssl, label, (const uint8_t*)secret_ptr, secret_sz);
+        g_orig_ssl_log_secret(ssl, label, client_random, client_random_len, secret, secret_len);
     }
 }
 
