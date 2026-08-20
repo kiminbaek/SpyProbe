@@ -125,6 +125,7 @@ object ShareLogUtil {
      * 老系统 FileProvider 兜底）。此前导出写到 app 私有目录，用户文件管理器找不到。
      * @return 可分享 Uri；null=失败（UiLog 有原因）
      */
+    @Deprecated("MITM 已废弃，此函数不再使用")
     fun writeModuleZip(context: Context, bytes: ByteArray): Uri? {
         val filename = "spyprobe-mitm-ca_${timestamp()}.zip"
         return try {

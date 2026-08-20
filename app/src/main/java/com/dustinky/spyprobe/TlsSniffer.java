@@ -6,7 +6,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 
 /**
- * v7x: ClientHello SNI 嗅探（透明代理用）
+ * v7x: ClientHello SNI 嗅探（透明代理用，MITM 已废弃）
  *
  * 透明模式（iptables REDIRECT）下客户端不知道有代理，直接发 TLS ClientHello。
  * 代理必须先读 ClientHello 提取 SNI（域名），才能签发对应证书。
@@ -23,6 +23,7 @@ import java.nio.charset.StandardCharsets;
  *              + extensions(2+len) [TLS1.2/1.3]
  *   extension: type(2) + len(2) + data；type=0(server_name) → list(2) + name_type(1)=0 + name(2+len)
  */
+@Deprecated
 public class TlsSniffer {
 
     public static class Result {

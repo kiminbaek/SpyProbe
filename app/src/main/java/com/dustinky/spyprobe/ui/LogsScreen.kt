@@ -700,7 +700,7 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                             val fromDay = withContext(Dispatchers.IO) {
                                                 com.dustinky.spyprobe.HomeHttpStore.get().findInDay(appCtx.filesDir, day, rid)
                                             }
-                                            if (fromDay != null) httpFileHits[rid] = fromDay
+                                            if (fromDay != null) { httpFileHits[rid] = fromDay; if (httpFileHits.size > 500) { httpFileHits.remove(httpFileHits.keys.first()) } }
                                             httpFileLoading.remove(rid)
                                         }
                                     }
@@ -725,7 +725,7 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                                 val fromDay = withContext(Dispatchers.IO) {
                                                     com.dustinky.spyprobe.HomeEventStore.get().findInDay(appCtx.filesDir, day, eid)
                                                 }
-                                                if (fromDay != null) evtFileHits[eid] = fromDay
+                                                if (fromDay != null) { evtFileHits[eid] = fromDay; if (evtFileHits.size > 500) { evtFileHits.remove(evtFileHits.keys.first()) } }
                                                 evtFileLoading.remove(eid)
                                             }
                                         }
@@ -750,6 +750,7 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                                             }
                                                             if (fromDay != null) {
                                                                 httpFileHits[rid2] = fromDay
+                                                                if (httpFileHits.size > 500) { httpFileHits.remove(httpFileHits.keys.first()) }
                                                                 httpDetail = fromDay
                                                             } else {
                                                                 detailDialog = line

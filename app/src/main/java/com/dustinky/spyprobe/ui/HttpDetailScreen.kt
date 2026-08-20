@@ -313,7 +313,6 @@ private fun OverviewView(entry: HttpEntry, targetPackage: String?, expandStack: 
             KvRow("Keep Alive", keepAliveOf(entry))
             KvRow("流", if (entry.streamId > 0) "流 #${entry.streamId}" else "-")
             KvRow("Content-Type", entry.reqHeaders["Content-Type"] ?: "-")
-            KvRow("代理协议", "-")
         }
         // ===== 时间（请求开始/结束/耗时、响应开始/结束/耗时、总时长）=====
         SectionCard(title = "时间") {

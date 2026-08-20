@@ -37,9 +37,9 @@ static jmethodID g_cs_log_method = nullptr; // NativeProbe.nativeLog(String)
 static std::atomic<bool> g_in_progress{false};
 
 // shadowhook 动态符号（dlopen libshadowhook.so，与 native_hook.cpp 一致）
-typedef int (*fn_shadowhook_init)(int mode);
+typedef int (*fn_shadowhook_init)(int mode, bool debuggable);
 typedef void *(*fn_shadowhook_hook_func_addr)(void *func, void *replace, void **orig);
-typedef const char *(*fn_shadowhook_get_errno)(void);
+typedef int (*fn_shadowhook_get_errno)(void);
 static fn_shadowhook_init g_sh_init = nullptr;
 static fn_shadowhook_hook_func_addr g_sh_hook_addr = nullptr;
 static fn_shadowhook_get_errno g_sh_get_errno = nullptr;
@@ -62,10 +62,10 @@ static bool load_shadowhook() {
         cs_native_log("shadowhook symbols FAIL");
         return false;
     }
-    if (g_sh_init(1) != 0) { // 1 = SHADOWHOOK_MODE_DEFAULT
-        const char *e = g_sh_get_errno ? g_sh_get_errno() : "?";
+    if (g_sh_init(1, false) != 0) { // 1 = SHADOWHOOK_MODE_DEFAULT, debuggable=false
+        int e = g_sh_get_errno ? g_sh_get_errno() : -1;
         char buf[128];
-        snprintf(buf, sizeof(buf), "shadowhook_init ret!=0 errno=%s", e);
+        snprintf(buf, sizeof(buf), "shadowhook_init ret!=0 errno=%d", e);
         cs_native_log(buf);
         return false;
     }
@@ -204,15 +204,15 @@ static bool install_conscrypt_hook() {
         cs_native_log(b);
         return false;
     }
-    if (g_sh_hook_addr(write_fn, (void*)my_cs_ssl_write_bb, (void**)&g_orig_cs_write) != 0) {
+    if (g_sh_hook_addr(write_fn, (void*)my_cs_ssl_write_bb, (void**)&g_orig_cs_write) == nullptr) {
         char b[128];
-        snprintf(b, sizeof(b), "CS SSL_write hook FAIL errno=%d", g_sh_get_errno ? g_sh_get_errno()[0] : -1);
+        snprintf(b, sizeof(b), "CS SSL_write hook FAIL errno=%d", g_sh_get_errno ? g_sh_get_errno() : -1);
         cs_native_log(b);
         return false;
     }
-    if (g_sh_hook_addr(read_fn, (void*)my_cs_ssl_read, (void**)&g_orig_cs_read) != 0) {
+    if (g_sh_hook_addr(read_fn, (void*)my_cs_ssl_read, (void**)&g_orig_cs_read) == nullptr) {
         char b[128];
-        snprintf(b, sizeof(b), "CS SSL_read hook FAIL errno=%d", g_sh_get_errno ? g_sh_get_errno()[0] : -1);
+        snprintf(b, sizeof(b), "CS SSL_read hook FAIL errno=%d", g_sh_get_errno ? g_sh_get_errno() : -1);
         cs_native_log(b);
         return false;
     }
