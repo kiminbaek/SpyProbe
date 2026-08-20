@@ -89,6 +89,7 @@ public class SpyHomeServer {
             int contentLength = 0;
             // v1.37 P0-5: 请求鉴权 token（目标进程推送带 X-Spy-Token）
             String reqToken = "";
+            String reqSpyReq = "";
             String line;
             while (!(line = readHeaderLine(in)).isEmpty()) {
                 String lower = line.toLowerCase();
@@ -99,6 +100,8 @@ public class SpyHomeServer {
                     if (contentLength > MAX_BODY) contentLength = MAX_BODY;
                 } else if (lower.startsWith("x-spy-token:")) {
                     reqToken = line.substring(line.indexOf(':') + 1).trim();
+                } else if (lower.startsWith("x-spy-req:")) {
+                    reqSpyReq = line.substring(line.indexOf(':') + 1).trim();
                 }
             }
 
@@ -112,6 +115,13 @@ public class SpyHomeServer {
                     writeBytes(out, resp.getBytes(StandardCharsets.UTF_8), "401 Unauthorized", "application/json; charset=utf-8");
                     return;
                 }
+            }
+
+            // S5: /api/token 要求带 X-Spy-Req:1 头（TokenStore.homeTokenViaHttp 会设），普通 curl 不带
+            if ("/api/token".equals(path) && !"1".equals(reqSpyReq)) {
+                String resp = "{\"ok\":false,\"err\":\"forbidden\"}";
+                writeBytes(out, resp.getBytes(StandardCharsets.UTF_8), "403 Forbidden", "application/json; charset=utf-8");
+                return;
             }
 
             // v1.39 P0: pcap_chunk 二进制 body（pcap 记录字节，无全局头）→ 主进程落盘

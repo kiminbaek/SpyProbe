@@ -593,7 +593,7 @@ internal fun SectionCard(
     onClickTitle: (() -> Unit)? = null,
     content: @Composable () -> Unit
 ) {
-    var expanded by remember { mutableStateOf(initiallyExpanded) }
+    var expanded by remember(initiallyExpanded) { mutableStateOf(initiallyExpanded) }
     Column(
         Modifier
             .fillMaxWidth()

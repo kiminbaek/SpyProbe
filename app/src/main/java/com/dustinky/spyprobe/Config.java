@@ -203,7 +203,7 @@ public class Config {
     private static final Config INSTANCE = new Config();
     public static Config get() { return INSTANCE; }
 
-    public void clearHooks() {
+    public synchronized void clearHooks() {
         hooks.clear();
         // v1.16 P0-1: 清 Config 记录同时真正 unhook（此前只清 map，hook 永久生效）
         for (List<XposedInterface.HookHandle> list : handles.values()) {

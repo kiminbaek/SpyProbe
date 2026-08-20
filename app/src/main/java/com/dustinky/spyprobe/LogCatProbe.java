@@ -62,9 +62,13 @@ public class LogCatProbe {
         if (t.isEmpty()) return true;
         // 精确匹配黑名单
         if (SYSTEM_TAGS.contains(t)) return true;
-        // 前缀模式（如 AndroidRuntime-xxx / System-xxx / VRI[MainActivity]）
+        // M18: 前缀模式（如 AndroidRuntime-xxx / System-xxx / VRI[MainActivity]）
+        // 优化：startsWith(s) 一次判断 + charAt 检查分隔符，避免每 tag 拼 3 个临时 String
         for (String s : SYSTEM_TAGS) {
-            if (t.startsWith(s + "-") || t.startsWith(s + ":") || t.startsWith(s + "[")) return true;
+            if (t.startsWith(s) && t.length() > s.length()) {
+                char c = t.charAt(s.length());
+                if (c == '-' || c == ':' || c == '[') return true;
+            }
         }
         return false;
     }

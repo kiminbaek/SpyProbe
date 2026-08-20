@@ -318,7 +318,7 @@ public class SQLiteProbe {
             for (Method m : db.getDeclaredMethods()) {
                 if (!m.getName().equals("query")) continue;
                 int argc = m.getParameterTypes().length;
-                if (argc < 4 || argc > 8) continue;
+                if (argc < 4 || argc > 9) continue;
                 // v1.16 P2-5: 删除死代码 fArgc（hook 体用 chain.getArgs().size() 动态判断，此处从未使用）
                 module.hook(m).intercept(chain -> {
                     Object r;
@@ -331,29 +331,33 @@ public class SQLiteProbe {
                     if (Config.get().sqliteCapture) {
                         try {
                             StringBuilder sb = new StringBuilder("[SQL] SELECT");
+                            // M17: 9 参 query 重载首参为 distinct -> 后续参数整体偏移 +1
+                            int off = chain.getArgs().size() == 9 ? 1 : 0;
+                            if (off > 0 && Boolean.TRUE.equals(chain.getArg(0))) sb.append(" DISTINCT");
                             // 参数布局（官方重载）：
                             // 4: table, columns, selection, selectionArgs
                             // 5: + groupBy
                             // 6: + having
                             // 7: + orderBy
                             // 8: + limit
-                            String table = chain.getArg(0) == null ? "?" : String.valueOf(chain.getArg(0));
-                            if (chain.getArgs().size() > 1 && chain.getArg(1) != null) {
-                                sb.append(' ').append(joinArr(chain.getArg(1)));
+                            // 9: distinct(0) + table..limit(1..8)
+                            String table = chain.getArg(0 + off) == null ? "?" : String.valueOf(chain.getArg(0 + off));
+                            if (chain.getArgs().size() > 1 + off && chain.getArg(1 + off) != null) {
+                                sb.append(' ').append(joinArr(chain.getArg(1 + off)));
                             } else {
                                 sb.append(" *");
                             }
                             sb.append(" FROM ").append(table);
-                            if (chain.getArgs().size() > 2 && chain.getArg(2) != null) {
-                                sb.append(" WHERE ").append(chain.getArg(2));
-                                if (chain.getArgs().size() > 3 && chain.getArg(3) != null) {
-                                    sb.append(" args=").append(MethodProbe.str(chain.getArg(3), 200));
+                            if (chain.getArgs().size() > 2 + off && chain.getArg(2 + off) != null) {
+                                sb.append(" WHERE ").append(chain.getArg(2 + off));
+                                if (chain.getArgs().size() > 3 + off && chain.getArg(3 + off) != null) {
+                                    sb.append(" args=").append(MethodProbe.str(chain.getArg(3 + off), 200));
                                 }
                             }
-                            if (chain.getArgs().size() > 4 && chain.getArg(4) != null) sb.append(" GROUP BY ").append(chain.getArg(4));
-                            if (chain.getArgs().size() > 5 && chain.getArg(5) != null) sb.append(" HAVING ").append(chain.getArg(5));
-                            if (chain.getArgs().size() > 6 && chain.getArg(6) != null) sb.append(" ORDER BY ").append(chain.getArg(6));
-                            if (chain.getArgs().size() > 7 && chain.getArg(7) != null) sb.append(" LIMIT ").append(chain.getArg(7));
+                            if (chain.getArgs().size() > 4 + off && chain.getArg(4 + off) != null) sb.append(" GROUP BY ").append(chain.getArg(4 + off));
+                            if (chain.getArgs().size() > 5 + off && chain.getArg(5 + off) != null) sb.append(" HAVING ").append(chain.getArg(5 + off));
+                            if (chain.getArgs().size() > 6 + off && chain.getArg(6 + off) != null) sb.append(" ORDER BY ").append(chain.getArg(6 + off));
+                            if (chain.getArgs().size() > 7 + off && chain.getArg(7 + off) != null) sb.append(" LIMIT ").append(chain.getArg(7 + off));
                             String sql = sb.toString();
                             if (shouldLog(sql)) logSqlEvent(sql, "");
                         } catch (Throwable t) { }

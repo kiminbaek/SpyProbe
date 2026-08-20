@@ -12,3 +12,5 @@ backups/
 __pycache__/
 *.bak.*
 tools/locator_test
+app/src/main/cpp/*.bak.20260820
+app/src/main/java/com/dustinky/spyprobe/.backup_*/

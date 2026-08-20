@@ -136,7 +136,7 @@ internal fun LogDetailPage(line: String, onBack: () -> Unit) {
                     0 -> LogOverview(line)
                     1 -> RawScroll(line)
                     2 -> JsonView(line)
-                    else -> RawScroll(hexDump(line), mono = true)
+                    else -> RawScroll(hexDumpFromLog(line), mono = true)
                 }
             }
         }

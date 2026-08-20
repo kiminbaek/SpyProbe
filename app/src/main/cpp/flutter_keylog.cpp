@@ -84,7 +84,7 @@ static std::atomic<bool> g_hooked{false};
 static std::atomic<bool> g_in_progress{false};
 
 // shadowhook 动态符号
-typedef void *(*fn_shadowhook_init)(int debuggable, int recordable);
+typedef int (*fn_shadowhook_init)(int mode, bool debuggable);
 typedef void *(*fn_shadowhook_hook_func_addr)(void *func_addr, void *new_addr, void **orig_addr);
 typedef int (*fn_shadowhook_get_errno)(void);
 static fn_shadowhook_init g_sh_init = nullptr;
@@ -656,7 +656,10 @@ static bool load_shadowhook() {
         kl_native_log("KL shadowhook symbols FAIL");
         return false;
     }
-    g_sh_init(0, 0); // debuggable=0, recordable=0
+    if (g_sh_init(0, false) != 0) {
+        kl_native_log("KL shadowhook_init failed");
+        return false;
+    }
     kl_native_log("KL shadowhook init OK");
     return true;
 }
@@ -833,164 +836,6 @@ static int hook_dart_io_functions(const SoRange &rng) {
 //   （JNI 静态导出符号 dlsym 可定位；参数是 ByteBuffer 明文，直接喂 callback_kotlin
 //   结构化通道 REQ#）。通杀所有走 Conscrypt 的 app（Android 默认 TLS 引擎）。
 // native_hook.cpp 提供的结构化明文入口（HTTP1 解析 + REQ# 卡片）
-extern bool callback_kotlin(jlong id, bool is_write, const void *buf, size_t len, bool is_ssl);
-
-typedef jint (*orig_cs_ssl_write_t)(JNIEnv*, jclass, jlong, jobject, jint, jint);
-typedef jint (*orig_cs_ssl_read_t)(JNIEnv*, jclass, jlong, jobject, jint, jint, jint);
-static orig_cs_ssl_write_t g_orig_cs_write = nullptr;
-static orig_cs_ssl_read_t  g_orig_cs_read  = nullptr;
-static std::atomic<bool> g_conscrypt_hooked{false};
-static std::atomic<int> g_cs_write_calls{0};
-static std::atomic<int> g_cs_read_calls{0};
-static std::atomic<bool> g_cs_in_hook{false};
-static jclass g_bb_class = nullptr;      // java/nio/ByteBuffer 全局引用
-static jmethodID g_bb_has_array = nullptr;
-static jmethodID g_bb_array = nullptr;
-
-// 从 ByteBuffer(direct/heap)/byte[] 提取明文到 out（拷贝，安全）。
-static bool cs_extract_plain(JNIEnv* env, jobject obj, jint offset, jint len,
-                             uint8_t* out, size_t out_cap, size_t* out_len) {
-    *out_len = 0;
-    if (!obj || len <= 0 || out_cap == 0) return false;
-    size_t n = (size_t)len;
-    if (n > out_cap) n = out_cap;
-    // 1) DirectByteBuffer（Conscrypt 网络路径主流）
-    void* direct = env->GetDirectBufferAddress(obj);
-    if (direct) {
-        memcpy(out, (const uint8_t*)direct + offset, n);
-        *out_len = n;
-        return true;
-    }
-    // 2) Heap ByteBuffer（hasArray() → array()）
-    if (g_bb_class && env->IsInstanceOf(obj, g_bb_class)) {
-        if (env->CallBooleanMethod(obj, g_bb_has_array)) {
-            jbyteArray arr = (jbyteArray)env->CallObjectMethod(obj, g_bb_array);
-            if (arr) {
-                jsize alen = env->GetArrayLength(arr);
-                jbyte* elems = env->GetByteArrayElements(arr, nullptr);
-                if (elems) {
-                    if (offset < alen) {
-                        size_t avail = (size_t)(alen - offset);
-                        if (n > avail) n = avail;
-                        memcpy(out, elems + offset, n);
-                        *out_len = n;
-                    }
-                    env->ReleaseByteArrayElements(arr, elems, JNI_ABORT);
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-    // 3) byte[]（老版 Conscrypt 签名 NativeCrypto.SSL_write(long,byte[],int,int)）
-    jbyteArray arr = (jbyteArray)obj;
-    jsize alen = env->GetArrayLength(arr);
-    jbyte* elems = env->GetByteArrayElements(arr, nullptr);
-    if (elems) {
-        if (offset < alen) {
-            size_t avail = (size_t)(alen - offset);
-            if (n > avail) n = avail;
-            memcpy(out, elems + offset, n);
-            *out_len = n;
-        }
-        env->ReleaseByteArrayElements(arr, elems, JNI_ABORT);
-        return true;
-    }
-    return false;
-}
-
-static jint my_cs_SSL_write(JNIEnv* env, jclass clazz, jlong ssl, jobject source, jint offset, jint len) {
-    int n = g_cs_write_calls.fetch_add(1) + 1;
-    if (n <= 5 || (n % 200) == 0) {
-        char b[160];
-        snprintf(b, sizeof(b), "CS SSL_write CALL #%d ssl=%lld len=%d", n, (long long)ssl, len);
-        kl_native_log(b);
-    }
-    if (source && len > 0 && !g_cs_in_hook.exchange(true)) {
-        uint8_t tmp[65536];
-        size_t plen = 0;
-        if ((size_t)len <= sizeof(tmp) && cs_extract_plain(env, source, offset, len, tmp, sizeof(tmp), &plen) && plen > 0) {
-            callback_kotlin((jlong)ssl, true, tmp, plen, true);
-        }
-        g_cs_in_hook.store(false);
-    }
-    if (g_orig_cs_write) return g_orig_cs_write(env, clazz, ssl, source, offset, len);
-    return -1;
-}
-
-static jint my_cs_SSL_read(JNIEnv* env, jclass clazz, jlong ssl, jobject target, jint offset, jint len, jint timeout) {
-    jint ret = g_orig_cs_read ? g_orig_cs_read(env, clazz, ssl, target, offset, len, timeout) : -1;
-    int n = g_cs_read_calls.fetch_add(1) + 1;
-    if (n <= 5 || (n % 200) == 0) {
-        char b[160];
-        snprintf(b, sizeof(b), "CS SSL_read CALL #%d ssl=%lld ret=%d", n, (long long)ssl, ret);
-        kl_native_log(b);
-    }
-    if (ret > 0 && target && !g_cs_in_hook.exchange(true)) {
-        uint8_t tmp[65536];
-        size_t plen = 0;
-        if ((size_t)ret <= sizeof(tmp) && cs_extract_plain(env, target, offset, ret, tmp, sizeof(tmp), &plen) && plen > 0) {
-            callback_kotlin((jlong)ssl, false, tmp, plen, true);
-        }
-        g_cs_in_hook.store(false);
-    }
-    return ret;
-}
-
-static bool install_conscrypt_hook() {
-    if (g_conscrypt_hooked.load()) return true;
-    if (!g_sh_hook_addr) { kl_native_log("CS install: shadowhook not loaded"); return false; }
-    void* h = dlopen("libconscrypt_jni.so", RTLD_NOW | RTLD_NOLOAD);
-    if (!h) h = dlopen("libconscrypt_jni.so", RTLD_NOW);
-    if (!h) { kl_native_log("CS dlopen libconscrypt_jni.so FAIL"); return false; }
-    void* write_fn = dlsym(h, "Java_org_conscrypt_NativeCrypto_SSL_write");
-    void* read_fn  = dlsym(h, "Java_org_conscrypt_NativeCrypto_SSL_read");
-    if (!write_fn || !read_fn) {
-        char b[192];
-        snprintf(b, sizeof(b), "CS dlsym NativeCrypto_SSL_write=%p SSL_read=%p FAIL", write_fn, read_fn);
-        kl_native_log(b);
-        dlclose(h);
-        return false;
-    }
-    // 缓存 ByteBuffer 类与方法（heap buffer 提取用）
-    if (!g_bb_class && g_kl_jvm) {
-        JNIEnv* e = nullptr;
-        g_kl_jvm->GetEnv((void**)&e, JNI_VERSION_1_6);
-        if (e) {
-            jclass tmp = e->FindClass("java/nio/ByteBuffer");
-            if (tmp) {
-                g_bb_class = (jclass)e->NewGlobalRef(tmp);
-                e->DeleteLocalRef(tmp);
-                g_bb_has_array = e->GetMethodID(g_bb_class, "hasArray", "()Z");
-                g_bb_array = e->GetMethodID(g_bb_class, "array", "()[B");
-            }
-        }
-    }
-    void* w_orig = nullptr; void* r_orig = nullptr;
-    void* ws = g_sh_hook_addr(write_fn, (void*)my_cs_SSL_write, &w_orig);
-    void* rs = g_sh_hook_addr(read_fn,  (void*)my_cs_SSL_read,  &r_orig);
-    char b[192];
-    if (ws != nullptr && w_orig != nullptr) {
-        g_orig_cs_write = (orig_cs_ssl_write_t)w_orig;
-        g_conscrypt_hooked.store(true);
-        snprintf(b, sizeof(b), "CS SSL_write hook OK (fn=%p)", write_fn);
-    } else {
-        int err = g_sh_get_errno ? g_sh_get_errno() : -1;
-        snprintf(b, sizeof(b), "CS SSL_write hook FAIL errno=%d", err);
-    }
-    kl_native_log(b);
-    if (rs != nullptr && r_orig != nullptr) {
-        g_orig_cs_read = (orig_cs_ssl_read_t)r_orig;
-        snprintf(b, sizeof(b), "CS SSL_read hook OK (fn=%p)", read_fn);
-    } else {
-        int err = g_sh_get_errno ? g_sh_get_errno() : -1;
-        snprintf(b, sizeof(b), "CS SSL_read hook FAIL errno=%d", err);
-    }
-    kl_native_log(b);
-    dlclose(h);
-    return g_conscrypt_hooked.load();
-}
-
 // ============ JNI 入口 ============
 
 // 后台轮询线程：等待 libflutter.so 加载后自动定位 + hook（Flutter 引擎可能延迟加载）

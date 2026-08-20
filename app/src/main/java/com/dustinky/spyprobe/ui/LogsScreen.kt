@@ -228,6 +228,7 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
     //   find() miss → 异步 findInDay 从 http_entries jsonl 找回，命中后渲染卡片 + 点击可弹详情页）
     val httpFileHits = remember { mutableStateMapOf<Long, com.dustinky.spyprobe.HttpEntry>() }
     val httpFileLoading = remember { mutableStateMapOf<Long, Boolean>() }
+    val httpFileOrder = remember { mutableListOf<Long>() }  // M19: 插入序追踪，驱逐最旧
     // v1.25 P1-3: 暂停状态从局部 remember 改为 vm（此前暂停只停自动滚动不停轮询——日志还在积累；
     //   vm.paused 同时控制轮询停止 + 自动滚动暂停，语义一致）
     val paused by vm.paused.collectAsState()
@@ -700,7 +701,7 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                             val fromDay = withContext(Dispatchers.IO) {
                                                 com.dustinky.spyprobe.HomeHttpStore.get().findInDay(appCtx.filesDir, day, rid)
                                             }
-                                            if (fromDay != null) { httpFileHits[rid] = fromDay; if (httpFileHits.size > 500) { httpFileHits.remove(httpFileHits.keys.first()) } }
+                                            if (fromDay != null) { if (!httpFileHits.containsKey(rid)) httpFileOrder.add(rid); httpFileHits[rid] = fromDay; if (httpFileOrder.size > 500) { val oldest = httpFileOrder.removeAt(0); httpFileHits.remove(oldest) } }
                                             httpFileLoading.remove(rid)
                                         }
                                     }
@@ -749,8 +750,9 @@ fun LogsScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
                                                                 com.dustinky.spyprobe.HomeHttpStore.get().findInDay(appCtx.filesDir, day, rid2)
                                                             }
                                                             if (fromDay != null) {
+                                                                if (!httpFileHits.containsKey(rid2)) httpFileOrder.add(rid2)
                                                                 httpFileHits[rid2] = fromDay
-                                                                if (httpFileHits.size > 500) { httpFileHits.remove(httpFileHits.keys.first()) }
+                                                                if (httpFileOrder.size > 500) { val oldest = httpFileOrder.removeAt(0); httpFileHits.remove(oldest) }
                                                                 httpDetail = fromDay
                                                             } else {
                                                                 detailDialog = line
@@ -1331,7 +1333,7 @@ private fun StatChip(label: String, count: Int, color: Color) {
 // v1.50 P2-11: formatJson 统一到 CaptureScreen.kt（internal），本文件直接引用
 
 /** hex dump：优先还原日志行里的 "[N B hex] xxxx" 段；否则对整行 UTF-8 字节 dump（最多 256B） */
-internal fun hexDump(line: String): String {
+internal fun hexDumpFromLog(line: String): String {
     val bytes = try {
         val m = Regex("\\[(\\d+)B hex\\]\\s+([0-9a-fA-F ]+)").find(line)
         if (m != null) hexToBytes(m.groupValues[2])

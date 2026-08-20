@@ -48,6 +48,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -69,7 +70,7 @@ import kotlinx.coroutines.withContext
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HooksScreen(vm: SpyViewModel, modifier: Modifier = Modifier) {
-    var tab by remember { mutableIntStateOf(0) }
+    var tab by rememberSaveable { mutableIntStateOf(0) }
     val tabs = listOf("已 Hook", "Hook 规则")
     var hooks by remember { mutableStateOf(emptyList<HookEntry>()) }
     var rules by remember { mutableStateOf(emptyList<HijackEntry>()) }
@@ -159,7 +160,7 @@ private fun HooksList(vm: SpyViewModel, hooks: List<HookEntry>, onRefresh: () ->
         LazyColumn(modifier = modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
             // v1.28 P2: items 加 key（class#method#params 去重标识），避免列表复用错位
             items(hooks, key = { it.cls + "#" + it.method + "#" + it.params }) { h ->
-                var expanded by remember { mutableStateOf(false) }
+                var expanded by remember(h) { mutableStateOf(false) }
                 Card(
                     colors = CardDefaults.cardColors(
                         containerColor = MaterialTheme.colorScheme.surfaceContainer

@@ -40,7 +40,7 @@ public class CrashCatcher {
      *  50-100 次崩溃后旧记录滚动淘汰，防无限增长占盘 */
     static final long MAX_CRASH_LOG_BYTES = 256L * 1024;
 
-    private static final SimpleDateFormat FMT = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US);
+    private static final ThreadLocal<SimpleDateFormat> FMT = ThreadLocal.withInitial(() -> new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US));
 
     /** 主进程 filesDir（setHomeDir 设置；saveFromTarget 落盘用） */
     private static volatile File homeDir = null;
@@ -128,7 +128,7 @@ public class CrashCatcher {
     /** 崩溃文本格式化 */
     private static String dump(Thread t, Throwable e) {
         StringBuilder sb = new StringBuilder();
-        sb.append("=== SpyProbe crash @ ").append(FMT.format(new Date())).append(" ===").append('\n');
+        sb.append("=== SpyProbe crash @ ").append(FMT.get().format(new Date())).append(" ===").append('\n');
         sb.append("thread=").append(t == null ? "?" : t.getName())
           .append(" (id=").append(t == null ? "?" : t.getId()).append(')').append('\n');
         sb.append("process=").append(Process.myPid()).append('\n');
@@ -199,6 +199,7 @@ public class CrashCatcher {
             head.append("Host: 127.0.0.1:").append(HOME_PORT).append("\r\n");
             head.append("Content-Type: text/plain\r\n");
             head.append("Content-Length: ").append(body.length).append("\r\n");
+            head.append("X-Spy-Token: ").append(TokenStore.homeToken()).append("\r\n");
             head.append("Connection: close\r\n\r\n");
             os.write(head.toString().getBytes(StandardCharsets.ISO_8859_1));
             os.write(body);

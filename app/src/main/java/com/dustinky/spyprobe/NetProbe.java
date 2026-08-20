@@ -30,11 +30,13 @@ import io.github.libxposed.api.XposedModule;
 public class NetProbe {
 
     static final String TAG = "SpyProbe.Net";
+    /** v2.3 S1: Cronet getResponse 重入保护 */
+    private static final ThreadLocal<Boolean> cronetInHook = new ThreadLocal<>();
 
     private final XposedModule module;
     private final ClassLoader appCl;
     // v1.40 P0: DexKit 混淆 OkHttp 定位兜底（ModuleMain 创建后注入；标准类名找不到时用）
-    private DexKitProbe dexKit;
+    private volatile DexKitProbe dexKit;
 
     public NetProbe(XposedModule module, ClassLoader appCl) {
         this.module = module;
@@ -672,7 +674,7 @@ public class NetProbe {
     /** 请求体最大可读字节（超过不 buffer，防 OOM） */
     private static final int MAX_REQ_BODY = 1 << 20;
 
-    private static void ensureReqMethods(Object req) throws Exception {
+    private static synchronized void ensureReqMethods(Object req) throws Exception {
         if (sReqUrl == null) {
             Class<?> rc = req.getClass();
             sReqUrl = rc.getMethod("url");
@@ -686,7 +688,7 @@ public class NetProbe {
         }
     }
 
-    private static void ensureRespMethods(Object resp) throws Exception {
+    private static synchronized void ensureRespMethods(Object resp) throws Exception {
         if (sRespPeek == null) {
             Class<?> rc = resp.getClass();
             sRespPeek = rc.getMethod("peekBody", long.class);
@@ -1001,7 +1003,7 @@ public class NetProbe {
     private void hookDynamicOkHttpCall(Object call) {
         Class<?> realCls = call.getClass();
         String key = realCls.getName();
-        if (dynamicHookedCalls.contains(key)) return; // 每类只 hook 一次
+        if (!dynamicHookedCalls.add(key)) return; // M3: 原子 check-and-add
         Class<?> respCls;
         try {
             respCls = Class.forName("okhttp3.Response", false, appCl);
@@ -1101,7 +1103,6 @@ public class NetProbe {
             } catch (Throwable t) { }
         }
         if (hooked > 0) {
-            dynamicHookedCalls.add(key);
             DebugLog.get().logNoMirror("Net", "[OkHttp-混淆] 动态 hooked " + key + " 响应记录 x" + hooked);
             DebugLog.get().logNoMirror("Net", "dynamic hooked " + key + " x" + hooked);
         }
@@ -1159,6 +1160,7 @@ public class NetProbe {
                         he.complete(status, msg, rspHdrs, "text", "", 0, 0);
                         HttpStore.get().add(he);
                         // v1.75 打磨 A1: 登记 HUC 实例 -> HttpEntry（getInputStream tee 回填 body 用）
+                        if (HUC_ENTRIES.size() > 256) HUC_ENTRIES.clear(); // M4: 防膨胀
                         HUC_ENTRIES.put(System.identityHashCode(c), he);
                     } catch (Throwable t) { }
                 }
@@ -1369,8 +1371,10 @@ public class NetProbe {
             }
             final Method fGetResponse = getResponse;
             module.hook(getResponse).intercept(chain -> {
+                if (Boolean.TRUE.equals(cronetInHook.get())) return chain.proceed();
                 Object r = chain.proceed();
                 if (!Config.get().cronetCapture) return r;
+                cronetInHook.set(true);
                 try {
                     Object self = chain.getThisObject();
                     if (self instanceof java.net.HttpURLConnection) {
@@ -1393,7 +1397,7 @@ public class NetProbe {
                         he.complete(code, "", new java.util.TreeMap<>(), "text", "", 0, 0);
                         HttpStore.get().add(he);
                     }
-                } catch (Throwable t) { }
+                } catch (Throwable t) { } finally { cronetInHook.remove(); }
                 return r;
             });
             DebugLog.get().logNoMirror("Net", "[" + phase + "] hooked CronetHttpURLConnection.getResponse");

@@ -181,7 +181,7 @@ public class HttpEntry {
         if (data == null || len <= 0) return "";
         int check = Math.min(len, 64);
         for (int i = 0; i < check; i++) {
-            byte b = data[i];
+            int b = data[i] & 0xFF;
             if (b == 0) return "";
             if (b < 0x09 || (b > 0x0d && b < 0x20)) return "";
         }

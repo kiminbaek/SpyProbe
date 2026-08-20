@@ -102,7 +102,7 @@ public class NativeProbe {
             String meta = takeTlsMeta(connId);
             p = tlsParsers.get(connId);
             if (p == null) {
-                if (tlsParsers.size() >= MAX_TLS_PARSERS) tlsParsers.clear(); // 极端场景兜底
+                if (tlsParsers.size() >= MAX_TLS_PARSERS) { Long oldest = tlsParsers.keySet().iterator().next(); tlsParsers.remove(oldest); } // M5: 淘汰最旧
                 p = new TlsHttpParser(connId, socketInfo);
                 tlsParsers.put(connId, p);
             }
@@ -448,8 +448,9 @@ public class NativeProbe {
                 he.setConnMeta("HTTP/2", nowMs, 0, connId, streamId, "", 0, "", 0);
                 H2_ENTRIES.put(key, he);
                 if (H2_ENTRIES.size() > 256) {
-                    // 防膨胀：极端情况下清空（最多丢几个未完成流，防内存泄漏优先）
-                    H2_ENTRIES.clear();
+                    // M6: 淘汰最旧条目（保留大部分在途流）
+                    Long oldest = H2_ENTRIES.keySet().iterator().next();
+                    H2_ENTRIES.remove(oldest);
                 }
             } else {
                 HttpEntry he = H2_ENTRIES.remove(key);

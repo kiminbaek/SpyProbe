@@ -81,7 +81,7 @@ internal fun StructLogRow(line: String, onClick: () -> Unit) {
             }
             if (expanded) {
                 Text(
-                    hexDump(line),
+                    hexDumpFromLog(line),
                     style = codeStyle,
                     color = Color(0xFF00E5FF),
                     fontSize = 10.sp,

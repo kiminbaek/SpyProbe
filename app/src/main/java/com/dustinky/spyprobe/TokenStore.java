@@ -112,7 +112,7 @@ public class TokenStore {
             java.net.Socket sock = new java.net.Socket();
             sock.setTcpNoDelay(true);
             sock.connect(new java.net.InetSocketAddress("127.0.0.1", 9900), 500);
-            String head = "GET /api/token HTTP/1.1\r\nHost: 127.0.0.1:9900\r\nConnection: close\r\n\r\n";
+            String head = "GET /api/token HTTP/1.1\r\nHost: 127.0.0.1:9900\r\nX-Spy-Req: 1\r\nConnection: close\r\n\r\n";
             java.io.OutputStream os = sock.getOutputStream();
             os.write(head.getBytes(StandardCharsets.UTF_8));
             os.flush();

@@ -607,9 +607,10 @@ public class SpyServer {
                 }
             }
         } catch (Throwable t) {
+            DebugLog.get().logNoMirror(TAG, "route err: " + t);
             JSONObject o = new JSONObject();
             o.put("ok", false);
-            o.put("error", t.toString());
+            o.put("error", "internal error");
             return o.toString();
         }
     }

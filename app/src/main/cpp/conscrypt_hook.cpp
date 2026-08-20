@@ -38,9 +38,11 @@ static std::atomic<bool> g_in_progress{false};
 
 // shadowhook 动态符号（dlopen libshadowhook.so，与 native_hook.cpp 一致）
 typedef int (*fn_shadowhook_init)(int mode, bool debuggable);
+typedef void *(*fn_shadowhook_unhook)(void *stub);
 typedef void *(*fn_shadowhook_hook_func_addr)(void *func, void *replace, void **orig);
 typedef int (*fn_shadowhook_get_errno)(void);
 static fn_shadowhook_init g_sh_init = nullptr;
+static fn_shadowhook_unhook g_sh_unhook = nullptr;
 static fn_shadowhook_hook_func_addr g_sh_hook_addr = nullptr;
 static fn_shadowhook_get_errno g_sh_get_errno = nullptr;
 
@@ -97,7 +99,8 @@ static orig_cs_ssl_read_t  g_orig_cs_read  = nullptr;
 static std::atomic<bool> g_conscrypt_hooked{false};
 static std::atomic<int> g_cs_write_calls{0};
 static std::atomic<int> g_cs_read_calls{0};
-static std::atomic<bool> g_cs_in_hook{false};
+static thread_local bool tls_in_hook = false;
+static thread_local uint8_t g_cs_tmp[262144]; // S3: stack-safe buffer
 static jclass g_bb_class = nullptr;      // java/nio/ByteBuffer 全局引用
 static jmethodID g_bb_has_array = nullptr;
 static jmethodID g_bb_array = nullptr;
@@ -143,49 +146,34 @@ static bool cs_extract_plain(JNIEnv* env, jobject obj, jint offset, jint len,
 }
 
 // 1) DirectByteBuffer（Conscrypt 网络路径主流）
-static jint my_cs_ssl_write_bb(JNIEnv* env, jclass, jlong ssl, jobject src, jint offset, jint len) {
-    jint ret = g_orig_cs_write(env, nullptr, ssl, src, offset, len);
-    if (ret > 0 && !g_cs_in_hook.exchange(true)) {
+static jint my_cs_ssl_write_bb(JNIEnv* env, jclass clazz, jlong ssl, jobject src, jint offset, jint len) {
+    jint ret = g_orig_cs_write(env, clazz, ssl, src, offset, len);
+    if (ret > 0 && !tls_in_hook) {
+        tls_in_hook = true;
         g_cs_write_calls++;
-        uint8_t tmp[262144];
+        // S3: use thread_local g_cs_tmp instead of stack allocation
         size_t plen = 0;
-        if (cs_extract_plain(env, src, offset, (jint)ret, tmp, sizeof(tmp), &plen) && plen > 0) {
-            process_conscrypt_plain((jlong)ssl, true, tmp, plen);
+        if (cs_extract_plain(env, src, offset, (jint)ret, g_cs_tmp, sizeof(g_cs_tmp), &plen) && plen > 0) {
+            process_conscrypt_plain((jlong)ssl, true, g_cs_tmp, plen);
         }
-        g_cs_in_hook = false;
+        tls_in_hook = false;
     }
     return ret;
 }
 
 // 2) byte[]（老版 Conscrypt 签名 NativeCrypto.SSL_write(long,byte[],int,int)）
-static jint my_cs_ssl_write_arr(JNIEnv* env, jclass, jlong ssl, jbyteArray src, jint offset, jint len) {
-    jint ret = g_orig_cs_write(env, nullptr, ssl, src, offset, len);
-    if (ret > 0 && !g_cs_in_hook.exchange(true)) {
-        g_cs_write_calls++;
-        uint8_t tmp[262144];
-        jsize arrLen = env->GetArrayLength(src);
-        jsize start = offset, end = offset + ret;
-        if (start < 0) start = 0;
-        if (end > arrLen) end = arrLen;
-        if (end > start && (size_t)(end - start) <= sizeof(tmp)) {
-            env->GetByteArrayRegion(src, start, end - start, (jbyte*)tmp);
-            process_conscrypt_plain((jlong)ssl, true, tmp, (size_t)(end - start));
-        }
-        g_cs_in_hook = false;
-    }
-    return ret;
-}
 
-static jint my_cs_ssl_read(JNIEnv* env, jclass, jlong ssl, jobject dst, jint offset, jint len, jint source) {
-    jint ret = g_orig_cs_read(env, nullptr, ssl, dst, offset, len, source);
-    if (ret > 0 && !g_cs_in_hook.exchange(true)) {
+static jint my_cs_ssl_read(JNIEnv* env, jclass clazz, jlong ssl, jobject dst, jint offset, jint len, jint source) {
+    jint ret = g_orig_cs_read(env, clazz, ssl, dst, offset, len, source);
+    if (ret > 0 && !tls_in_hook) {
+        tls_in_hook = true;
         g_cs_read_calls++;
-        uint8_t tmp[262144];
+        // S3: use thread_local g_cs_tmp instead of stack allocation
         size_t plen = 0;
-        if (cs_extract_plain(env, dst, offset, (jint)ret, tmp, sizeof(tmp), &plen) && plen > 0) {
-            process_conscrypt_plain((jlong)ssl, false, tmp, plen);
+        if (cs_extract_plain(env, dst, offset, (jint)ret, g_cs_tmp, sizeof(g_cs_tmp), &plen) && plen > 0) {
+            process_conscrypt_plain((jlong)ssl, false, g_cs_tmp, plen);
         }
-        g_cs_in_hook = false;
+        tls_in_hook = false;
     }
     return ret;
 }
@@ -204,13 +192,18 @@ static bool install_conscrypt_hook() {
         cs_native_log(b);
         return false;
     }
-    if (g_sh_hook_addr(write_fn, (void*)my_cs_ssl_write_bb, (void**)&g_orig_cs_write) == nullptr) {
+    void* ws = g_sh_hook_addr(write_fn, (void*)my_cs_ssl_write_bb, (void**)&g_orig_cs_write);
+    if (ws == nullptr) {
         char b[128];
         snprintf(b, sizeof(b), "CS SSL_write hook FAIL errno=%d", g_sh_get_errno ? g_sh_get_errno() : -1);
         cs_native_log(b);
         return false;
     }
-    if (g_sh_hook_addr(read_fn, (void*)my_cs_ssl_read, (void**)&g_orig_cs_read) == nullptr) {
+    void* rs = g_sh_hook_addr(read_fn, (void*)my_cs_ssl_read, (void**)&g_orig_cs_read);
+    if (rs == nullptr) {
+        // M8: read hook 失败时 unhook write，允许整体重试
+        if (g_sh_unhook) g_sh_unhook(ws);
+        g_orig_cs_write = nullptr;
         char b[128];
         snprintf(b, sizeof(b), "CS SSL_read hook FAIL errno=%d", g_sh_get_errno ? g_sh_get_errno() : -1);
         cs_native_log(b);

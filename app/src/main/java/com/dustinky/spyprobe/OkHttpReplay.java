@@ -169,13 +169,14 @@ public class OkHttpReplay {
         Thread th = new Thread(() -> {
             long t0 = System.currentTimeMillis();
             LogStore.get().log(TAG, "[Replay#" + e.id + "] 重放开始: " + e.method + " " + e.url + " (call.clone().execute)");
+            Object resp = null;
             try {
                 Object clone = e.call;
                 // 再次 clone：缓存条目是"可重放的模板"，每次重放再 clone 一次，避免同一模板二次执行
                 Method cloneM = clone.getClass().getMethod("clone");
                 Object fresh = cloneM.invoke(clone);
                 Method exec = fresh.getClass().getMethod("execute");
-                Object resp = exec.invoke(fresh);
+                resp = exec.invoke(fresh);
                 StringBuilder sb = new StringBuilder();
                 sb.append("[Replay#").append(e.id).append("] <<< 完成 ").append((System.currentTimeMillis() - t0)).append("ms");
                 try {
@@ -207,6 +208,8 @@ public class OkHttpReplay {
             } catch (Throwable t) {
                 LogStore.get().log(TAG, "[Replay#" + e.id + "] !!! 重放失败: " + t);
                 DebugLog.get().logNoMirror("Replay", "replay fail id=" + e.id + ": " + t);
+            } finally {
+                if (resp != null) { try { resp.getClass().getMethod("close").invoke(resp); } catch (Throwable ignored) {} }
             }
         }, "SpyProbe-Replay-" + id);
         th.setDaemon(true);

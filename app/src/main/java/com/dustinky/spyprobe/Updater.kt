@@ -28,6 +28,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
@@ -165,6 +166,8 @@ object Updater {
         var current = url
         repeat(4) { attempt -> // 最多试 4 个 URL（原 + 3 镜像）
             var conn: HttpURLConnection? = null
+            var input: InputStream? = null  // M13: 移到 try 外以便 catch 中关闭
+            var out: FileOutputStream? = null  // M13: 同上
             try {
                 conn = (URL(current).openConnection() as HttpURLConnection).apply {
                     connectTimeout = 15000
@@ -181,15 +184,15 @@ object Updater {
                     return@repeat
                 }
                 val total = conn.contentLengthLong
-                val input = conn.inputStream
-                val out = FileOutputStream(dest)
+                input = conn.inputStream
+                out = FileOutputStream(dest)
                 val buf = ByteArray(64 * 1024)
                 var read = 0L
                 var lastPct = -1
                 while (true) {
-                    val n = input.read(buf)
+                    val n = input!!.read(buf)
                     if (n < 0) break
-                    out.write(buf, 0, n)
+                    out!!.write(buf, 0, n)
                     read += n
                     if (total > 0) {
                         val pct = ((read * 100) / total).toInt()
@@ -199,9 +202,9 @@ object Updater {
                         }
                     }
                 }
-                out.flush()
-                out.close()
-                input.close()
+                out?.flush()
+                out?.close(); out = null
+                input?.close(); input = null
                 if (total > 0 && read < total) {
                     dest.delete()
                     return false
@@ -210,6 +213,9 @@ object Updater {
                 return true
             } catch (t: Throwable) {
                 dest.delete()
+                // M13: 异常路径关闭流（防止 input/out 泄漏）
+                try { input?.close() } catch(ignored: Throwable) {}
+                try { out?.close() } catch(ignored: Throwable) {}
                 // 网络异常试镜像（v1.47 P2-13: 同上，不再 +1）
                 current = mirrorOf(url, attempt) ?: return false
             } finally {
@@ -246,11 +252,14 @@ object Updater {
             if (ai.versionCode <= BuildConfig.VERSION_CODE) {
                 return "版本不高于当前（${BuildConfig.VERSION_NAME}）"
             }
-            if (expectedSha256.isNotEmpty()) {
-                val actual = sha256(file)
-                if (!actual.equals(expectedSha256, ignoreCase = true)) {
-                    return "SHA256 校验失败\n期望: $expectedSha256\n实际: $actual"
-                }
+            // M14: SHA256 校验改为必须——为空说明服务端未提供哈希，拒绝安装
+            if (expectedSha256.isEmpty()) {
+                android.util.Log.w("SpyProbe-Updater", "SHA256 校验失败: 服务端未提供哈希值")
+                return "SHA256 校验失败: 服务端未提供哈希值"
+            }
+            val actual = sha256(file)
+            if (!actual.equals(expectedSha256, ignoreCase = true)) {
+                return "SHA256 校验失败\n期望: $expectedSha256\n实际: $actual"
             }
             return null
         } catch (t: Throwable) {
