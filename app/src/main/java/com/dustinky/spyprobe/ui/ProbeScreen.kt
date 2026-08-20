@@ -189,7 +189,7 @@ private fun FunctionScanTab(vm: SpyViewModel, modifier: Modifier = Modifier) {
                 }
 
                 LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                    items(res.methods) { m ->
+                    items(res.methods, key = { it.signature }) { m ->
                         val isField = m.kind == "field"
                         Surface(
                             color = MaterialTheme.colorScheme.surfaceContainer,
@@ -337,7 +337,7 @@ private fun ClassLoadTab(vm: SpyViewModel, modifier: Modifier = Modifier) {
                 modifier = Modifier.padding(bottom = 4.dp)
             )
             LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                items(rl) { c ->
+                items(rl, key = { it }) { c ->
                     Text(c, style = codeStyle, modifier = Modifier.padding(vertical = 1.dp))
                 }
             }

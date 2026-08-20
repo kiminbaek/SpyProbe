@@ -211,7 +211,12 @@ std::string get_cached_stack(jlong id) {
     auto it = g_stack_cache.find(id);
     if (it != g_stack_cache.end()) return it->second;
     std::string stack = get_native_stack_internal();
-    if (g_stack_cache.size() >= 2048) g_stack_cache.clear();
+    if (g_stack_cache.size() >= 2048) {
+        // v2.3.1: 淘汰前半（减少缓存命中率波动，替代全清）
+        auto it = g_stack_cache.begin();
+        size_t half = g_stack_cache.size() / 2;
+        for (size_t i = 0; i < half && it != g_stack_cache.end(); ++i) it = g_stack_cache.erase(it);
+    }
     g_stack_cache[id] = stack;
     return stack;
 }

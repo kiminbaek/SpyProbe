@@ -113,16 +113,7 @@ public class ModuleMain extends XposedModule {
             DebugLog.get().logNoMirror("ModuleMain", "early config fetch FAIL: " + t);
         }
 
-        // v7x: 上报目标进程 UID 到主进程（MitmManager 维护 iptables 透明代理过滤名单）。
-        // v1.74.2 P0-4: 带 token——v1.37 起主进程所有 POST 都做 x-spy-token 鉴权，不带 token 直接 401 静默丢弃
-        // （v1.74.1 只修了主线程 NetworkOnMainThreadException，漏了鉴权 → POST 到主进程但被 401 吞掉，uid 仍永不上报）
-        // v1.74.5 P0-8: 传 module 引用——reportTargetUid 每次重试重新拉 token（首启时 9900/HTTP 通道
-        //   可能未就绪，固定空 token 重试 4 次全被 401 拒绝 → uid 永不上报 → iptables uids=[] → MITM 不劫持）
-        try {
-            reportTargetUid(this);
-        } catch (Throwable t) {
-            DebugLog.get().logNoMirror("ModuleMain", "reportTargetUid FAIL: " + t);
-        }
+        // v2.3.1: reportTargetUid 已删除（MITM 路线彻底摘除，uid 上报无消费方）
 
         // 立即装网络 hook
         // v1.37 P0-2: 统一 HookSafe 包裹——单个 hook 安装失败不拖垮目标进程，失败留痕
@@ -291,46 +282,5 @@ public class ModuleMain extends XposedModule {
      *  （token 为空时保持老主进程兼容：无 token 可验，直接放行。）
      *  v1.74.5 P0-8: 每次重试重新拉 token——首启时 9900/HTTP 通道可能未就绪，
      *  固定空 token 重试 4 次全被 401 拒绝（Connection reset），uid 永不上报。 */
-    private static void reportTargetUid(XposedModule module) {
-        final int myUid = android.os.Process.myUid();
-        final long[] delays = {0L, 1000L, 3000L, 8000L};
-        new Thread(() -> {
-            for (long d : delays) {
-                if (d > 0) {
-                    try { Thread.sleep(d); } catch (InterruptedException ignored) {}
-                }
-                // 每次重试重新拉 token：HTTP 优先（9900 就绪后必成功），libxposed 双通道兜底
-                final String token = TokenStore.remoteToken(module);
-                try {
-                    java.net.Socket sock = new java.net.Socket();
-                    sock.setTcpNoDelay(true);
-                    sock.connect(new java.net.InetSocketAddress("127.0.0.1", 9900), 600);
-                    String body = "{\"uid\":" + myUid + "}";
-                    StringBuilder head = new StringBuilder();
-                    head.append("POST /api/target_uid HTTP/1.1\r\n")
-                            .append("Host: 127.0.0.1:9900\r\n")
-                            .append("Content-Type: application/json\r\n");
-                    if (token != null && !token.isEmpty()) {
-                        head.append("x-spy-token: ").append(token).append("\r\n");
-                    }
-                    head.append("Content-Length: ").append(body.length())
-                            .append("\r\nConnection: close\r\n\r\n").append(body);
-                    java.io.OutputStream os = sock.getOutputStream();
-                    os.write(head.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
-                    os.flush();
-                    java.io.InputStream is = sock.getInputStream();
-                    byte[] buf = new byte[1024];
-                    while (is.read(buf) > 0) { /* 读完即关 */ }
-                    is.close();
-                    os.close();
-                    sock.close();
-                    DebugLog.get().logNoMirror("ModuleMain", "target uid reported: " + myUid + " (token " + (token != null && !token.isEmpty() ? "yes" : "none") + ")");
-                    return; // 成功即退出重试
-                } catch (Throwable t) {
-                    DebugLog.get().logNoMirror("ModuleMain", "target uid report fail(retry " + d + "ms): " + t);
-                }
-            }
-        }).start();
-    }
 
 }

@@ -247,19 +247,7 @@ public class SpyHomeServer {
                     o.put("accepted", n);
                     return o.toString();
                 }
-                case "/api/target_uid": {
-                    // v2.0.0 hook-revival: MITM 摘除（v1.74 卡死事故终止），uid 上报仅留痕
-                    try {
-                        JSONObject root = new JSONObject(body == null ? "{}" : body);
-                        int uid = root.optInt("uid", 0);
-                        if (uid > 0) {
-                            DebugLog.get().log("Home", "target uid: " + uid + " (MITM removed)");
-                        }
-                    } catch (Throwable t) {
-                        DebugLog.get().log("Home", "target_uid err: " + t);
-                    }
-                    return "{\"ok\":true}";
-                }
+                // v2.3.1: /api/target_uid 已移除（MITM 死代码清理）
                 case "/api/push_crash": {
                     // v1.53: 目标进程崩溃 → CrashCatcher 推回主进程落盘（调试日志导出自动附带）
                     CrashCatcher.saveFromTarget(body == null ? "(null)" : body);
@@ -416,7 +404,7 @@ public class SpyHomeServer {
                 default:
                     JSONObject o = new JSONObject();
                     o.put("ok", false);
-                    o.put("err", "unknown path " + p);
+                    o.put("err", "not found");
                     return o.toString();
             }
         } catch (Throwable t) {

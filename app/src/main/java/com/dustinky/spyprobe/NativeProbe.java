@@ -58,7 +58,7 @@ public class NativeProbe {
 
     // v1.52: native TLS 明文 → 结构化 HttpEntry（ExoPlayer/Flutter 等不走 OkHttp 的流量）
     //  per-连接（ssl 指针）一个解析器；连接关闭时移除；超过上限清空兜底防膨胀
-    private static final java.util.Map<Long, TlsHttpParser> tlsParsers = new java.util.HashMap<>();
+    private static final java.util.LinkedHashMap<Long, TlsHttpParser> tlsParsers = new java.util.LinkedHashMap<>(32, 0.75f, true);
     private static final int MAX_TLS_PARSERS = 64;
 
     // v1.59: 记录每个连接的 socketInfo（首次出现时记下，供 TlsHttpParser 建条目时带四元组）
@@ -508,8 +508,8 @@ public class NativeProbe {
     }
 
     /** H2 流状态（未完成请求 → HttpEntry），onH2Request/onH2DataChunk 共用 */
-    private static final java.util.concurrent.ConcurrentHashMap<Long, HttpEntry> H2_ENTRIES =
-            new java.util.concurrent.ConcurrentHashMap<>();
+    private static final java.util.Map<Long, HttpEntry> H2_ENTRIES =
+            java.util.Collections.synchronizedMap(new java.util.LinkedHashMap<Long, HttpEntry>(64, 0.75f, true));
 
     /** HTTP/2 body 数据块（isRequest=true 上行 body）
      *  v1.62 P0: body 追加进 HttpEntry（此前只打文本日志，详情页 H2 body 全空） */
